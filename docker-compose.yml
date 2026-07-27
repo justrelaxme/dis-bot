@@ -33,6 +33,13 @@ services:
     build: .
     command: ['node', 'dist/scripts/migrate.js']
     env_file: .env
+    # DATABASE_URL/REDIS_URL из .env рассчитаны на localhost (запуск с хоста для
+    # разработки) — внутри контейнера localhost означает сам контейнер. Переопределяем
+    # на service-имена compose, пароль берём из той же POSTGRES_PASSWORD, что и сервис
+    # postgres.
+    environment:
+      DATABASE_URL: 'postgres://bot:${POSTGRES_PASSWORD}@postgres:5432/disbot'
+      REDIS_URL: 'redis://redis:6379'
     depends_on:
       postgres:
         condition: service_healthy
@@ -41,6 +48,9 @@ services:
   bot:
     build: .
     env_file: .env
+    environment:
+      DATABASE_URL: 'postgres://bot:${POSTGRES_PASSWORD}@postgres:5432/disbot'
+      REDIS_URL: 'redis://redis:6379'
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,6 +68,8 @@ services:
 
   caddy:
     image: caddy:2-alpine
+    environment:
+      BOT_DOMAIN: "${BOT_DOMAIN:?требуется BOT_DOMAIN}"
     ports:
       - '80:80'
       - '443:443'
