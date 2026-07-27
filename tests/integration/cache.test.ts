@@ -95,4 +95,46 @@ describe('Cache.swr', () => {
     ).rejects.toThrow('провайдер лёг');
     await cache.close();
   });
+
+  it('на холодном промахе десять параллельных вызовов зовут загрузчик один раз и получают одно значение', async () => {
+    // Без лока на холодном пути каждый из десяти вызовов сходил бы за своим значением
+    // сам — именно то, от чего лок в doRefresh уже защищает тёплый (background-refresh)
+    // путь, но не холодный.
+    const cache = makeCache();
+    let calls = 0;
+    const load = vi.fn(async () => {
+      calls++;
+      await wait(100);
+      return `значение-${calls}`;
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => cache.swr('k:stampede', { ttlMs: 60_000, staleMs: 600_000, load })),
+    );
+
+    expect(load).toHaveBeenCalledTimes(1);
+    for (const result of results) {
+      expect(result.value).toBe('значение-1');
+    }
+    await cache.close();
+  });
+
+  it('на холодном промахе падение загрузчика доходит до всех параллельных вызывающих', async () => {
+    const cache = makeCache();
+    const load = vi.fn(async () => {
+      await wait(50);
+      throw new Error('провайдер лёг');
+    });
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 10 }, () =>
+        cache.swr('k:stampede-fail', { ttlMs: 60_000, staleMs: 600_000, load }),
+      ),
+    );
+
+    for (const result of results) {
+      expect(result.status).toBe('rejected');
+    }
+    await cache.close();
+  });
 });
