@@ -573,13 +573,19 @@ export function describeForUser(error: unknown): UserFacingError {
 Редакция обязательна: токен бота и ключи API не должны попасть в лог ни при каком стечении обстоятельств.
 
 ```ts
-import { pino } from 'pino';
+import pino from 'pino';
+import type { DestinationStream, Logger } from 'pino';
 import type { Config } from './config.js';
 
-export type Logger = pino.Logger;
+export type { Logger };
 
-export function createLogger(config: Config): Logger {
-  return pino({
+/**
+ * `destination` существует ради тестируемости: редакция секретов — защита от
+ * утечки токена в логи, и её надо проверять автотестом, а не глазами. По
+ * умолчанию pino пишет в stdout, как и положено.
+ */
+export function createLogger(config: Config, destination?: DestinationStream): Logger {
+  const options = {
     level: config.LOG_LEVEL,
     redact: {
       paths: [
@@ -591,22 +597,102 @@ export function createLogger(config: Config): Logger {
       ],
       censor: '[вырезано]',
     },
-    ...(config.NODE_ENV === 'development'
+    // pino-pretty подключается только в разработке: в проде нужен машинночитаемый JSON.
+    // При заданном destination транспорт не ставится — иначе вывод ушёл бы мимо потока.
+    ...(config.NODE_ENV === 'development' && !destination
       ? { transport: { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } } }
       : {}),
-  });
+  };
+
+  return destination ? pino(options, destination) : pino(options);
 }
 ```
 
-- [ ] **Step 5: Прогнать тесты**
+- [ ] **Step 5: Написать падающий тест редакции секретов**
 
-Run: `npx vitest run tests/core/errors.test.ts && npm run typecheck`
+Файл `tests/core/logger.test.ts`. Этот тест не косметика: если `redact` однажды сломается, токен бота уедет в логи, и узнать об этом можно будет только из чужого доступа к логам. Контрольный случай в конце проверяет, что секреты вырезает именно `redact`, а не что-то другое по пути.
+
+```ts
+import { Writable } from 'node:stream';
+import { describe, expect, it } from 'vitest';
+import type { Config } from '../../src/core/config.js';
+import { createLogger } from '../../src/core/logger.js';
+
+const TOKEN = 'СЕКРЕТ-ТОКЕН-БОТА';
+const STEAM = 'СЕКРЕТ-STEAM';
+const RIOT = 'СЕКРЕТ-RIOT';
+
+const config = {
+  LOG_LEVEL: 'info',
+  // production, чтобы pino-pretty не встал между логгером и потоком.
+  NODE_ENV: 'production',
+  DISCORD_TOKEN: TOKEN,
+  STEAM_API_KEY: STEAM,
+  RIOT_API_KEY: RIOT,
+} as unknown as Config;
+
+function captured(): { write: (payload: object, msg: string) => string } {
+  return {
+    write(payload, msg) {
+      let out = '';
+      const stream = new Writable({
+        write(chunk, _encoding, callback) {
+          out += String(chunk);
+          callback();
+        },
+      });
+      createLogger(config, stream).info(payload, msg);
+      return out;
+    },
+  };
+}
+
+describe('createLogger: редакция секретов', () => {
+  it('вырезает токен Discord и ключи API из объекта config', () => {
+    const out = captured().write({ config }, 'запуск');
+
+    expect(out).not.toContain(TOKEN);
+    expect(out).not.toContain(STEAM);
+    expect(out).not.toContain(RIOT);
+    expect(out).toContain('[вырезано]');
+  });
+
+  it('вырезает заголовки авторизации', () => {
+    const out = captured().write(
+      { headers: { authorization: 'Bearer СЕКРЕТ-AUTH', 'x-riot-token': 'СЕКРЕТ-XRIOT' } },
+      'запрос',
+    );
+
+    expect(out).not.toContain('СЕКРЕТ-AUTH');
+    expect(out).not.toContain('СЕКРЕТ-XRIOT');
+  });
+
+  it('сохраняет само сообщение и несекретные поля', () => {
+    const out = captured().write({ guildId: '111111111111111111' }, 'команда выполнена');
+
+    expect(out).toContain('команда выполнена');
+    expect(out).toContain('111111111111111111');
+  });
+
+  it('контроль: путь вне списка redact не вырезается', () => {
+    // Если этот тест начнёт падать, значит секреты скрывает что-то помимо redact,
+    // и предыдущие три теста перестали доказывать то, ради чего написаны.
+    const out = captured().write({ token: 'ЗНАЧЕНИЕ-ВНЕ-СПИСКА' }, 'контроль');
+
+    expect(out).toContain('ЗНАЧЕНИЕ-ВНЕ-СПИСКА');
+  });
+});
+```
+
+- [ ] **Step 6: Прогнать тесты**
+
+Run: `npx vitest run tests/core/errors.test.ts tests/core/logger.test.ts && npm run typecheck`
 Expected: 5 тестов PASS.
 
 - [ ] **Step 6: Коммит**
 
 ```bash
-git add src/core/errors.ts src/core/logger.ts tests/core/errors.test.ts
+git add src/core/errors.ts src/core/logger.ts tests/core/errors.test.ts tests/core/logger.test.ts
 git commit -m "feat: классы ошибок с кодами инцидентов и структурированный логгер"
 ```
 
