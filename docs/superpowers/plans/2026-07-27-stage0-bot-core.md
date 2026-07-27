@@ -17,6 +17,7 @@
 - **Node.js `>=24.0.0`.** Версия на машине разработки — 24 LTS. `vitest 4` требует `^20 || ^22 || >=24`, discord.js — `>=18`.
 - **Контейнеры — Podman, не Docker.** Testcontainers работает с Podman через docker-совместимый сокет; `podman compose` заменяется на `podman compose`. Переменные `DOCKER_HOST` и `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` настраиваются один раз в окружении и в коде не упоминаются.
 - **discord.js `14.27.x`**, Postgres `16`, Redis `7`.
+- **TypeScript закреплён на `~5.9.3`, не 7.x.** `typescript-eslint@8` требует `typescript <6.1.0`, а его версии 9+ не существует; TypeScript 7 оставил бы проект без линтера. `@types/node` — `^24`, строго под рантайм.
 - **ESM.** В `package.json` стоит `"type": "module"`, в `tsconfig` — `"module": "nodenext"`. Следствие, которое ломает сборку чаще всего: **все относительные импорты пишутся с расширением `.js`**, даже когда файл на диске `.ts` (`import { loadConfig } from './config.js'`).
 - **TypeScript strict**, включая `noUncheckedIndexedAccess` и `exactOptionalPropertyTypes`. `any` допустим только со строкой комментария, объясняющей почему.
 - **Snowflake-идентификаторы Discord хранятся и передаются как `text`/`string`.** Никогда как число.
@@ -96,10 +97,10 @@
     "deploy-commands": "tsx scripts/deploy-commands.ts"
   },
   "dependencies": {
-    "croner": "^9.0.0",
+    "croner": "^10.0.1",
     "discord.js": "^14.27.0",
     "drizzle-orm": "^0.45.2",
-    "fastify": "^5.2.0",
+    "fastify": "^5.10.0",
     "ioredis": "^5.11.1",
     "pg": "^8.22.0",
     "pino": "^10.3.1",
@@ -107,20 +108,29 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@testcontainers/postgresql": "^10.16.0",
-    "@testcontainers/redis": "^10.16.0",
-    "@types/node": "^22.10.0",
-    "@types/pg": "^8.11.10",
+    "@testcontainers/postgresql": "^12.0.4",
+    "@testcontainers/redis": "^12.0.4",
+    "@types/node": "^24.13.3",
+    "@types/pg": "^8.20.0",
     "drizzle-kit": "^0.31.10",
-    "eslint": "^9.17.0",
-    "pino-pretty": "^13.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
-    "typescript-eslint": "^8.19.0",
+    "eslint": "^10.8.0",
+    "pino-pretty": "^13.1.3",
+    "tsx": "^4.23.1",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10"
   }
 }
 ```
+
+**TypeScript намеренно остаётся на 5.9, хотя вышел 7.x.** `typescript-eslint@8.65.0`
+объявляет peer-зависимость `typescript: >=4.8.4 <6.1.0`, а версии 9+ у него не
+выпущено. Взять TypeScript 7 — значит остаться без линтера вообще. Диапазон записан
+как `~5.9.3`, чтобы `npm install` не подтянул мажор молча. Пересматривать после
+выхода `typescript-eslint`, поддерживающего 7.x.
+
+**`@types/node` привязан к 24.x, а не к последней 26.x** — типы должны соответствовать
+рантайму, иначе компилятор разрешит вызовы API, которых на Node 24 нет.
 
 - [ ] **Step 2: Создать `tsconfig.json`**
 
