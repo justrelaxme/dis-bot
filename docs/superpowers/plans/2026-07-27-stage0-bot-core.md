@@ -6,7 +6,7 @@
 
 **Architecture:** Модульный монолит. Тонкое ядро (`src/core/`) не знает о фичах: оно создаёт Discord-клиент, собирает модули из реестра, маршрутизирует интеракции, держит границу ошибок и предоставляет модулям `ModuleContext` с зависимостями. Модули (`src/modules/`) объявляют команды, слушателей и cron-джобы данными и общаются между собой через типизированную шину событий, а не через прямые импорты.
 
-**Tech Stack:** Node.js 24 LTS, TypeScript (strict, ESM), discord.js 14.27, PostgreSQL 16 + Drizzle ORM, Redis 7 (ioredis), Fastify, pino, zod, prom-client, croner, vitest (интеграционные — на реальном Postgres и Redis из compose.test.yml), Podman Compose + Caddy.
+**Tech Stack:** Node.js 24 LTS, TypeScript (strict, ESM), discord.js 14.27, PostgreSQL 16 + Drizzle ORM, Redis 7 (ioredis), Fastify, pino, zod, prom-client, croner, vitest (интеграционные — на реальном Postgres и Redis в контейнерах Podman), Podman + Caddy.
 
 **Spec:** [docs/superpowers/specs/2026-07-27-discord-gaming-bot-design.md](../specs/2026-07-27-discord-gaming-bot-design.md)
 
@@ -976,7 +976,7 @@ interface PostgresFixture {
 }
 
 /**
- * Подключается к настоящему Postgres из `compose.test.yml` и применяет миграции.
+ * Подключается к настоящему Postgres из тестовых сервисов и применяет миграции.
  * Мок здесь не годится: половина проверяемого поведения живёт в ограничениях схемы.
  *
  * Таблицы очищаются один раз на файл, а не перед каждым тестом: тесты внутри файла
