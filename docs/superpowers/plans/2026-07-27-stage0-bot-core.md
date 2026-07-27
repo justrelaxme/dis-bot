@@ -2066,11 +2066,16 @@ describe('createRouter', () => {
   });
 
   it('игнорирует интеракцию, не являющуюся slash-командой', async () => {
-    const route = routerFor(async () => {});
+    // Различающее утверждение здесь — `execute` не вызван. Проверять только reply и
+    // deferReply бессмысленно: без defer и с непадающим обработчиком они не вызвались бы
+    // и при полностью удалённой защите, то есть тест проходил бы всегда.
+    const execute = vi.fn(async () => {});
+    const route = routerFor(execute);
     const { interaction, calls } = fakeChatInputInteraction('cmd');
     Object.defineProperty(interaction, 'isChatInputCommand', { value: () => false });
 
     await expect(route(interaction)).resolves.toBeUndefined();
+    expect(execute).not.toHaveBeenCalled();
     expect(calls.reply).not.toHaveBeenCalled();
     expect(calls.deferReply).not.toHaveBeenCalled();
   });
