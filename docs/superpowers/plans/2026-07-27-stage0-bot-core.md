@@ -6,7 +6,7 @@
 
 **Architecture:** Модульный монолит. Тонкое ядро (`src/core/`) не знает о фичах: оно создаёт Discord-клиент, собирает модули из реестра, маршрутизирует интеракции, держит границу ошибок и предоставляет модулям `ModuleContext` с зависимостями. Модули (`src/modules/`) объявляют команды, слушателей и cron-джобы данными и общаются между собой через типизированную шину событий, а не через прямые импорты.
 
-**Tech Stack:** Node.js 22 LTS, TypeScript (strict, ESM), discord.js 14.27, PostgreSQL 16 + Drizzle ORM, Redis 7 (ioredis), Fastify, pino, zod, prom-client, croner, vitest + Testcontainers, Docker Compose + Caddy.
+**Tech Stack:** Node.js 24 LTS, TypeScript (strict, ESM), discord.js 14.27, PostgreSQL 16 + Drizzle ORM, Redis 7 (ioredis), Fastify, pino, zod, prom-client, croner, vitest + Testcontainers (на Podman), Podman Compose + Caddy.
 
 **Spec:** [docs/superpowers/specs/2026-07-27-discord-gaming-bot-design.md](../specs/2026-07-27-discord-gaming-bot-design.md)
 
@@ -14,7 +14,8 @@
 
 Требования ниже действуют для **каждой** задачи плана.
 
-- **Node.js `>=22.12.0`.** Требование `vitest 4` (`^20 || ^22 || >=24`); discord.js требует `>=18`.
+- **Node.js `>=24.0.0`.** Версия на машине разработки — 24 LTS. `vitest 4` требует `^20 || ^22 || >=24`, discord.js — `>=18`.
+- **Контейнеры — Podman, не Docker.** Testcontainers работает с Podman через docker-совместимый сокет; `podman compose` заменяется на `podman compose`. Переменные `DOCKER_HOST` и `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` настраиваются один раз в окружении и в коде не упоминаются.
 - **discord.js `14.27.x`**, Postgres `16`, Redis `7`.
 - **ESM.** В `package.json` стоит `"type": "module"`, в `tsconfig` — `"module": "nodenext"`. Следствие, которое ломает сборку чаще всего: **все относительные импорты пишутся с расширением `.js`**, даже когда файл на диске `.ts` (`import { loadConfig } from './config.js'`).
 - **TypeScript strict**, включая `noUncheckedIndexedAccess` и `exactOptionalPropertyTypes`. `any` допустим только со строкой комментария, объясняющей почему.
@@ -81,7 +82,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.12.0" },
+  "engines": { "node": ">=24.0.0" },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
@@ -167,7 +168,7 @@ export default tseslint.config(
 
 - [ ] **Step 4: Создать `vitest.config.ts`**
 
-Интеграционные тесты исключены — они требуют Docker и запускаются отдельной командой.
+Интеграционные тесты исключены — они требуют запущенную podman-машину и запускаются отдельной командой.
 
 ```ts
 import { defineConfig } from 'vitest/config';
@@ -813,7 +814,7 @@ describe('схема ядра', () => {
 - [ ] **Step 10: Запустить интеграционные тесты**
 
 Run: `npm run test:int`
-Expected: 4 теста PASS. Требуется запущенный Docker. Первый прогон дольше — тянется образ `postgres:16-alpine`.
+Expected: 4 теста PASS. Требуется запущенная podman-машина (`podman machine start`). Первый прогон дольше — тянется образ `postgres:16-alpine`.
 
 - [ ] **Step 11: Коммит**
 
@@ -2580,7 +2581,7 @@ git commit -m "feat: bootstrap бота и graceful shutdown по SIGTERM"
 - [ ] **Step 1: Создать `Dockerfile`**
 
 ```dockerfile
-FROM node:22.12-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -2589,7 +2590,7 @@ COPY src ./src
 COPY scripts ./scripts
 RUN npx tsc -p tsconfig.json
 
-FROM node:22.12-alpine AS runtime
+FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
@@ -2725,7 +2726,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.12'
+          node-version: '24'
           cache: npm
       - run: npm ci
       - run: npm run lint
@@ -2738,7 +2739,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.12'
+          node-version: '24'
           cache: npm
       - run: npm ci
       - run: npm run test:int
@@ -2756,7 +2757,7 @@ Discord-бот игрового сообщества. Модульный мон�
 ## Запуск локально
 
 1. `cp .env.example .env` и заполнить `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`.
-2. `docker compose up -d postgres redis`
+2. `podman compose up -d postgres redis`
 3. `npm install`
 4. `npm run db:migrate`
 5. `npm run deploy-commands` — регистрирует slash-команды на сервере из `DISCORD_GUILD_ID`.
@@ -2767,20 +2768,20 @@ Discord-бот игрового сообщества. Модульный мон�
 | Команда | Что делает |
 |---|---|
 | `npm test` | unit-тесты |
-| `npm run test:int` | интеграционные тесты, требуют Docker |
+| `npm run test:int` | интеграционные тесты, требуют запущенную podman-машину |
 | `npm run typecheck` | проверка типов без сборки |
 | `npm run lint` | eslint |
 
 ## Деплой
 
-`docker compose up -d --build`. Домен задаётся переменной `BOT_DOMAIN`, TLS Caddy получает сам.
+`podman compose up -d --build`. Домен задаётся переменной `BOT_DOMAIN`, TLS Caddy получает сам.
 
 Бэкап базы обязателен: потеря Postgres означает безвозвратную потерю уровней и экономики.
 ```
 
 - [ ] **Step 7: Проверить сборку образа и полный прогон**
 
-Run: `docker build -t dis-bot:test . && npm test && npm run typecheck && npm run lint`
+Run: `podman build -t dis-bot:test . && npm test && npm run typecheck && npm run lint`
 Expected: образ собирается, все проверки зелёные.
 
 - [ ] **Step 8: Коммит**
@@ -2797,12 +2798,12 @@ git commit -m "chore: docker-деплой, Caddy с закрытым /metrics и
 Проверяются вручную после Task 14. Соответствуют разделу 10 спеки.
 
 - [ ] Бот подключается к серверу, `/ping` отвечает с латентностью.
-- [ ] `docker compose up -d postgres redis && npm run db:migrate && npm run dev` поднимает окружение.
-- [ ] Миграции применяются на чистой базе (`docker compose down -v`, затем заново).
+- [ ] `podman compose up -d postgres redis && npm run db:migrate && npm run dev` поднимает окружение.
+- [ ] Миграции применяются на чистой базе (`podman compose down -v`, затем заново).
 - [ ] Запуск с пустым `DISCORD_TOKEN` роняет процесс с сообщением, перечисляющим проблему.
-- [ ] `curl localhost:3000/healthz` отдаёт 200; после `docker compose stop postgres` — 503 с `"database":"error"`.
+- [ ] `curl localhost:3000/healthz` отдаёт 200; после `podman compose stop postgres` — 503 с `"database":"error"`.
 - [ ] `curl localhost:3000/metrics` содержит `bot_command_duration_seconds` после вызова `/ping`.
 - [ ] `npm test`, `npm run test:int`, `npm run typecheck`, `npm run lint` — все зелёные.
-- [ ] `docker compose restart bot` — бот возвращается в сеть без ручных действий.
-- [ ] `docker compose kill -s SIGTERM bot` в момент выполнения команды: в логах видно «дожидаемся незавершённой работы», процесс выходит с кодом 0.
+- [ ] `podman compose restart bot` — бот возвращается в сеть без ручных действий.
+- [ ] `podman compose kill -s SIGTERM bot` в момент выполнения команды: в логах видно «дожидаемся незавершённой работы», процесс выходит с кодом 0.
 - [ ] Запрос `https://<домен>/metrics` снаружи возвращает 404.

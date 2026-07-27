@@ -5284,7 +5284,7 @@ describe.skipIf(!riotKey)('контракт Riot API', () => {
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.12'
+          node-version: '24'
           cache: npm
       - run: npm ci
       - run: npm run test:contract
@@ -5588,4 +5588,4 @@ git commit -m "feat(identity): кэш ответов провайдеров по
 - [ ] Неподтверждённый аккаунт не получает авто-роль.
 - [ ] `/ranksync` вторым вызовом подряд отвечает отказом с остатком времени.
 - [ ] Контрактные тесты провайдеров проходят по живым API либо помечены пропущенными из-за отсутствия ключей.
-- [ ] `docker compose up -d --build` поднимает стек; `/healthz` отдаёт 200.
+- [ ] `podman compose up -d --build` поднимает стек; `/healthz` отдаёт 200.
