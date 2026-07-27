@@ -40,9 +40,25 @@ describe('createShutdown', () => {
 
   it('не ломается на упавшей отслеживаемой работе', async () => {
     const shutdown = createShutdown({ logger });
-    void shutdown.track(Promise.reject(new Error('работа упала'))).catch(() => {});
+    const seen: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      seen.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
 
-    await expect(shutdown.drain(100)).resolves.toBeUndefined();
+    try {
+      // Намеренно без .catch на результате track(): именно так track используется в
+      // index.ts (`void shutdown.track(...)`, без внешнего catch). Если бы отклонение
+      // гасил не track, а внешний .catch, тест был бы зелёным при любой реализации
+      // track и не доказывал бы ничего.
+      void shutdown.track(Promise.reject(new Error('работа упала')));
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(seen).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+    }
   });
 
   it('вызывает зарегистрированные обработчики сигнала по порядку', async () => {

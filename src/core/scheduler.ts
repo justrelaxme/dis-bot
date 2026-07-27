@@ -1,6 +1,7 @@
 import { Cron } from 'croner';
 import type { ModuleContext, ScheduledJob } from './module.js';
 import type { Registry } from './registry.js';
+import type { Shutdown } from './shutdown.js';
 
 export interface Scheduler {
   start(): void;
@@ -11,6 +12,7 @@ export interface Scheduler {
 export interface SchedulerDeps {
   registry: Registry;
   ctx: ModuleContext;
+  shutdown: Shutdown;
 }
 
 export function createScheduler(deps: SchedulerDeps): Scheduler {
@@ -20,7 +22,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const log = deps.ctx.logger.child({ job: job.name, module: moduleName });
     const startedAt = Date.now();
     try {
-      await job.run(deps.ctx);
+      // croner.stop() останавливает только будущие срабатывания — уже идущий прогон
+      // он не прерывает. Проведя его через shutdown.track, drain() дождётся
+      // завершения джобы вместо того, чтобы закрыть БД и Redis у неё из-под ног.
+      await deps.shutdown.track(job.run(deps.ctx));
       log.info({ durationMs: Date.now() - startedAt }, 'джоба выполнена');
     } catch (error) {
       // Упавшая джоба не должна ронять процесс: следующий запуск попробует снова.

@@ -5,7 +5,7 @@ import { createLogger } from '../src/core/logger.js';
 
 const config = loadConfig();
 const logger = createLogger(config);
-const { db, close } = createDatabase(config);
+const { db, close } = createDatabase(config, logger);
 
 try {
   await migrate(db, { migrationsFolder: 'src/core/db/migrations' });

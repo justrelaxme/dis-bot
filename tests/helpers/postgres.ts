@@ -3,6 +3,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { afterAll, beforeAll } from 'vitest';
 import { loadConfig } from '../../src/core/config.js';
 import { createDatabase, type Database } from '../../src/core/db/client.js';
+import { createLogger } from '../../src/core/logger.js';
 
 const DEFAULT_TEST_DATABASE_URL = 'postgres://bot:bot@localhost:55432/disbot_test';
 
@@ -33,7 +34,7 @@ export function withPostgres(): PostgresFixture {
       NODE_ENV: 'test',
     });
 
-    const created = createDatabase(config);
+    const created = createDatabase(config, createLogger(config));
     db = created.db;
     close = created.close;
 

@@ -2,11 +2,11 @@ import { REST, Routes } from 'discord.js';
 import { loadConfig } from '../src/core/config.js';
 import { createLogger } from '../src/core/logger.js';
 import { buildRegistry } from '../src/core/registry.js';
-import { pingModule } from '../src/modules/ping/index.js';
+import { modules } from '../src/modules.js';
 
 const config = loadConfig();
 const logger = createLogger(config);
-const registry = buildRegistry([pingModule]);
+const registry = buildRegistry(modules);
 
 const body = [...registry.commands.values()].map((entry) => entry.command.builder.toJSON());
 const rest = new REST().setToken(config.DISCORD_TOKEN);
