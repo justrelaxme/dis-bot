@@ -69,7 +69,11 @@ services:
   caddy:
     image: caddy:2-alpine
     environment:
-      BOT_DOMAIN: "${BOT_DOMAIN:?требуется BOT_DOMAIN}"
+      # :- вместо :? — compose интерполирует весь файл до выбора сервисов, поэтому
+      # :? рвал бы up/build/config для ЛЮБОГО набора сервисов (даже postgres/redis
+      # без caddy). Если BOT_DOMAIN и правда нужен, но не задан, пусть ругается caddy,
+      # а не compose.
+      BOT_DOMAIN: "${BOT_DOMAIN:-}"
     ports:
       - '80:80'
       - '443:443'

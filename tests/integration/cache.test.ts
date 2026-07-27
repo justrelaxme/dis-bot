@@ -1,3 +1,4 @@
+import type { Redis } from 'ioredis';
 import { describe, expect, it, vi } from 'vitest';
 import { Cache } from '../../src/core/cache.js';
 import { loadConfig } from '../../src/core/config.js';
@@ -136,5 +137,49 @@ describe('Cache.swr', () => {
       expect(result.status).toBe('rejected');
     }
     await cache.close();
+  });
+
+  it('падение фонового обновления не всплывает необработанным отклонением промиса', async () => {
+    // Пиннит порядок .catch перед .finally в refreshInBackground (cache.ts): поменяй
+    // их местами — и это отклонение перестанет гаситься локально, а pendingRefreshes
+    // успеет вычистить задачу из набора раньше, чем close() успел бы поймать её через
+    // Promise.allSettled, — итог: необработанное отклонение и потенциальный краш процесса.
+    const cache = makeCache();
+    await cache.swr('k:reject-finally', { ttlMs: 30, staleMs: 600_000, load: async () => 'исходное' });
+    await wait(60);
+
+    // options.load(), брошенный на просроченной записи, уходит в собственный catch
+    // doRefresh (там просто warn) и не долетает до refreshInBackground — поэтому вместо
+    // падения загрузчика ломаем redis.del у лока в finally: это и правда пробрасывается
+    // наружу из doRefresh. Приватное поле — доступ через приведение типа: публичного
+    // способа подсунуть Cache сломанный редис-клиент нет.
+    const internal = cache as unknown as { redis: Redis };
+    const delSpy = vi.spyOn(internal.redis, 'del').mockRejectedValueOnce(new Error('redis.del недоступен'));
+
+    const seen: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      seen.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    try {
+      const stale = await cache.swr('k:reject-finally', {
+        ttlMs: 30,
+        staleMs: 600_000,
+        load: async () => 'обновлённое',
+      });
+      expect(stale.stale).toBe(true);
+
+      // Даём фоновому обновлению (загрузка, запись и упавший redis.del в finally
+      // doRefresh) время дойти до конца и, если бы .catch не стоял перед .finally,
+      // успеть всплыть необработанным отклонением.
+      await wait(300);
+
+      expect(seen).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+      delSpy.mockRestore();
+      await cache.close();
+    }
   });
 });

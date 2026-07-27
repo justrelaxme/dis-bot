@@ -70,13 +70,18 @@ client.on(Events.InteractionCreate, (interaction) => {
 
 for (const module of modules) {
   for (const handler of module.events ?? []) {
-    const listener = (...args: unknown[]) =>
+    const listener = (...args: unknown[]) => {
+      // Зеркалит защиту InteractionCreate выше: во время дренажа новую работу от
+      // событий модуля не берём — иначе она попадёт в окно между drain и закрытием
+      // БД/Redis в onSignal-шагах.
+      if (stopping) return;
       void shutdown.track(
         // Типы аргументов гарантированы сигнатурой EventHandler на этапе объявления.
         handler.handle(ctx, ...(args as never)).catch((err: unknown) => {
           logger.error({ err, event: handler.event, module: module.name }, 'обработчик события модуля упал');
         }),
       );
+    };
     if (handler.once) client.once(handler.event, listener);
     else client.on(handler.event, listener);
   }

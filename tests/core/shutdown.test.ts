@@ -53,7 +53,10 @@ describe('createShutdown', () => {
       // track и не доказывал бы ничего.
       void shutdown.track(Promise.reject(new Error('работа упала')));
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Восстановлено из исходной версии теста: drain обязан завершиться даже над
+      // упавшей отслеживаемой работой, а не только не уронить процесс необработанным
+      // отклонением — это отдельное свойство, и его тоже нужно пинить.
+      await expect(shutdown.drain(100)).resolves.toBeUndefined();
 
       expect(seen).toEqual([]);
     } finally {

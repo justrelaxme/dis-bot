@@ -21,6 +21,11 @@ export function createLogger(config: Config, destination?: DestinationStream): L
         'config.REDIS_URL',
         'headers.authorization',
         'headers["x-riot-token"]',
+        // pg-pool перед emit('error', ...) вешает err.client = client: сериализатор pino
+        // копирует все перечислимые ключи клиента (connectionParameters, OID типов,
+        // внутренности сокета, "user" с хостом/портом/БД) — без пароля (pg делает его
+        // неперечислимым), но всё равно раздувает и захламляет лог на нестабильном соединении.
+        'err.client',
       ],
       censor: '[вырезано]',
     },
