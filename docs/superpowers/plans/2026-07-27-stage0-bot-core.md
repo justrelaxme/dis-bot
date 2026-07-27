@@ -16,7 +16,7 @@
 
 - **Node.js `>=24.0.0`.** Версия на машине разработки — 24 LTS. `vitest 4` требует `^20 || ^22 || >=24`, discord.js — `>=18`.
 - **Контейнеры — Podman, не Docker.** Вместо `docker compose` — `podman compose`, вместо `docker build` — `podman build`. `DOCKER_HOST` задавать **не нужно и вредно**: Podman сам публикует docker-совместимый named pipe, а явное значение вида `npipe:////./pipe/docker_engine` Node не переваривает.
-- **Интеграционные тесты подключаются к сервисам из `compose.test.yml`, а не поднимают контейнеры сами.** Testcontainers исключён: на rootless Podman он зависает после успешного health check — `start()` не возвращается и ошибки не выдаёт (проверено на живом окружении). Требование «настоящий Postgres, а не мок» сохраняется полностью, меняется только то, кто управляет жизненным циклом контейнера. Перед `npm run test:int` нужен `npm run test:services:up`; адреса переопределяются переменными `DATABASE_URL_TEST` и `REDIS_URL_TEST` — их использует CI.
+- **Интеграционные тесты подключаются к сервисам, поднятым `npm run test:services:up`, а не поднимают контейнеры сами.** Testcontainers исключён: на rootless Podman он зависает после успешного health check — `start()` не возвращается и ошибки не выдаёт (проверено на живом окружении). Требование «настоящий Postgres, а не мок» сохраняется полностью, меняется только то, кто управляет жизненным циклом контейнера. Перед `npm run test:int` нужен `npm run test:services:up`; адреса переопределяются переменными `DATABASE_URL_TEST` и `REDIS_URL_TEST` — их использует CI.
 - **discord.js `14.27.x`**, Postgres `16`, Redis `7`.
 - **TypeScript закреплён на `~5.9.3`, не 7.x.** `typescript-eslint@8` требует `typescript <6.1.0`, а его версии 9+ не существует; TypeScript 7 оставил бы проект без линтера. `@types/node` — `^24`, строго под рантайм.
 - **ESM.** В `package.json` стоит `"type": "module"`, в `tsconfig` — `"module": "nodenext"`. Следствие, которое ломает сборку чаще всего: **все относительные импорты пишутся с расширением `.js`**, даже когда файл на диске `.ts` (`import { loadConfig } from './config.js'`).
@@ -858,43 +858,107 @@ export default defineConfig({
 
 Удалить из `devDependencies` пакета: `@testcontainers/postgresql` и `@testcontainers/redis`, затем `npm install`.
 
-Создать `compose.test.yml`:
+**Почему не compose-файл.** `podman compose` — обёртка, требующая внешнего провайдера
+(`docker-compose` или `podman-compose`), которого на машине разработки нет. Ставить
+ещё одну зависимость ради двух контейнеров без сети между ними не стоит. Скрипт ниже
+проверен на живом окружении: 5.4 с с нуля, повторный запуск идемпотентен.
 
-```yaml
-# Сервисы только для тестов. Порты нестандартные, чтобы не конфликтовать с
-# возможным локальным Postgres и с продовым стеком из docker-compose.yml.
-services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: bot
-      POSTGRES_PASSWORD: bot
-      POSTGRES_DB: disbot_test
-    ports:
-      - '55432:5432'
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U bot -d disbot_test']
-      interval: 3s
-      timeout: 3s
-      retries: 10
+Создать `scripts/test-services.mjs` (обычный `.mjs`, а не `.ts` — его вызывает npm
+напрямую, без tsx):
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - '56379:6379'
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 3s
-      timeout: 3s
-      retries: 10
+```js
+#!/usr/bin/env node
+// Поднимает и гасит Postgres и Redis для интеграционных тестов.
+// Своим скриптом, а не compose: podman compose требует внешнего провайдера
+// (docker-compose или podman-compose), а здесь всего два контейнера без сети между ними.
+import { spawnSync } from 'node:child_process';
+
+const SERVICES = [
+  {
+    name: 'disbot-test-pg',
+    image: 'postgres:16-alpine',
+    args: [
+      '-e', 'POSTGRES_USER=bot',
+      '-e', 'POSTGRES_PASSWORD=bot',
+      '-e', 'POSTGRES_DB=disbot_test',
+      '-p', '55432:5432',
+    ],
+    ready: ['pg_isready', '-U', 'bot', '-d', 'disbot_test'],
+  },
+  {
+    name: 'disbot-test-redis',
+    image: 'redis:7-alpine',
+    args: ['-p', '56379:6379'],
+    ready: ['redis-cli', 'ping'],
+  },
+];
+
+const READY_TIMEOUT_MS = 60_000;
+const POLL_INTERVAL_MS = 500;
+
+function podman(args) {
+  return spawnSync('podman', args, { encoding: 'utf8' });
+}
+
+function fail(message) {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+}
+
+function exists(name) {
+  return podman(['container', 'exists', name]).status === 0;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitReady(service) {
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (podman(['exec', service.name, ...service.ready]).status === 0) return;
+    await sleep(POLL_INTERVAL_MS);
+  }
+  fail(`Сервис ${service.name} не стал готов за ${READY_TIMEOUT_MS / 1000}с. Логи: podman logs ${service.name}`);
+}
+
+async function up() {
+  if (podman(['info', '--format', '{{.Host.Arch}}']).status !== 0) {
+    fail('Podman недоступен. Запусти машину: podman machine start');
+  }
+
+  for (const service of SERVICES) {
+    if (exists(service.name)) {
+      podman(['start', service.name]);
+    } else {
+      const created = podman(['run', '-d', '--name', service.name, ...service.args, service.image]);
+      if (created.status !== 0) fail(`Не удалось создать ${service.name}: ${created.stderr.trim()}`);
+    }
+    await waitReady(service);
+    process.stderr.write(`готов: ${service.name}\n`);
+  }
+}
+
+function down() {
+  for (const service of SERVICES) {
+    podman(['rm', '-f', service.name]);
+    process.stderr.write(`удалён: ${service.name}\n`);
+  }
+}
+
+const command = process.argv[2];
+if (command === 'up') await up();
+else if (command === 'down') down();
+else fail('Использование: node scripts/test-services.mjs up|down');
 ```
 
 Добавить в `scripts` пакета:
 
 ```json
-    "test:services:up": "podman compose -f compose.test.yml up -d --wait",
-    "test:services:down": "podman compose -f compose.test.yml down -v",
+    "test:services:up": "node scripts/test-services.mjs up",
+    "test:services:down": "node scripts/test-services.mjs down",
 ```
+
+Порты 55432 и 56379 выбраны нестандартными, чтобы не конфликтовать с возможным
+локальным Postgres и с продовым стеком из `docker-compose.yml` (Task 14).
 
 - [ ] **Step 9: Создать хелпер `tests/helpers/postgres.ts`**
 
@@ -1043,7 +1107,7 @@ Expected: 4 теста PASS. Требуется запущенная podman-ма
 - [ ] **Step 12: Коммит**
 
 ```bash
-git add src/core/db drizzle.config.ts scripts/migrate.ts vitest.integration.config.ts compose.test.yml package.json package-lock.json tests/helpers/postgres.ts tests/integration/db/core-schema.test.ts
+git add src/core/db drizzle.config.ts scripts/migrate.ts scripts/test-services.mjs vitest.integration.config.ts package.json package-lock.json tests/helpers/postgres.ts tests/integration/db/core-schema.test.ts
 git commit -m "feat: схема ядра, клиент Postgres и миграции на Drizzle"
 ```
 
@@ -1072,7 +1136,7 @@ interface RedisFixture {
 }
 
 /**
- * Отдаёт адрес настоящего Redis из `compose.test.yml`, предварительно убедившись,
+ * Отдаёт адрес настоящего Redis из тестовых сервисов, предварительно убедившись,
  * что он отвечает. Жизненным циклом контейнера управляет compose, а не тест:
  * Testcontainers на rootless Podman зависает после health check.
  */
