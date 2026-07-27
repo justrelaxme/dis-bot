@@ -24,7 +24,7 @@
 - **Все времена — `timestamptz` в UTC.** XP, валюта, LP — целые числа, никогда float.
 - **Эфемерные ответы — через `flags: MessageFlags.Ephemeral`.** Опция `ephemeral: true` объявлена deprecated в discord.js и в новом коде не используется.
 - **Ответ на интеракцию не позже 3 секунд.** Любой хендлер, делающий сетевой вызов или запрос к БД дольше одного простого SELECT, обязан начинаться с `deferReply()`.
-- **Пользовательские строки и комментарии — по-русски.**
+- **Пользовательские строки и комментарии — по-русски.** В zod сообщение задаётся параметром схемы (`z.string({ error: '…' })`), а не вторым аргументом `.min()` / `.regex()`: второй аргумент привязан только к своей проверке и не покрывает базовую проверку типа, поэтому у отсутствующего значения протекает английский текст zod.
 - **Коммиты в стиле conventional commits** (`feat:`, `fix:`, `chore:`, `test:`, `docs:`).
 - **Значения из спеки, не подлежащие изменению:** TTL кэша — профиль 24 ч (просроченное отдавать до 7 суток), ранг 20 мин (до 24 ч), история матчей 5 мин (до 1 ч); челлендж верификации 15 минут и 5 попыток; кулдаун `/ranksync` 10 минут; таймаут внешнего вызова 5 секунд при 3 попытках; circuit breaker открывается после 5 подряд сбоев и пробует снова через 60 секунд; cron синхронизации — каждые 30 минут по 100 аккаунтов.
 
@@ -323,6 +323,20 @@ describe('loadConfig', () => {
     expect(message).toContain('DISCORD_APP_ID');
   });
 
+  it('пишет сообщения по-русски и для полностью отсутствующих переменных', () => {
+    // Регрессия: второй аргумент .min()/.regex() не покрывает базовую проверку типа,
+    // из-за чего у отсутствующих переменных протекал английский текст zod.
+    let message = '';
+    try {
+      loadConfig({ DISCORD_TOKEN: 'token' });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).not.toMatch(/Invalid input/);
+    expect(message).not.toMatch(/expected string/);
+    expect(message).toContain('обязателен');
+  });
+
   it('отвергает snowflake неверного формата', () => {
     expect(() => loadConfig({ ...valid, DISCORD_APP_ID: 'не-число' })).toThrow(/DISCORD_APP_ID/);
   });
@@ -346,23 +360,29 @@ Expected: FAIL — `Cannot find module '../../src/core/config.js'`.
 ```ts
 import { z } from 'zod';
 
-const snowflake = z.string().regex(/^\d{17,20}$/, 'ожидается Discord snowflake из 17–20 цифр');
+// Сообщение задаётся параметром схемы `{ error }`, а не вторым аргументом .min()/.regex().
+// Второй аргумент привязывается только к своей проверке и НЕ покрывает базовую проверку
+// типа: при полностью отсутствующей переменной zod сначала выдаёт invalid_type по-английски,
+// и русское сообщение недостижимо. Параметр схемы покрывает оба случая.
+const snowflake = z
+  .string({ error: 'ожидается Discord snowflake из 17–20 цифр' })
+  .regex(/^\d{17,20}$/);
 
 const emptyToUndefined = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema);
 
 const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+  NODE_ENV: z.enum(['development', 'test', 'production'], { error: 'допустимо: development, test, production' }).default('development'),
+  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'], { error: 'допустимо: trace, debug, info, warn, error, fatal' }).default('info'),
 
-  DISCORD_TOKEN: z.string().min(1, 'обязателен'),
+  DISCORD_TOKEN: z.string({ error: 'обязателен' }).min(1),
   DISCORD_APP_ID: snowflake,
   DISCORD_GUILD_ID: snowflake,
 
-  DATABASE_URL: z.string().min(1, 'обязателен'),
-  REDIS_URL: z.string().min(1, 'обязателен'),
+  DATABASE_URL: z.string({ error: 'обязателен' }).min(1),
+  REDIS_URL: z.string({ error: 'обязателен' }).min(1),
 
-  HTTP_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  HTTP_PORT: z.coerce.number({ error: 'ожидается целое число порта от 1 до 65535' }).int().min(1).max(65535).default(3000),
   PUBLIC_BASE_URL: z.url('ожидается абсолютный URL'),
 
   STEAM_API_KEY: emptyToUndefined(z.string().min(1).optional()),
@@ -372,8 +392,8 @@ const envSchema = z.object({
 export type Config = z.infer<typeof envSchema>;
 
 /**
- * Валидирует окружение целиком. Бросает при первой же проблеме, но перечисляет
- * в сообщении все найденные — чтобы не выяснять их по одной за пять перезапусков.
+ * Валидирует окружение целиком. Бросает одну ошибку, перечисляя в ней все найденные
+ * проблемы, — чтобы не выяснять их по одной за пять перезапусков.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = envSchema.safeParse(env);
