@@ -24,7 +24,7 @@
 - **Все времена — `timestamptz` в UTC.** XP, валюта, LP — целые числа, никогда float.
 - **Эфемерные ответы — через `flags: MessageFlags.Ephemeral`.** Опция `ephemeral: true` объявлена deprecated в discord.js и в новом коде не используется.
 - **Ответ на интеракцию не позже 3 секунд.** Любой хендлер, делающий сетевой вызов или запрос к БД дольше одного простого SELECT, обязан начинаться с `deferReply()`.
-- **Пользовательские строки и комментарии — по-русски.** В zod сообщение задаётся параметром схемы (`z.string({ error: '…' })`), а не вторым аргументом `.min()` / `.regex()`: второй аргумент привязан только к своей проверке и не покрывает базовую проверку типа, поэтому у отсутствующего значения протекает английский текст zod.
+- **Пользовательские строки и комментарии — по-русски.** В zod сообщение указывается **в двух местах одновременно**: параметром схемы (`z.string({ error: '…' })`) и вторым аргументом уточнения (`.min(1, '…')`, `.regex(re, '…')`). Первое покрывает только проверку типа, второе — только своё уточнение; указать одно из двух значит получить английский текст zod на другом пути. Сообщение хранится константой, чтобы две копии не разъехались.
 - **Коммиты в стиле conventional commits** (`feat:`, `fix:`, `chore:`, `test:`, `docs:`).
 - **Значения из спеки, не подлежащие изменению:** TTL кэша — профиль 24 ч (просроченное отдавать до 7 суток), ранг 20 мин (до 24 ч), история матчей 5 мин (до 1 ч); челлендж верификации 15 минут и 5 попыток; кулдаун `/ranksync` 10 минут; таймаут внешнего вызова 5 секунд при 3 попытках; circuit breaker открывается после 5 подряд сбоев и пробует снова через 60 секунд; cron синхронизации — каждые 30 минут по 100 аккаунтов.
 
@@ -323,20 +323,6 @@ describe('loadConfig', () => {
     expect(message).toContain('DISCORD_APP_ID');
   });
 
-  it('пишет сообщения по-русски и для полностью отсутствующих переменных', () => {
-    // Регрессия: второй аргумент .min()/.regex() не покрывает базовую проверку типа,
-    // из-за чего у отсутствующих переменных протекал английский текст zod.
-    let message = '';
-    try {
-      loadConfig({ DISCORD_TOKEN: 'token' });
-    } catch (error) {
-      message = (error as Error).message;
-    }
-    expect(message).not.toMatch(/Invalid input/);
-    expect(message).not.toMatch(/expected string/);
-    expect(message).toContain('обязателен');
-  });
-
   it('отвергает snowflake неверного формата', () => {
     expect(() => loadConfig({ ...valid, DISCORD_APP_ID: 'не-число' })).toThrow(/DISCORD_APP_ID/);
   });
@@ -344,6 +330,30 @@ describe('loadConfig', () => {
   it('считает пустую строку необязательного ключа отсутствующим значением', () => {
     const config = loadConfig({ ...valid, RIOT_API_KEY: '' });
     expect(config.RIOT_API_KEY).toBeUndefined();
+  });
+
+  // Проверка имени поля в сообщении ничего не говорит о языке: «DATABASE_URL» есть и в
+  // русском, и в английском варианте. Эти тесты пиннят именно язык, причём на обоих путях
+  // zod — «значения нет» и «значение есть, но не проходит проверку», — потому что источник
+  // текста у них разный и починка одного ломает другой.
+  describe.each([
+    ['переменная отсутствует', { DISCORD_TOKEN: 'token' }, 'обязателен'],
+    ['snowflake присутствует, но кривой', { ...valid, DISCORD_APP_ID: 'не-число' }, 'snowflake'],
+    ['обязательная строка пуста', { ...valid, DISCORD_TOKEN: '' }, 'обязателен'],
+    ['порт вне диапазона', { ...valid, HTTP_PORT: '99999' }, 'порта'],
+  ])('сообщение по-русски: %s', (_name, env, expectedFragment) => {
+    it('не содержит английского текста zod', () => {
+      let message = '';
+      try {
+        loadConfig(env);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).not.toBe('');
+      expect(message).not.toMatch(/Invalid input|Invalid string|Too small|Too big|expected/);
+      expect(message).toContain(expectedFragment);
+    });
   });
 });
 ```
@@ -360,29 +370,50 @@ Expected: FAIL — `Cannot find module '../../src/core/config.js'`.
 ```ts
 import { z } from 'zod';
 
-// Сообщение задаётся параметром схемы `{ error }`, а не вторым аргументом .min()/.regex().
-// Второй аргумент привязывается только к своей проверке и НЕ покрывает базовую проверку
-// типа: при полностью отсутствующей переменной zod сначала выдаёт invalid_type по-английски,
-// и русское сообщение недостижимо. Параметр схемы покрывает оба случая.
-const snowflake = z
-  .string({ error: 'ожидается Discord snowflake из 17–20 цифр' })
-  .regex(/^\d{17,20}$/);
+/**
+ * У zod два независимых места, откуда берётся текст ошибки, и они не перекрывают
+ * друг друга:
+ *   - `{ error }` в конструкторе схемы покрывает только базовую проверку типа
+ *     (значение отсутствует или не той природы);
+ *   - второй аргумент `.min()` / `.regex()` покрывает только своё уточнение
+ *     (значение есть и нужного типа, но не проходит проверку).
+ * Указать сообщение лишь в одном месте — значит получить английский текст zod в
+ * другом. Поэтому оно передаётся в оба и хранится константой, чтобы не разъехалось.
+ */
+const SNOWFLAKE_MSG = 'ожидается Discord snowflake из 17–20 цифр';
+const REQUIRED_MSG = 'обязателен';
+const PORT_MSG = 'ожидается целое число порта от 1 до 65535';
+
+const snowflake = z.string({ error: SNOWFLAKE_MSG }).regex(/^\d{17,20}$/, SNOWFLAKE_MSG);
+
+const requiredString = () => z.string({ error: REQUIRED_MSG }).min(1, REQUIRED_MSG);
 
 const emptyToUndefined = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema);
 
 const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production'], { error: 'допустимо: development, test, production' }).default('development'),
-  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'], { error: 'допустимо: trace, debug, info, warn, error, fatal' }).default('info'),
+  NODE_ENV: z
+    .enum(['development', 'test', 'production'], { error: 'допустимо: development, test, production' })
+    .default('development'),
+  LOG_LEVEL: z
+    .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'], {
+      error: 'допустимо: trace, debug, info, warn, error, fatal',
+    })
+    .default('info'),
 
-  DISCORD_TOKEN: z.string({ error: 'обязателен' }).min(1),
+  DISCORD_TOKEN: requiredString(),
   DISCORD_APP_ID: snowflake,
   DISCORD_GUILD_ID: snowflake,
 
-  DATABASE_URL: z.string({ error: 'обязателен' }).min(1),
-  REDIS_URL: z.string({ error: 'обязателен' }).min(1),
+  DATABASE_URL: requiredString(),
+  REDIS_URL: requiredString(),
 
-  HTTP_PORT: z.coerce.number({ error: 'ожидается целое число порта от 1 до 65535' }).int().min(1).max(65535).default(3000),
+  HTTP_PORT: z.coerce
+    .number({ error: PORT_MSG })
+    .int(PORT_MSG)
+    .min(1, PORT_MSG)
+    .max(65535, PORT_MSG)
+    .default(3000),
   PUBLIC_BASE_URL: z.url('ожидается абсолютный URL'),
 
   STEAM_API_KEY: emptyToUndefined(z.string().min(1).optional()),
