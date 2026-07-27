@@ -35,6 +35,20 @@ describe('loadConfig', () => {
     expect(message).toContain('DISCORD_APP_ID');
   });
 
+  it('пишет сообщения по-русски и для полностью отсутствующих переменных', () => {
+    // Регрессия: второй аргумент .min()/.regex() не покрывает базовую проверку типа,
+    // из-за чего у отсутствующих переменных протекал английский текст zod.
+    let message = '';
+    try {
+      loadConfig({ DISCORD_TOKEN: 'token' });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).not.toMatch(/Invalid input/);
+    expect(message).not.toMatch(/expected string/);
+    expect(message).toContain('обязателен');
+  });
+
   it('отвергает snowflake неверного формата', () => {
     expect(() => loadConfig({ ...valid, DISCORD_APP_ID: 'не-число' })).toThrow(/DISCORD_APP_ID/);
   });
