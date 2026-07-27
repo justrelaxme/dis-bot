@@ -1,0 +1,10 @@
+# /metrics закрыт от внешнего мира: раскрывает внутренние счётчики и не должен
+# быть публичным — скрейпинг идёт изнутри сети контейнеров.
+{$BOT_DOMAIN} {
+	encode gzip
+
+	@metrics path /metrics
+	respond @metrics 404
+
+	reverse_proxy bot:3000
+}
