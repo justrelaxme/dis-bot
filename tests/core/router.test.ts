@@ -2,17 +2,17 @@ import { SlashCommandBuilder } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { Config } from '../../src/core/config.js';
 import { createRouter } from '../../src/core/commands/router.js';
-import { UserError } from '../../src/core/errors.js';
+import { ProviderError, UserError } from '../../src/core/errors.js';
 import { createLogger } from '../../src/core/logger.js';
 import { createMetrics } from '../../src/core/metrics.js';
-import type { ModuleContext } from '../../src/core/module.js';
+import type { CommandDefinition, ModuleContext } from '../../src/core/module.js';
 import { buildRegistry } from '../../src/core/registry.js';
 import { fakeChatInputInteraction } from '../helpers/interaction.js';
 
 const logger = createLogger({ LOG_LEVEL: 'fatal', NODE_ENV: 'test' } as Config);
 const ctx = { logger } as unknown as ModuleContext;
 
-function routerFor(execute: () => Promise<void>, defer?: { ephemeral: boolean }) {
+function routerFor(execute: CommandDefinition['execute'], defer?: { ephemeral: boolean }) {
   const registry = buildRegistry([
     {
       name: 'test',
@@ -98,5 +98,59 @@ describe('createRouter', () => {
 
     await expect(route(interaction)).resolves.toBeUndefined();
     expect(calls.reply).not.toHaveBeenCalled();
+  });
+
+  it('игнорирует интеракцию, не являющуюся slash-командой', async () => {
+    const route = routerFor(async () => {});
+    const { interaction, calls } = fakeChatInputInteraction('cmd');
+    Object.defineProperty(interaction, 'isChatInputCommand', { value: () => false });
+
+    await expect(route(interaction)).resolves.toBeUndefined();
+    expect(calls.reply).not.toHaveBeenCalled();
+    expect(calls.deferReply).not.toHaveBeenCalled();
+  });
+
+  it('превращает ProviderError в сообщение о недоступности сервиса без внутренних деталей', async () => {
+    const route = routerFor(async () => {
+      throw new ProviderError('502 Bad Gateway от upstream', 'riot-lol');
+    });
+    const { interaction, calls } = fakeChatInputInteraction('cmd');
+
+    await route(interaction);
+
+    const content = calls.reply.mock.calls[0]?.[0]?.content as string;
+    expect(content).toContain('riot-lol');
+    expect(content).not.toContain('502');
+    expect(content).not.toContain('Код инцидента');
+  });
+
+  it('не даёт упасть наружу, если само сообщение об ошибке не доставилось', async () => {
+    // Окно ответа Discord могло закрыться. Сообщить пользователю больше нечем,
+    // но исходная ошибка не должна быть заслонена ошибкой доставки.
+    const route = routerFor(async () => {
+      throw new Error('первичная поломка');
+    });
+    const { interaction, calls } = fakeChatInputInteraction('cmd');
+    calls.reply.mockRejectedValue(new Error('окно ответа закрыто'));
+
+    await expect(route(interaction)).resolves.toBeUndefined();
+    expect(calls.reply).toHaveBeenCalled();
+  });
+
+  it('передаёт обработчику логгер с correlationId, а не корневой', async () => {
+    // Иначе всё, что команда пишет сама, невозможно связать со строками роутера.
+    let seen: ModuleContext | undefined;
+    const route = routerFor(async (_interaction, handlerCtx) => {
+      seen = handlerCtx;
+    });
+    const { interaction } = fakeChatInputInteraction('cmd');
+
+    await route(interaction);
+
+    expect(seen).toBeDefined();
+    expect(seen!.logger).not.toBe(ctx.logger);
+    const bindings = (seen!.logger as unknown as { bindings(): Record<string, unknown> }).bindings();
+    expect(bindings['correlationId']).toBe(interaction.id);
+    expect(bindings['command']).toBe('cmd');
   });
 });

@@ -29,6 +29,11 @@ export function createRouter(deps: RouterDeps): (interaction: Interaction) => Pr
       userId: interaction.user.id,
       correlationId: interaction.id,
     });
+    // Обработчик получает контекст с этим же логгером, а не с корневым: иначе всё,
+    // что команда пишет сама, останется без correlationId, и связать её строки с
+    // строками роутера будет нечем. Дешевле сделать здесь один раз, чем повторять
+    // .child({...}) в каждой команде и надеяться, что никто не забудет.
+    const scopedCtx: ModuleContext = { ...ctx, logger: log };
     const stopTimer = metrics.commandDuration.startTimer({ command: interaction.commandName });
 
     try {
@@ -37,7 +42,7 @@ export function createRouter(deps: RouterDeps): (interaction: Interaction) => Pr
           entry.command.defer.ephemeral ? { flags: MessageFlags.Ephemeral } : {},
         );
       }
-      await entry.command.execute(interaction, ctx);
+      await entry.command.execute(interaction, scopedCtx);
       stopTimer({ outcome: 'ok' });
       log.info('команда выполнена');
     } catch (error) {
