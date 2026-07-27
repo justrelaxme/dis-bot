@@ -26,13 +26,19 @@ describe('схема ядра', () => {
   });
 
   it('запрещает участника без существующего сервера', async () => {
+    // Голый rejects.toThrow() проходит на любой ошибке, включая опечатку в имени
+    // столбца. Проверяем именно нарушение внешнего ключа Postgres: код 23503.
+    // drizzle оборачивает исходную ошибку pg в DrizzleQueryError — код и текст
+    // Postgres лежат в её .cause, а не на самой ошибке.
     await expect(
       pg.db.insert(members).values({
         guildId: '999999999999999999',
         userId: '222222222222222222',
         joinedAt: new Date(),
       }),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      cause: { code: '23503', message: expect.stringMatching(/violates foreign key/) },
+    });
   });
 
   it('пишет запись аудита с NULL в actor_id для действий бота', async () => {

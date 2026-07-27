@@ -1,3 +1,4 @@
+import { MessageFlags } from 'discord.js';
 import { describe, expect, it } from 'vitest';
 import type { ModuleContext } from '../../src/core/module.js';
 import { pingModule } from '../../src/modules/ping/index.js';
@@ -17,7 +18,7 @@ describe('модуль ping', () => {
 
     const payload = calls.reply.mock.calls[0]?.[0] as { content: string; flags: number };
     expect(payload.content).toContain('42');
-    expect(payload.flags).toBeDefined();
+    expect(payload.flags).toBe(MessageFlags.Ephemeral);
   });
 
   it('не требует defer — ответ мгновенный', () => {

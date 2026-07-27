@@ -4,7 +4,7 @@ import type { Config } from '../../src/core/config.js';
 import { createRouter } from '../../src/core/commands/router.js';
 import { ProviderError, UserError } from '../../src/core/errors.js';
 import { createLogger } from '../../src/core/logger.js';
-import { createMetrics } from '../../src/core/metrics.js';
+import { createMetrics, type Metrics } from '../../src/core/metrics.js';
 import type { CommandDefinition, ModuleContext } from '../../src/core/module.js';
 import { buildRegistry } from '../../src/core/registry.js';
 import { fakeChatInputInteraction } from '../helpers/interaction.js';
@@ -26,6 +26,34 @@ function routerFor(execute: CommandDefinition['execute'], defer?: { ephemeral: b
     },
   ]);
   return createRouter({ registry, ctx, metrics: createMetrics() });
+}
+
+/** Как routerFor, но отдаёт ещё и объект метрик — нужен тестам гистограммы длительности. */
+function routerWithMetrics(execute: CommandDefinition['execute']): { route: ReturnType<typeof createRouter>; metrics: Metrics } {
+  const metrics = createMetrics();
+  const registry = buildRegistry([
+    {
+      name: 'test',
+      commands: [
+        {
+          builder: new SlashCommandBuilder().setName('cmd').setDescription('тест'),
+          execute,
+        },
+      ],
+    },
+  ]);
+  return { route: createRouter({ registry, ctx, metrics }), metrics };
+}
+
+/** Значение `_count` гистограммы bot_command_duration_seconds для команды cmd и данного outcome. */
+async function observationCount(metrics: Metrics, outcome: 'ok' | 'error'): Promise<number | undefined> {
+  const metric = await metrics.commandDuration.get();
+  return metric.values.find(
+    (value) =>
+      value.metricName === 'bot_command_duration_seconds_count' &&
+      value.labels['command'] === 'cmd' &&
+      value.labels['outcome'] === outcome,
+  )?.value;
 }
 
 describe('createRouter', () => {
@@ -157,5 +185,27 @@ describe('createRouter', () => {
     const bindings = (seen!.logger as unknown as { bindings(): Record<string, unknown> }).bindings();
     expect(bindings['correlationId']).toBe(interaction.id);
     expect(bindings['command']).toBe('cmd');
+  });
+
+  it('фиксирует длительность команды в гистограмме с outcome ok при успехе', async () => {
+    const { route, metrics } = routerWithMetrics(async () => {});
+    const { interaction } = fakeChatInputInteraction('cmd');
+
+    await route(interaction);
+
+    await expect(observationCount(metrics, 'ok')).resolves.toBe(1);
+    await expect(observationCount(metrics, 'error')).resolves.toBeUndefined();
+  });
+
+  it('фиксирует длительность команды в гистограмме с outcome error при падении', async () => {
+    const { route, metrics } = routerWithMetrics(async () => {
+      throw new Error('поломка');
+    });
+    const { interaction } = fakeChatInputInteraction('cmd');
+
+    await route(interaction);
+
+    await expect(observationCount(metrics, 'error')).resolves.toBe(1);
+    await expect(observationCount(metrics, 'ok')).resolves.toBeUndefined();
   });
 });
