@@ -17,6 +17,8 @@ export function createLogger(config: Config, destination?: DestinationStream): L
         'config.DISCORD_TOKEN',
         'config.STEAM_API_KEY',
         'config.RIOT_API_KEY',
+        'config.DATABASE_URL',
+        'config.REDIS_URL',
         'headers.authorization',
         'headers["x-riot-token"]',
       ],
