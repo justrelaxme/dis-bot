@@ -1311,6 +1311,12 @@ const REFRESH_LOCK_MS = 30_000;
 
 export class Cache {
   private readonly redis: Redis;
+  /**
+   * Фоновые обновления — fire-and-forget для вызывающего кода `swr()`, но не для
+   * `close()`: иначе `quit()` обрывает ещё не завершённый SET/DEL посреди работы,
+   * и вместо тихого закрытия получаем "Connection is closed" в логах.
+   */
+  private readonly pendingRefreshes = new Set<Promise<void>>();
 
   constructor(
     config: Config,
@@ -1328,7 +1334,7 @@ export class Cache {
     }
 
     if (entry && age < options.staleMs) {
-      void this.refreshInBackground(key, options);
+      this.refreshInBackground(key, options);
       return { value: entry.value, stale: true, storedAt: new Date(entry.storedAt) };
     }
 
@@ -1351,10 +1357,20 @@ export class Cache {
   }
 
   async close(): Promise<void> {
+    // Дожидаемся фоновых обновлений вместо того, чтобы оборвать их разрывом соединения.
+    await Promise.allSettled(this.pendingRefreshes);
     await this.redis.quit();
   }
 
-  private async refreshInBackground<T>(key: string, options: SwrOptions<T>): Promise<void> {
+  /** Планирует обновление в фоне, не блокируя вызывающего. Лок защищает от стампида. */
+  private refreshInBackground<T>(key: string, options: SwrOptions<T>): void {
+    const task: Promise<void> = this.doRefresh(key, options).finally(() => {
+      this.pendingRefreshes.delete(task);
+    });
+    this.pendingRefreshes.add(task);
+  }
+
+  private async doRefresh<T>(key: string, options: SwrOptions<T>): Promise<void> {
     const acquired = await this.redis.set(this.lockKey(key), '1', 'PX', REFRESH_LOCK_MS, 'NX');
     if (acquired !== 'OK') return;
 
