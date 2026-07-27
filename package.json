@@ -14,7 +14,9 @@
     "test:int": "vitest run --config vitest.integration.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
-    "deploy-commands": "tsx scripts/deploy-commands.ts"
+    "deploy-commands": "tsx scripts/deploy-commands.ts",
+    "test:services:up": "node scripts/test-services.mjs up",
+    "test:services:down": "node scripts/test-services.mjs down"
   },
   "dependencies": {
     "croner": "^10.0.1",
@@ -28,8 +30,6 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@testcontainers/postgresql": "^12.0.4",
-    "@testcontainers/redis": "^12.0.4",
     "@types/node": "^24.13.3",
     "@types/pg": "^8.20.0",
     "drizzle-kit": "^0.31.10",
