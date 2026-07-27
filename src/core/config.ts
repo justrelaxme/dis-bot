@@ -1,28 +1,49 @@
 import { z } from 'zod';
 
-// Сообщение задаётся параметром схемы `{ error }`, а не вторым аргументом .regex().
-// Второй аргумент привязывается только к своей проверке и НЕ покрывает базовую проверку
-// типа: при полностью отсутствующей переменной zod сначала выдаёт invalid_type по-английски,
-// и русское сообщение недостижимо. Параметр схемы покрывает оба случая.
-const snowflake = z
-  .string({ error: 'ожидается Discord snowflake из 17–20 цифр' })
-  .regex(/^\d{17,20}$/);
+/**
+ * У zod два независимых места, откуда берётся текст ошибки, и они не перекрывают
+ * друг друга:
+ *   - `{ error }` в конструкторе схемы покрывает только базовую проверку типа
+ *     (значение отсутствует или не той природы);
+ *   - второй аргумент `.min()` / `.regex()` покрывает только своё уточнение
+ *     (значение есть и нужного типа, но не проходит проверку).
+ * Указать сообщение лишь в одном месте — значит получить английский текст zod в
+ * другом. Поэтому оно передаётся в оба и хранится константой, чтобы не разъехалось.
+ */
+const SNOWFLAKE_MSG = 'ожидается Discord snowflake из 17–20 цифр';
+const REQUIRED_MSG = 'обязателен';
+const PORT_MSG = 'ожидается целое число порта от 1 до 65535';
+
+const snowflake = z.string({ error: SNOWFLAKE_MSG }).regex(/^\d{17,20}$/, SNOWFLAKE_MSG);
+
+const requiredString = () => z.string({ error: REQUIRED_MSG }).min(1, REQUIRED_MSG);
 
 const emptyToUndefined = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema);
 
 const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production'], { error: 'допустимо: development, test, production' }).default('development'),
-  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'], { error: 'допустимо: trace, debug, info, warn, error, fatal' }).default('info'),
+  NODE_ENV: z
+    .enum(['development', 'test', 'production'], { error: 'допустимо: development, test, production' })
+    .default('development'),
+  LOG_LEVEL: z
+    .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'], {
+      error: 'допустимо: trace, debug, info, warn, error, fatal',
+    })
+    .default('info'),
 
-  DISCORD_TOKEN: z.string({ error: 'обязателен' }).min(1),
+  DISCORD_TOKEN: requiredString(),
   DISCORD_APP_ID: snowflake,
   DISCORD_GUILD_ID: snowflake,
 
-  DATABASE_URL: z.string({ error: 'обязателен' }).min(1),
-  REDIS_URL: z.string({ error: 'обязателен' }).min(1),
+  DATABASE_URL: requiredString(),
+  REDIS_URL: requiredString(),
 
-  HTTP_PORT: z.coerce.number({ error: 'ожидается целое число порта от 1 до 65535' }).int().min(1).max(65535).default(3000),
+  HTTP_PORT: z.coerce
+    .number({ error: PORT_MSG })
+    .int(PORT_MSG)
+    .min(1, PORT_MSG)
+    .max(65535, PORT_MSG)
+    .default(3000),
   PUBLIC_BASE_URL: z.url('ожидается абсолютный URL'),
 
   STEAM_API_KEY: emptyToUndefined(z.string().min(1).optional()),
