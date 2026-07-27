@@ -42,6 +42,20 @@ describe('buildRegistry', () => {
     expect(registry.jobs[0]?.moduleName).toBe('alpha');
   });
 
+  it('падает на двух модулях, объявивших одну джобу', () => {
+    // croner держит собственный глобальный реестр имён и тоже бросит на дубликате,
+    // но с указанием на croner, а не на виновные модули — поэтому проверка нужна здесь.
+    const registry = () =>
+      buildRegistry([
+        { name: 'alpha', jobs: [{ name: 'sync', cron: '*/30 * * * *', run: async () => {} }] },
+        { name: 'beta', jobs: [{ name: 'sync', cron: '*/30 * * * *', run: async () => {} }] },
+      ]);
+
+    expect(registry).toThrow(/sync/);
+    expect(registry).toThrow(/alpha/);
+    expect(registry).toThrow(/beta/);
+  });
+
   it('принимает модуль без команд и джоб', () => {
     const registry = buildRegistry([{ name: 'пустой' }]);
     expect(registry.commands.size).toBe(0);

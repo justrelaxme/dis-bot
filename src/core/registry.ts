@@ -10,6 +10,10 @@ export function buildRegistry(modules: BotModule[]): Registry {
   const seenModules = new Set<string>();
   const commands = new Map<string, { command: CommandDefinition; moduleName: string }>();
   const jobs: Array<{ job: ScheduledJob; moduleName: string }> = [];
+  // Croner держит собственный глобальный реестр имён джоб и сам бросает на дубликате —
+  // но с указанием на croner, а не на модули бота. Проверяем заранее, чтобы ошибка
+  // называла виновных, как и для команд выше.
+  const seenJobs = new Map<string, string>();
 
   for (const module of modules) {
     if (seenModules.has(module.name)) {
@@ -29,6 +33,13 @@ export function buildRegistry(modules: BotModule[]): Registry {
     }
 
     for (const job of module.jobs ?? []) {
+      const existingModuleName = seenJobs.get(job.name);
+      if (existingModuleName) {
+        throw new Error(
+          `Джоба «${job.name}» объявлена дважды: в модулях «${existingModuleName}» и «${module.name}».`,
+        );
+      }
+      seenJobs.set(job.name, module.name);
       jobs.push({ job, moduleName: module.name });
     }
   }
