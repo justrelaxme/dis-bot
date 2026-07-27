@@ -6,7 +6,7 @@
 
 **Architecture:** Модульный монолит. Тонкое ядро (`src/core/`) не знает о фичах: оно создаёт Discord-клиент, собирает модули из реестра, маршрутизирует интеракции, держит границу ошибок и предоставляет модулям `ModuleContext` с зависимостями. Модули (`src/modules/`) объявляют команды, слушателей и cron-джобы данными и общаются между собой через типизированную шину событий, а не через прямые импорты.
 
-**Tech Stack:** Node.js 24 LTS, TypeScript (strict, ESM), discord.js 14.27, PostgreSQL 16 + Drizzle ORM, Redis 7 (ioredis), Fastify, pino, zod, prom-client, croner, vitest + Testcontainers (на Podman), Podman Compose + Caddy.
+**Tech Stack:** Node.js 24 LTS, TypeScript (strict, ESM), discord.js 14.27, PostgreSQL 16 + Drizzle ORM, Redis 7 (ioredis), Fastify, pino, zod, prom-client, croner, vitest (интеграционные — на реальном Postgres и Redis из compose.test.yml), Podman Compose + Caddy.
 
 **Spec:** [docs/superpowers/specs/2026-07-27-discord-gaming-bot-design.md](../specs/2026-07-27-discord-gaming-bot-design.md)
 
@@ -15,7 +15,8 @@
 Требования ниже действуют для **каждой** задачи плана.
 
 - **Node.js `>=24.0.0`.** Версия на машине разработки — 24 LTS. `vitest 4` требует `^20 || ^22 || >=24`, discord.js — `>=18`.
-- **Контейнеры — Podman, не Docker.** Testcontainers работает с Podman через docker-совместимый сокет; `podman compose` заменяется на `podman compose`. Переменные `DOCKER_HOST` и `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` настраиваются один раз в окружении и в коде не упоминаются.
+- **Контейнеры — Podman, не Docker.** Вместо `docker compose` — `podman compose`, вместо `docker build` — `podman build`. `DOCKER_HOST` задавать **не нужно и вредно**: Podman сам публикует docker-совместимый named pipe, а явное значение вида `npipe:////./pipe/docker_engine` Node не переваривает.
+- **Интеграционные тесты подключаются к сервисам из `compose.test.yml`, а не поднимают контейнеры сами.** Testcontainers исключён: на rootless Podman он зависает после успешного health check — `start()` не возвращается и ошибки не выдаёт (проверено на живом окружении). Требование «настоящий Postgres, а не мок» сохраняется полностью, меняется только то, кто управляет жизненным циклом контейнера. Перед `npm run test:int` нужен `npm run test:services:up`; адреса переопределяются переменными `DATABASE_URL_TEST` и `REDIS_URL_TEST` — их использует CI.
 - **discord.js `14.27.x`**, Postgres `16`, Redis `7`.
 - **TypeScript закреплён на `~5.9.3`, не 7.x.** `typescript-eslint@8` требует `typescript <6.1.0`, а его версии 9+ не существует; TypeScript 7 оставил бы проект без линтера. `@types/node` — `^24`, строго под рантайм.
 - **ESM.** В `package.json` стоит `"type": "module"`, в `tsconfig` — `"module": "nodenext"`. Следствие, которое ломает сборку чаще всего: **все относительные импорты пишутся с расширением `.js`**, даже когда файл на диске `.ts` (`import { loadConfig } from './config.js'`).
@@ -58,8 +59,8 @@
 | `src/modules/ping/index.ts` | эталонный модуль-образец |
 | `scripts/migrate.ts` | применение миграций отдельным шагом |
 | `scripts/deploy-commands.ts` | guild-scoped регистрация slash-команд |
-| `tests/helpers/postgres.ts` | Testcontainers-хелпер для интеграционных тестов |
-| `tests/helpers/redis.ts` | Testcontainers-хелпер для Redis |
+| `tests/helpers/postgres.ts` | подключение к тестовому Postgres, миграции, очистка таблиц |
+| `tests/helpers/redis.ts` | проверка доступности тестового Redis и сброс базы |
 | `tests/helpers/interaction.ts` | фейковая интеракция для тестов хендлеров |
 | `Dockerfile`, `docker-compose.yml`, `Caddyfile`, `.github/workflows/ci.yml` | деплой и CI |
 
@@ -851,48 +852,107 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 8: Создать хелпер `tests/helpers/postgres.ts`**
+- [ ] **Step 8: Убрать Testcontainers из зависимостей и поднять сервисы для тестов**
+
+**Почему не Testcontainers.** На rootless Podman библиотека зависает: контейнер поднимается и проходит health check, но `start()` не возвращается — процесс висит до таймаута без единой ошибки. Проверено на живом окружении. Требование спеки — «интеграционные тесты идут на настоящем Postgres, а не на моке» — сохраняется полностью: тесты подключаются к настоящему Postgres 16 в контейнере, просто его жизненным циклом управляет compose, а не библиотека. Побочная выгода: между прогонами контейнер не пересоздаётся, и набор идёт быстрее.
+
+Удалить из `devDependencies` пакета: `@testcontainers/postgresql` и `@testcontainers/redis`, затем `npm install`.
+
+Создать `compose.test.yml`:
+
+```yaml
+# Сервисы только для тестов. Порты нестандартные, чтобы не конфликтовать с
+# возможным локальным Postgres и с продовым стеком из docker-compose.yml.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: bot
+      POSTGRES_DB: disbot_test
+    ports:
+      - '55432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bot -d disbot_test']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '56379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+```
+
+Добавить в `scripts` пакета:
+
+```json
+    "test:services:up": "podman compose -f compose.test.yml up -d --wait",
+    "test:services:down": "podman compose -f compose.test.yml down -v",
+```
+
+- [ ] **Step 9: Создать хелпер `tests/helpers/postgres.ts`**
 
 ```ts
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { afterAll, beforeAll } from 'vitest';
 import { loadConfig } from '../../src/core/config.js';
 import { createDatabase, type Database } from '../../src/core/db/client.js';
+
+const DEFAULT_TEST_DATABASE_URL = 'postgres://bot:bot@localhost:55432/disbot_test';
 
 interface PostgresFixture {
   get db(): Database;
 }
 
 /**
- * Поднимает настоящий Postgres в контейнере и применяет миграции.
+ * Подключается к настоящему Postgres из `compose.test.yml` и применяет миграции.
  * Мок здесь не годится: половина проверяемого поведения живёт в ограничениях схемы.
+ *
+ * Таблицы очищаются один раз на файл, а не перед каждым тестом: тесты внутри файла
+ * намеренно опираются на данные, созданные в его же beforeAll. Прогон файлов
+ * последовательный (`fileParallelism: false`), поэтому файлы друг другу не мешают.
  */
 export function withPostgres(): PostgresFixture {
-  let container: StartedPostgreSqlContainer;
   let db: Database;
   let close: () => Promise<void>;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('postgres:16-alpine').start();
     const config = loadConfig({
       DISCORD_TOKEN: 'test',
       DISCORD_APP_ID: '123456789012345678',
       DISCORD_GUILD_ID: '876543210987654321',
-      DATABASE_URL: container.getConnectionUri(),
-      REDIS_URL: 'redis://localhost:6379',
+      DATABASE_URL: process.env['DATABASE_URL_TEST'] ?? DEFAULT_TEST_DATABASE_URL,
+      REDIS_URL: 'redis://localhost:56379',
       PUBLIC_BASE_URL: 'https://test.example.com',
       NODE_ENV: 'test',
     });
+
     const created = createDatabase(config);
     db = created.db;
     close = created.close;
+
+    try {
+      await db.execute(sql`select 1`);
+    } catch (error) {
+      throw new Error(
+        `Тестовый Postgres недоступен по ${config.DATABASE_URL}. ` +
+          `Подними сервисы: npm run test:services:up. Исходная ошибка: ${(error as Error).message}`,
+      );
+    }
+
     await migrate(db, { migrationsFolder: 'src/core/db/migrations' });
+    await truncateAll(db);
   });
 
   afterAll(async () => {
     await close?.();
-    await container?.stop();
   });
 
   return {
@@ -901,9 +961,22 @@ export function withPostgres(): PostgresFixture {
     },
   };
 }
+
+/** Чистит все таблицы схемы, кроме журнала миграций drizzle. */
+async function truncateAll(db: Database): Promise<void> {
+  const result = await db.execute<{ tablename: string }>(sql`
+    select tablename from pg_tables
+    where schemaname = 'public' and tablename not like '__drizzle%'
+  `);
+
+  const tables = result.rows.map((row) => `"${row.tablename}"`);
+  if (tables.length === 0) return;
+
+  await db.execute(sql.raw(`truncate table ${tables.join(', ')} restart identity cascade`));
+}
 ```
 
-- [ ] **Step 9: Написать падающий интеграционный тест**
+- [ ] **Step 10: Написать падающий интеграционный тест**
 
 Файл `tests/integration/db/core-schema.test.ts`:
 
@@ -958,15 +1031,19 @@ describe('схема ядра', () => {
 });
 ```
 
-- [ ] **Step 10: Запустить интеграционные тесты**
+- [ ] **Step 11: Запустить интеграционные тесты**
 
-Run: `npm run test:int`
-Expected: 4 теста PASS. Требуется запущенная podman-машина (`podman machine start`). Первый прогон дольше — тянется образ `postgres:16-alpine`.
+Run: `npm run test:services:up && npm run test:int`
+Expected: 4 теста PASS. Требуется запущенная podman-машина (`podman machine start`).
 
-- [ ] **Step 11: Коммит**
+Проверь заодно, что сообщение о недоступном Postgres внятное: останови сервисы
+(`npm run test:services:down`), запусти `npm run test:int` и убедись, что в ошибке есть
+подсказка `npm run test:services:up`, а не сырой `ECONNREFUSED`. Затем подними сервисы обратно.
+
+- [ ] **Step 12: Коммит**
 
 ```bash
-git add src/core/db drizzle.config.ts scripts/migrate.ts vitest.integration.config.ts tests/helpers/postgres.ts tests/integration/db/core-schema.test.ts
+git add src/core/db drizzle.config.ts scripts/migrate.ts vitest.integration.config.ts compose.test.yml package.json package-lock.json tests/helpers/postgres.ts tests/integration/db/core-schema.test.ts
 git commit -m "feat: схема ядра, клиент Postgres и миграции на Drizzle"
 ```
 
@@ -985,27 +1062,43 @@ git commit -m "feat: схема ядра, клиент Postgres и миграц�
 - [ ] **Step 1: Создать хелпер `tests/helpers/redis.ts`**
 
 ```ts
-import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
-import { afterAll, beforeAll } from 'vitest';
+import { Redis } from 'ioredis';
+import { beforeAll } from 'vitest';
+
+const DEFAULT_TEST_REDIS_URL = 'redis://localhost:56379';
 
 interface RedisFixture {
   get url(): string;
 }
 
+/**
+ * Отдаёт адрес настоящего Redis из `compose.test.yml`, предварительно убедившись,
+ * что он отвечает. Жизненным циклом контейнера управляет compose, а не тест:
+ * Testcontainers на rootless Podman зависает после health check.
+ */
 export function withRedis(): RedisFixture {
-  let container: StartedRedisContainer;
+  const url = process.env['REDIS_URL_TEST'] ?? DEFAULT_TEST_REDIS_URL;
 
   beforeAll(async () => {
-    container = await new RedisContainer('redis:7-alpine').start();
-  }, 120_000);
-
-  afterAll(async () => {
-    await container?.stop();
+    const probe = new Redis(url, { maxRetriesPerRequest: 1, lazyConnect: true });
+    try {
+      await probe.connect();
+      await probe.ping();
+      // Чистим за предыдущими прогонами: ключи кэша и локи не должны перетекать.
+      await probe.flushdb();
+    } catch (error) {
+      throw new Error(
+        `Тестовый Redis недоступен по ${url}. ` +
+          `Подними сервисы: npm run test:services:up. Исходная ошибка: ${(error as Error).message}`,
+      );
+    } finally {
+      probe.disconnect();
+    }
   });
 
   return {
     get url() {
-      return container.getConnectionUrl();
+      return url;
     },
   };
 }
@@ -2882,6 +2975,24 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    # Сервисы поднимает сам runner: podman в CI не нужен, а образы те же.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bot
+          POSTGRES_PASSWORD: bot
+          POSTGRES_DB: disbot_test
+        ports: ['55432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bot -d disbot_test"
+          --health-interval 3s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['56379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -2890,6 +3001,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:int
+        env:
+          DATABASE_URL_TEST: postgres://bot:bot@localhost:55432/disbot_test
+          REDIS_URL_TEST: redis://localhost:56379
 ```
 
 - [ ] **Step 6: Создать `README.md`**
