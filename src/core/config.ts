@@ -13,10 +13,16 @@ import { z } from 'zod';
 const SNOWFLAKE_MSG = 'ожидается Discord snowflake из 17–20 цифр';
 const REQUIRED_MSG = 'обязателен';
 const PORT_MSG = 'ожидается целое число порта от 1 до 65535';
+const DATABASE_URL_MSG = 'ожидается URL Postgres вида postgres://... или postgresql://...';
+const REDIS_URL_MSG = 'ожидается URL Redis вида redis://... или rediss://...';
 
 const snowflake = z.string({ error: SNOWFLAKE_MSG }).regex(/^\d{17,20}$/, SNOWFLAKE_MSG);
 
 const requiredString = () => z.string({ error: REQUIRED_MSG }).min(1, REQUIRED_MSG);
+
+const databaseUrl = z.string({ error: DATABASE_URL_MSG }).regex(/^postgres(ql)?:\/\/.+/, DATABASE_URL_MSG);
+
+const redisUrl = z.string({ error: REDIS_URL_MSG }).regex(/^rediss?:\/\/.+/, REDIS_URL_MSG);
 
 const emptyToUndefined = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema);
@@ -35,8 +41,8 @@ const envSchema = z.object({
   DISCORD_APP_ID: snowflake,
   DISCORD_GUILD_ID: snowflake,
 
-  DATABASE_URL: requiredString(),
-  REDIS_URL: requiredString(),
+  DATABASE_URL: databaseUrl,
+  REDIS_URL: redisUrl,
 
   HTTP_PORT: z.coerce
     .number({ error: PORT_MSG })

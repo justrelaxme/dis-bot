@@ -44,12 +44,26 @@ describe('loadConfig', () => {
     expect(config.RIOT_API_KEY).toBeUndefined();
   });
 
+  it('отвергает DATABASE_URL без протокола Postgres', () => {
+    expect(() => loadConfig({ ...valid, DATABASE_URL: 'mysql://bot:bot@localhost:5432/disbot' })).toThrow(
+      /Postgres/,
+    );
+  });
+
+  it('отвергает REDIS_URL без протокола Redis', () => {
+    expect(() => loadConfig({ ...valid, REDIS_URL: 'http://localhost:6379' })).toThrow(/Redis/);
+  });
+
   // Проверка имени поля в сообщении ничего не говорит о языке: «DATABASE_URL» есть и в
   // русском, и в английском варианте. Эти тесты пиннят именно язык, причём на обоих путях
   // zod — «значения нет» и «значение есть, но не проходит проверку», — потому что источник
   // текста у них разный и починка одного ломает другой.
+  //
+  // Первая строка нарочно опускает и DISCORD_TOKEN: с тех пор как DATABASE_URL и
+  // REDIS_URL получили собственные сообщения про протокол, они больше не годятся для
+  // проверки текста «обязателен» — эту роль теперь несёт отсутствующий DISCORD_TOKEN.
   describe.each([
-    ['переменная отсутствует', { DISCORD_TOKEN: 'token' }, 'обязателен'],
+    ['переменная отсутствует', {}, 'обязателен'],
     ['snowflake присутствует, но кривой', { ...valid, DISCORD_APP_ID: 'не-число' }, 'snowflake'],
     ['обязательная строка пуста', { ...valid, DISCORD_TOKEN: '' }, 'обязателен'],
     ['порт вне диапазона', { ...valid, HTTP_PORT: '99999' }, 'порта'],
