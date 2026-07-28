@@ -4,6 +4,8 @@ on:
   push:
     branches: ['**']
   pull_request:
+  schedule:
+    - cron: '0 4 * * *'
 
 jobs:
   check:
@@ -50,3 +52,18 @@ jobs:
         env:
           DATABASE_URL_TEST: postgres://bot:bot@localhost:55432/disbot_test
           REDIS_URL_TEST: redis://localhost:56379
+
+  contract:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:contract
+        env:
+          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
+          RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}

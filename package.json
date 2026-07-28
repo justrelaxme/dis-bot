@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:int": "vitest run --config vitest.integration.config.ts",
+    "test:contract": "vitest run --config vitest.contract.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
     "deploy-commands": "tsx scripts/deploy-commands.ts",

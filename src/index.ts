@@ -4,16 +4,22 @@ import { createCache } from './core/cache.js';
 import { createDiscordClient } from './core/client.js';
 import { createRouter } from './core/commands/router.js';
 import { loadConfig } from './core/config.js';
+import { createCooldown } from './core/cooldown.js';
 import { createDatabase } from './core/db/client.js';
 import { EventBus } from './core/events/bus.js';
+import { createFetchClient } from './core/http/fetch-client.js';
 import { createHttpServer } from './core/http/server.js';
 import { createLogger } from './core/logger.js';
 import { createMetrics } from './core/metrics.js';
 import type { ModuleContext } from './core/module.js';
+import { createRateLimiter } from './core/rate-limit.js';
 import { buildRegistry } from './core/registry.js';
 import { createScheduler } from './core/scheduler.js';
 import { createShutdown } from './core/shutdown.js';
-import { modules } from './modules.js';
+import { buildModules } from './modules.js';
+import { registerSteamCallback } from './modules/identity/http/steam-callback.js';
+import { createProviderRegistry } from './modules/identity/providers/index.js';
+import { createLinkingService } from './modules/identity/services/linking.js';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -39,6 +45,26 @@ const bus = new EventBus(logger);
 const metrics = createMetrics();
 const client = createDiscordClient();
 
+const cooldown = createCooldown({ redisUrl: config.REDIS_URL, logger });
+const rateLimiter = createRateLimiter({ redisUrl: config.REDIS_URL, logger });
+const fetchClientFor = (provider: string) => createFetchClient({ provider, logger, metrics });
+
+const modules = buildModules({
+  db,
+  bus,
+  logger,
+  config,
+  cooldown,
+  rateLimiter,
+  fetchClientFor,
+  fetchMember: async (guildId, userId) => {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return null;
+    // Участник мог покинуть сервер между синхронизацией и выдачей роли.
+    return guild.members.fetch(userId).catch(() => null);
+  },
+});
+
 const registry = buildRegistry(modules);
 
 const ctx: ModuleContext = { client, db, cache, logger, bus, config };
@@ -56,6 +82,26 @@ const http = createHttpServer({
     cache: async () => {
       await cache.swr('healthz', { ttlMs: 5_000, staleMs: 10_000, load: async () => 'ok' });
     },
+  },
+});
+
+registerSteamCallback(http, {
+  logger,
+  linking: createLinkingService({ db }),
+  providers: createProviderRegistry({
+    publicBaseUrl: config.PUBLIC_BASE_URL,
+    ...(config.STEAM_API_KEY ? { steamApiKey: config.STEAM_API_KEY } : {}),
+    ...(config.RIOT_API_KEY ? { riotApiKey: config.RIOT_API_KEY } : {}),
+    steamClient: fetchClientFor('steam'),
+    openDotaClient: fetchClientFor('opendota'),
+    riotClient: fetchClientFor('riot'),
+    rateLimiter,
+  }),
+  notify: async (userId, text) => {
+    const user = await client.users.fetch(userId).catch(() => null);
+    await user?.send(text).catch(() => {
+      // Личные сообщения могут быть закрыты — это не ошибка бота.
+    });
   },
 });
 
