@@ -34,6 +34,16 @@ describe('extractSteamId', () => {
   it('возвращает null, если идентификатор не похож на SteamID64', () => {
     expect(extractSteamId('https://steamcommunity.com/openid/id/не-число')).toBeNull();
   });
+
+  it('возвращает null для чужого домена, подогнанного по длине под Steam', () => {
+    // Префикс Steam — ровно 37 символов, столько же в этом адресе. Без проверки домена
+    // slice() отрезал бы ровно 17 цифр и подделка прошла бы как настоящий SteamID64.
+    expect(extractSteamId('https://notsteamcommun.com/openid/id/76561198000000001')).toBeNull();
+  });
+
+  it('возвращает null для верного домена с чужим путём', () => {
+    expect(extractSteamId('https://steamcommunity.com/openid/ID/76561198000000001')).toBeNull();
+  });
 });
 
 describe('verifySteamAssertion', () => {
@@ -79,6 +89,17 @@ describe('verifySteamAssertion', () => {
   it('отвергает claimed_id с чужого домена, не обращаясь к сети', async () => {
     const params = validParams();
     params.set('openid.claimed_id', 'https://evil.example.com/openid/id/76561198000000001');
+    const fetchMock = vi.fn();
+
+    await expect(verifySteamAssertion(params, { fetch: fetchMock as unknown as typeof fetch })).rejects.toThrow(
+      ProviderError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('не ходит в сеть и на чужом домене, подогнанном по длине под Steam', async () => {
+    const params = validParams();
+    params.set('openid.claimed_id', 'https://notsteamcommun.com/openid/id/76561198000000001');
     const fetchMock = vi.fn();
 
     await expect(verifySteamAssertion(params, { fetch: fetchMock as unknown as typeof fetch })).rejects.toThrow(
