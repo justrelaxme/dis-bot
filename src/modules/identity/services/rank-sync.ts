@@ -23,6 +23,13 @@ export interface RankSyncService {
 export function createRankSyncService(deps: RankSyncDeps): RankSyncService {
   const { db, linking, providers, bus, logger } = deps;
 
+  // Общая точка обновления метки времени: используется на пути «нечего опрашивать»,
+  // на пути успеха и на пути сбоя (syncBatch) — чтобы все три места двигали updatedAt
+  // одинаково и не расходились между собой.
+  async function touch(accountId: number): Promise<void> {
+    await db.update(gameAccounts).set({ updatedAt: new Date() }).where(eq(gameAccounts.id, accountId));
+  }
+
   async function syncAccount(account: GameAccountRow): Promise<RankInfo[]> {
     const provider = providers.get(account.provider);
     // canFetchRank — обычный boolean, не type predicate: он не сужает необязательный
@@ -30,6 +37,11 @@ export function createRankSyncService(deps: RankSyncDeps): RankSyncService {
     const fetchRank = provider?.fetchRank;
     if (!provider || !canFetchRank(provider) || !fetchRank) {
       // Ручной ранг обновляет сам пользователь, планировщику здесь нечего опрашивать.
+      // Метка времени всё равно двигается: без этого аккаунт без fetchRank (ручной
+      // ранг или провайдер, которого нет в реестре) навсегда останется в голове
+      // очереди syncBatch (сортировка по updatedAt) и будет тихо монополизировать
+      // каждую следующую пачку — без единой ошибки в логе.
+      await touch(account.id);
       return [];
     }
 
@@ -58,7 +70,7 @@ export function createRankSyncService(deps: RankSyncDeps): RankSyncService {
 
     // Даже когда ранг не изменился, отметка времени обновляется: иначе один и тот же
     // аккаунт навсегда останется первым в очереди пачки (сортировка по updatedAt).
-    await db.update(gameAccounts).set({ updatedAt: new Date() }).where(eq(gameAccounts.id, account.id));
+    await touch(account.id);
 
     return fresh;
   }
@@ -84,7 +96,7 @@ export function createRankSyncService(deps: RankSyncDeps): RankSyncService {
         // Отметка времени двигается и при сбое: иначе постоянно падающий аккаунт
         // (просроченный ключ, заблокированный профиль) навсегда займёт голову очереди
         // и будет монополизировать каждую следующую пачку.
-        await db.update(gameAccounts).set({ updatedAt: new Date() }).where(eq(gameAccounts.id, account.id));
+        await touch(account.id);
       }
     }
 

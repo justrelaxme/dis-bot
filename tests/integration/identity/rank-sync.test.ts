@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Config } from '../../../src/core/config.js';
 import { guilds } from '../../../src/core/db/schema/core.js';
@@ -5,7 +6,7 @@ import { EventBus } from '../../../src/core/events/bus.js';
 import { ProviderError } from '../../../src/core/errors.js';
 import { createLogger } from '../../../src/core/logger.js';
 import type { GameProvider, RankInfo } from '../../../src/modules/identity/providers/provider.js';
-import type { ProviderId } from '../../../src/modules/identity/schema.js';
+import { gameAccounts, type ProviderId } from '../../../src/modules/identity/schema.js';
 import { createLinkingService } from '../../../src/modules/identity/services/linking.js';
 import { createRankSyncService } from '../../../src/modules/identity/services/rank-sync.js';
 import { withPostgres } from '../../helpers/postgres.js';
@@ -173,6 +174,77 @@ describe('RankSyncService', () => {
     // И сохранённого «пустого» ранга тоже нет — сбой не оставил после себя снимок.
     const latest = await linking.latestRanks(account.id);
     expect(latest).toEqual([]);
+  });
+
+  // Регресс (раунд исправлений 1): ранний выход syncAccount для аккаунта без fetchRank
+  // (ручной ранг или провайдер не в реестре) не двигал updatedAt — такой аккаунт навсегда
+  // оставался в голове очереди syncBatch и монополизировал каждую следующую пачку, тихо
+  // не пуская к синхронизации остальные аккаунты (synced рос, failed — нет, ошибки в
+  // логе тоже нет). Тест ловит именно голодание очереди, а не сам факт обновления поля:
+  // проверяем, что ВТОРОЙ вызов syncBatch(1) берёт другой аккаунт, а не тот же самый.
+  it('не морит очередь голодом: аккаунт без fetchRank не занимает пачку навсегда', async () => {
+    const manual: GameProvider = {
+      id: 'riot-valorant',
+      capabilities: { verification: 'none', rank: 'manual' },
+      fetchProfile: async () => ({ externalId: 'x', displayName: 'x' }),
+    };
+    const fetchRankSpy = vi.fn(async () => [rank('SILVER', 'I')]);
+    const apiProvider: GameProvider = {
+      id: 'riot-lol',
+      capabilities: { verification: 'riot-third-party-code', rank: 'api' },
+      fetchProfile: async () => ({ externalId: 'x', displayName: 'x' }),
+      fetchRank: fetchRankSpy,
+    };
+
+    const linking = createLinkingService({ db: pg.db });
+    const sync = createRankSyncService({
+      db: pg.db,
+      linking,
+      providers: new Map([
+        ['riot-valorant', manual],
+        ['riot-lol', apiProvider],
+      ]),
+      bus: new EventBus(logger),
+      logger,
+    });
+
+    await linking.ensureUser('600000000000000030');
+    const manualId = await linking.linkAccount(
+      '600000000000000030',
+      'riot-valorant',
+      { externalId: 'Manual#EUW', displayName: 'Manual#EUW', verificationMethod: 'manual' },
+      false,
+    );
+
+    await linking.ensureUser('600000000000000031');
+    const apiId = await linking.linkAccount(
+      '600000000000000031',
+      'riot-lol',
+      { externalId: 'PUUID-31', displayName: 'a#b', region: 'euw1', verificationMethod: 'riot-third-party-code' },
+      true,
+    );
+
+    // Форсируем порядок очереди явными метками времени: ручной аккаунт заведомо
+    // старше API-аккаунта, чтобы первая пачка гарантированно взяла именно его.
+    await pg.db
+      .update(gameAccounts)
+      .set({ updatedAt: new Date(Date.now() - 120_000) })
+      .where(eq(gameAccounts.id, manualId));
+    await pg.db
+      .update(gameAccounts)
+      .set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(eq(gameAccounts.id, apiId));
+
+    const first = await sync.syncBatch(1);
+    expect(first.synced + first.failed).toBe(1);
+    // Первая пачка обязана взять именно ручной аккаунт (он старше) — fetchRank ещё не звали.
+    expect(fetchRankSpy).not.toHaveBeenCalled();
+
+    const second = await sync.syncBatch(1);
+    expect(second.synced + second.failed).toBe(1);
+    // Если бы updatedAt ручного аккаунта не сдвинулся на первом вызове, вторая пачка
+    // снова взяла бы его же — и fetchRank так и не был бы вызван ни разу.
+    expect(fetchRankSpy).toHaveBeenCalledTimes(1);
   });
 
   it('берёт в пачку аккаунты с самым старым updatedAt и не больше лимита', async () => {
