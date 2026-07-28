@@ -1,0 +1,45 @@
+import type { RankInfo } from '../providers/provider.js';
+import { DOTA_MEDALS } from './dota.js';
+import { RIOT_TIERS, VALORANT_TIERS } from './riot.js';
+
+const DIVISION_ORDER: Record<string, number> = { IV: 0, III: 1, II: 2, I: 3, '1': 0, '2': 1, '3': 2, '4': 3, '5': 4 };
+
+const TIER_POINTS = 1_000;
+const DIVISION_POINTS = 100;
+
+function tierIndex(rank: RankInfo): number {
+  if (!rank.tier) return -1;
+  const scales = rank.scale === 'dota-mmr' ? [DOTA_MEDALS] : [RIOT_TIERS, VALORANT_TIERS];
+  for (const scale of scales) {
+    const index = (scale as readonly string[]).indexOf(rank.tier);
+    if (index >= 0) return index;
+  }
+  return -1;
+}
+
+/**
+ * Сопоставимое число для порогов ролей и лидербордов.
+ * Ноль означает «ранга нет» — так порог «Platinum и выше» не пропустит unranked.
+ */
+export function rankScore(rank: RankInfo): number {
+  const tier = tierIndex(rank);
+  if (tier < 0) return 0;
+
+  const division = rank.division ? (DIVISION_ORDER[rank.division] ?? 0) : 0;
+  const points = rank.points ?? 0;
+  // Очки внутри дивизиона ограничены сотней, чтобы не перескочить дивизион.
+  return tier * TIER_POINTS + division * DIVISION_POINTS + Math.min(points, DIVISION_POINTS - 1);
+}
+
+/**
+ * Изменением считается смена тира или дивизиона, а у тиров без дивизионов —
+ * ещё и сдвиг очков. Дрейф LP внутри дивизиона изменением не является: иначе
+ * rank.changed срабатывал бы после каждого матча и перевыдавал роли впустую.
+ */
+export function hasRankChanged(previous: RankInfo | null, next: RankInfo): boolean {
+  if (!previous) return true;
+  if (previous.tier !== next.tier) return true;
+  if (previous.division !== next.division) return true;
+  if (next.division === null && previous.points !== next.points) return true;
+  return false;
+}
