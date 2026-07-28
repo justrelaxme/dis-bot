@@ -56,6 +56,7 @@ const modules = buildModules({
   config,
   cooldown,
   rateLimiter,
+  cache,
   fetchClientFor,
   fetchMember: async (guildId, userId) => {
     const guild = client.guilds.cache.get(guildId);
@@ -96,6 +97,7 @@ registerSteamCallback(http, {
     openDotaClient: fetchClientFor('opendota'),
     riotClient: fetchClientFor('riot'),
     rateLimiter,
+    cache,
   }),
   notify: async (userId, text) => {
     const user = await client.users.fetch(userId).catch(() => null);

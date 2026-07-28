@@ -5,6 +5,8 @@ import { buildProfileCard, type ProfileEntry } from '../render/profile-card.js';
 import type { IdentityDeps } from './link.js';
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
+/** Двойной интервал cron-синхронизации: за это время аккаунт обязан был обновиться. */
+const STALE_AFTER_MS = 60 * 60 * 1_000;
 
 export function createProfileCommand(deps: IdentityDeps): CommandDefinition {
   return {
@@ -29,7 +31,8 @@ export function createProfileCommand(deps: IdentityDeps): CommandDefinition {
         for (const rank of ranks) {
           previous.set(rank.mode, await deps.linking.rankAt(account.id, rank.mode, since));
         }
-        entries.push({ account, ranks, previous });
+        const isStale = Date.now() - account.updatedAt.getTime() > STALE_AFTER_MS;
+        entries.push({ account, ranks, previous, ...(isStale ? { staleSince: account.updatedAt } : {}) });
       }
 
       const card = buildProfileCard({

@@ -1,4 +1,5 @@
 import { REST, Routes } from 'discord.js';
+import type { Cache } from '../src/core/cache.js';
 import { loadConfig } from '../src/core/config.js';
 import type { Database } from '../src/core/db/client.js';
 import { EventBus } from '../src/core/events/bus.js';
@@ -10,10 +11,11 @@ const config = loadConfig();
 const logger = createLogger(config);
 
 // Скрипту нужны только билдеры команд (entry.command.builder.toJSON() ниже) — ни
-// один метод БД, шины или заглушек не вызывается ни разу. Поэтому БД — пустая
-// заглушка (никогда не разыменовывается), а шина — настоящий, но бездействующий
-// EventBus (дешевле создать реальный, чем городить ещё один каст).
+// один метод БД, шины, кэша или заглушек не вызывается ни разу. Поэтому БД и
+// кэш — пустые заглушки (никогда не разыменовываются), а шина — настоящий, но
+// бездействующий EventBus (дешевле создать реальный, чем городить ещё один каст).
 const db = {} as unknown as Database;
+const cache = {} as unknown as Cache;
 const bus = new EventBus(logger);
 
 const modules = buildModules({
@@ -23,6 +25,7 @@ const modules = buildModules({
   config,
   cooldown: { hit: async () => ({ allowed: true, retryAfterMs: 0 }), close: async () => {} },
   rateLimiter: { acquire: async () => {}, close: async () => {} },
+  cache,
   fetchClientFor: () => ({ json: async () => ({}) }) as never,
   fetchMember: async () => null,
 });

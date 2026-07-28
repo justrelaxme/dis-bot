@@ -1,4 +1,5 @@
 import type { GuildMember } from 'discord.js';
+import type { Cache } from '../../core/cache.js';
 import type { Config } from '../../core/config.js';
 import type { Cooldown } from '../../core/cooldown.js';
 import type { Database } from '../../core/db/client.js';
@@ -28,6 +29,7 @@ export interface IdentityModuleDeps {
   config: Config;
   cooldown: Cooldown;
   rateLimiter: RateLimiter;
+  cache: Cache;
   /** Отдельный клиент на провайдера: у каждого свой circuit breaker. */
   fetchClientFor: (provider: string) => FetchClient;
   /** Поиск участника сервера. Возвращает null, если он ушёл с сервера. */
@@ -45,6 +47,7 @@ export function createIdentityModule(deps: IdentityModuleDeps): BotModule {
     openDotaClient: deps.fetchClientFor('opendota'),
     riotClient: deps.fetchClientFor('riot'),
     rateLimiter: deps.rateLimiter,
+    cache: deps.cache,
   });
   const rankSync = createRankSyncService({
     db: deps.db,

@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { GuildMember } from 'discord.js';
+import type { Cache } from '../../../src/core/cache.js';
 import type { Config } from '../../../src/core/config.js';
 import { guilds } from '../../../src/core/db/schema/core.js';
 import { EventBus } from '../../../src/core/events/bus.js';
@@ -28,6 +29,11 @@ function moduleWith() {
     } as Config,
     cooldown: { hit: vi.fn(async () => ({ allowed: true, retryAfterMs: 0 })), close: vi.fn(async () => {}) },
     rateLimiter: { acquire: vi.fn(async () => {}), close: vi.fn(async () => {}) },
+    // Тесты этого файла не дёргают providers registry (fetchProfile/fetchRank) —
+    // только имя модуля, список команд, cron джобы и обработчик rank.changed,
+    // который читает linking/roles, а не providers. Поэтому cache.swr здесь
+    // никогда не вызывается, и пустая заглушка безопасна.
+    cache: {} as unknown as Cache,
     fetchClientFor: () => ({ json: vi.fn() }),
     fetchMember: vi.fn(async () => null),
   });
@@ -157,6 +163,8 @@ describe('обработчик rank.changed уважает verified_at (закр
       } as Config,
       cooldown: { hit: vi.fn(async () => ({ allowed: true, retryAfterMs: 0 })), close: vi.fn(async () => {}) },
       rateLimiter: { acquire: vi.fn(async () => {}), close: vi.fn(async () => {}) },
+      // См. пояснение в moduleWith() выше — providers registry здесь не используется.
+      cache: {} as unknown as Cache,
       fetchClientFor: () => ({ json: vi.fn() }),
       fetchMember: vi.fn(async () => member),
     });

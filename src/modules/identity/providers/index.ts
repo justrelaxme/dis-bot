@@ -1,3 +1,4 @@
+import type { Cache } from '../../../core/cache.js';
 import { UserError } from '../../../core/errors.js';
 import type { FetchClient } from '../../../core/http/fetch-client.js';
 import type { RateLimiter } from '../../../core/rate-limit.js';
@@ -6,6 +7,7 @@ import type { GameProvider } from './provider.js';
 import { createRiotProvider } from './riot.js';
 import { createSteamProvider } from './steam.js';
 import { createValorantProvider } from './valorant.js';
+import { withCache } from './with-cache.js';
 
 export interface ProviderRegistryDeps {
   publicBaseUrl: string;
@@ -15,6 +17,7 @@ export interface ProviderRegistryDeps {
   openDotaClient: FetchClient;
   riotClient: FetchClient;
   rateLimiter: RateLimiter;
+  cache: Cache;
 }
 
 /**
@@ -25,6 +28,9 @@ export interface ProviderRegistryDeps {
  * Отсутствие ключей Steam/Riot в окружении — законное состояние: createSteamProvider
  * и createRiotProvider проверяют ключ только внутри своих методов, а не при создании,
  * поэтому сборка реестра не падает, даже если ни один ключ не задан.
+ *
+ * Каждый провайдер оборачивается withCache (Task 18) перед попаданием в реестр:
+ * весь код бота получает уже кэширующую версию и не должен знать о Cache вообще.
  */
 export function createProviderRegistry(deps: ProviderRegistryDeps): Map<ProviderId, GameProvider> {
   const providers: GameProvider[] = [
@@ -50,7 +56,7 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): Map<Provider
     createValorantProvider(),
   ];
 
-  return new Map(providers.map((provider) => [provider.id, provider]));
+  return new Map(providers.map((provider) => [provider.id, withCache(provider, deps.cache)]));
 }
 
 /**

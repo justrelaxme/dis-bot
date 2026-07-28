@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Cache } from '../../../../src/core/cache.js';
 import { UserError } from '../../../../src/core/errors.js';
 import type { FetchClient } from '../../../../src/core/http/fetch-client.js';
 import type { RateLimiter } from '../../../../src/core/rate-limit.js';
@@ -91,12 +92,19 @@ const rateLimiterStub: RateLimiter = {
   async close(): Promise<void> {},
 };
 
+// Сборка реестра оборачивает каждого провайдера withCache (Task 18), но сама по
+// себе cache.swr не вызывает — обращение к Redis начнётся только при вызове
+// fetchProfile/fetchRank на уже собранном провайдере, чего тесты ниже не делают.
+// Поэтому пустая заглушка безопасна и не требует настоящего Redis в юнит-тесте.
+const cacheStub = {} as unknown as Cache;
+
 const registryDeps: ProviderRegistryDeps = {
   publicBaseUrl: 'https://bot.example.test',
   steamClient: fetchClientStub,
   openDotaClient: fetchClientStub,
   riotClient: fetchClientStub,
   rateLimiter: rateLimiterStub,
+  cache: cacheStub,
 };
 
 describe('createProviderRegistry', () => {
