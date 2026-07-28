@@ -30,11 +30,11 @@ export function rankScore(rank: RankInfo): number {
 
   // Для dota-mmr очки не учитываются: место в лидерборде — отдельное измерение.
   // Для других шкал очки ограничиваются, чтобы не перескочить следующую ступеньку:
-  // - с дивизионом: следующая ступенька — дивизион, обрезаем в DIVISION_POINTS-1
-  // - без дивизиона: следующая ступенька — тир, обрезаем в TIER_POINTS-1
+  // - у ранга с дивизионом: следующая ступенька — дивизион, обрезаем в DIVISION_POINTS-1
+  // - у ранга без дивизиона: следующая ступенька — тир, обрезаем в TIER_POINTS-1
   const pointsCapped = rank.scale === 'dota-mmr'
     ? 0
-    : division > 0
+    : rank.division !== null
       ? Math.min(points, DIVISION_POINTS - 1)
       : Math.min(points, TIER_POINTS - 1);
 

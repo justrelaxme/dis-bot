@@ -54,6 +54,10 @@ describe('rankScore', () => {
   it('Valorant ASCENDANT выше Valorant DIAMOND', () => {
     expect(rankScore(valorant('ASCENDANT', null))).toBeGreaterThan(rankScore(valorant('DIAMOND', null)));
   });
+
+  it('IV дивизион со 100 LP ниже III дивизиона с 0 LP', () => {
+    expect(rankScore(riot('GOLD', 'IV', 100))).toBeLessThan(rankScore(riot('GOLD', 'III', 0)));
+  });
 });
 
 describe('hasRankChanged', () => {
