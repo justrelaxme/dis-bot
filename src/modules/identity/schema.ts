@@ -2,7 +2,7 @@ import { bigint, bigserial, index, integer, jsonb, pgTable, text, timestamp, uni
 import { guilds, users } from '../../core/db/schema/core.js';
 
 export type ProviderId = 'steam' | 'riot-lol' | 'riot-tft' | 'riot-valorant';
-export type RankScale = 'riot-tier' | 'dota-mmr';
+export type RankScale = 'riot-tier' | 'valorant-tier' | 'dota-mmr';
 export type RankSource = 'api' | 'manual';
 export type VerificationMethod = 'steam-openid' | 'riot-third-party-code' | 'manual';
 

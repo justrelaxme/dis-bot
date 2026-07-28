@@ -9,12 +9,12 @@ const DIVISION_POINTS = 100;
 
 function tierIndex(rank: RankInfo): number {
   if (!rank.tier) return -1;
-  const scales = rank.scale === 'dota-mmr' ? [DOTA_MEDALS] : [RIOT_TIERS, VALORANT_TIERS];
-  for (const scale of scales) {
-    const index = (scale as readonly string[]).indexOf(rank.tier);
-    if (index >= 0) return index;
-  }
-  return -1;
+
+  const scale = rank.scale === 'dota-mmr' ? DOTA_MEDALS :
+                rank.scale === 'valorant-tier' ? VALORANT_TIERS :
+                RIOT_TIERS;
+
+  return (scale as readonly string[]).indexOf(rank.tier);
 }
 
 /**
@@ -27,8 +27,18 @@ export function rankScore(rank: RankInfo): number {
 
   const division = rank.division ? (DIVISION_ORDER[rank.division] ?? 0) : 0;
   const points = rank.points ?? 0;
-  // Очки внутри дивизиона ограничены сотней, чтобы не перескочить дивизион.
-  return tier * TIER_POINTS + division * DIVISION_POINTS + Math.min(points, DIVISION_POINTS - 1);
+
+  // Для dota-mmr очки не учитываются: место в лидерборде — отдельное измерение.
+  // Для других шкал очки ограничиваются, чтобы не перескочить следующую ступеньку:
+  // - с дивизионом: следующая ступенька — дивизион, обрезаем в DIVISION_POINTS-1
+  // - без дивизиона: следующая ступенька — тир, обрезаем в TIER_POINTS-1
+  const pointsCapped = rank.scale === 'dota-mmr'
+    ? 0
+    : division > 0
+      ? Math.min(points, DIVISION_POINTS - 1)
+      : Math.min(points, TIER_POINTS - 1);
+
+  return tier * TIER_POINTS + division * DIVISION_POINTS + pointsCapped;
 }
 
 /**
