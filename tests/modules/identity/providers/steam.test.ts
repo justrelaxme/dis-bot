@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { UserError } from '../../../../src/core/errors.js';
+import { ProviderError, UserError } from '../../../../src/core/errors.js';
 import type { FetchClient } from '../../../../src/core/http/fetch-client.js';
 import type { RateLimiter } from '../../../../src/core/rate-limit.js';
 import { createSteamProvider, steamId64ToAccountId } from '../../../../src/modules/identity/providers/steam.js';
@@ -8,6 +8,29 @@ const noopLimiter: RateLimiter = { acquire: async () => {}, close: async () => {
 
 function clientReturning(payload: unknown): FetchClient {
   return { json: vi.fn(async () => payload) as FetchClient['json'] };
+}
+
+/**
+ * В отличие от clientReturning (голый мок без схемы), этот фейк воспроизводит ту часть
+ * поведения настоящего FetchClient, которая важна для проверки «долга»: если вызову
+ * передана schema, он реально гоняет через неё payload и превращает несовпадение в
+ * ProviderError — ровно так, как это делает createFetchClient. Нужен, чтобы отличить
+ * «схема передана и работает» от «схема просто присутствует в коде, но ничего не
+ * проверяет» (приём — как в tests/modules/identity/providers/riot-provider.test.ts).
+ */
+function clientWithRawPayload(payload: unknown, provider = 'steam'): FetchClient {
+  return {
+    json: (async (_url: string, init?: RequestInit & { schema?: { parse(input: unknown): unknown } }) => {
+      if (init?.schema) {
+        try {
+          return init.schema.parse(payload);
+        } catch (error) {
+          throw new ProviderError(`неожиданный формат ответа: ${(error as Error).message}`, provider, error);
+        }
+      }
+      return payload;
+    }) as FetchClient['json'],
+  };
 }
 
 const playerSummary = {
@@ -123,6 +146,35 @@ describe('createSteamProvider', () => {
     await provider.fetchRank!('76561198000000001');
 
     expect(acquire).toHaveBeenCalledTimes(2);
+  });
+
+  it('бросает ProviderError, а не TypeError, на неожиданной форме ответа Steam', async () => {
+    // Долг: fetchProfile разыменовывает data.response.players[0], и без schema битое
+    // тело 200-го ответа дало бы необработанный TypeError вместо ProviderError, а
+    // circuit breaker такой сбой не засчитал бы. schema должна поймать это раньше.
+    const provider = createSteamProvider({
+      apiKey: 'k',
+      publicBaseUrl: 'https://bot.example.com',
+      client: clientWithRawPayload({}, 'steam'),
+      openDotaClient: clientReturning({}),
+      rateLimiter: noopLimiter,
+    });
+
+    await expect(provider.fetchProfile('76561198000000001')).rejects.toThrow(ProviderError);
+  });
+
+  it('бросает ProviderError, а не TypeError, на неожиданной форме ответа OpenDota', async () => {
+    // null — валидный JSON (например, со страницы ошибки OpenDota). Без schema
+    // normalizeDotaRank(null) бросил бы необработанный TypeError на player.rank_tier.
+    const provider = createSteamProvider({
+      apiKey: 'k',
+      publicBaseUrl: 'https://bot.example.com',
+      client: clientReturning(playerSummary),
+      openDotaClient: clientWithRawPayload(null, 'opendota'),
+      rateLimiter: noopLimiter,
+    });
+
+    await expect(provider.fetchRank!('76561198000000001')).rejects.toThrow(ProviderError);
   });
 
   it('выдаёт челлендж со ссылкой на вход Steam', async () => {

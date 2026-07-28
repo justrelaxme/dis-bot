@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import { UserError } from '../../../core/errors.js';
 import type { FetchClient } from '../../../core/http/fetch-client.js';
 import type { Limit, RateLimiter } from '../../../core/rate-limit.js';
@@ -32,16 +33,49 @@ export function steamId64ToAccountId(steamId64: string): string {
   return (BigInt(steamId64) - STEAM_ID64_BASE).toString();
 }
 
-interface PlayerSummariesResponse {
-  response: {
-    players: Array<{
-      steamid: string;
-      personaname: string;
-      avatarfull?: string;
-      communityvisibilitystate?: number;
-    }>;
-  };
-}
+/**
+ * Ответ ISteamUser/GetPlayerSummaries — только поля, которые реально разыменовываются
+ * ниже. FetchClient сам вызывает schema.parse и оборачивает несовпадение в ProviderError
+ * («неожиданный формат ответа: …») — без этого битое тело 200-го ответа дало бы
+ * необработанный TypeError на `data.response.players[0]`, а не ProviderError, и circuit
+ * breaker никогда не увидел бы такой сбой (провайдер, стабильно отдающий мусор с кодом
+ * 200, никогда бы не разомкнул цепь). Схема нарочно не строже необходимого: Steam
+ * регулярно добавляет в ответ новые поля, лишние zod просто отбрасывает.
+ */
+const steamPlayerSummariesSchema = z.object({
+  response: z.object({
+    players: z.array(
+      z.object({
+        steamid: z.string(),
+        personaname: z.string(),
+        avatarfull: z.string().optional(),
+        communityvisibilitystate: z.number().optional(),
+      }),
+    ),
+  }),
+});
+
+type PlayerSummariesResponse = z.infer<typeof steamPlayerSummariesSchema>;
+
+/**
+ * Ровно те поля OpenDotaPlayer (ranks/dota.ts), что использует normalizeDotaRank. Тело
+ * `null` (валидный JSON, которым вполне может ответить страница ошибки OpenDota) схема
+ * тоже отвергает: object() не проходит на null, а normalizeDotaRank(null) иначе бросил бы
+ * необработанный TypeError на player.rank_tier.
+ *
+ * leaderboard_rank — через .default(null), а не .optional(): OpenDota присылает этот ключ,
+ * только если игрок в топ-лидерборде, поэтому ключа в ответе обычно вовсе нет и его нужно
+ * доливать значением по умолчанию. У чистого .optional() тип поля после парсинга — это
+ * `number | null | undefined`, а exactOptionalPropertyTypes не даёт присвоить такое
+ * значение в OpenDotaPlayer.leaderboard_rank (там `number | null` без undefined) без ручной
+ * подгонки; .default(null) убирает undefined из типа результата, оставляя обычное
+ * необязательное-но-всегда-заполненное поле `number | null` — оно совместимо с
+ * OpenDotaPlayer без дополнительного кода.
+ */
+const openDotaPlayerSchema = z.object({
+  rank_tier: z.number().nullable(),
+  leaderboard_rank: z.number().nullable().default(null),
+});
 
 export interface SteamProviderDeps {
   apiKey?: string;
@@ -66,7 +100,7 @@ export function createSteamProvider(deps: SteamProviderDeps): GameProvider {
     await deps.rateLimiter.acquire('steam', STEAM_LIMITS);
 
     const url = `${STEAM_API}/ISteamUser/GetPlayerSummaries/v0002/?key=${apiKey}&steamids=${steamId64}`;
-    const data = await deps.client.json<PlayerSummariesResponse>(url);
+    const data = await deps.client.json<PlayerSummariesResponse>(url, { schema: steamPlayerSummariesSchema });
     const player = data.response.players[0];
 
     if (!player) {
@@ -87,7 +121,9 @@ export function createSteamProvider(deps: SteamProviderDeps): GameProvider {
     await deps.rateLimiter.acquire('opendota', OPENDOTA_LIMITS);
 
     const accountId = steamId64ToAccountId(steamId64);
-    const player = await deps.openDotaClient.json<OpenDotaPlayer>(`${OPENDOTA_API}/players/${accountId}`);
+    const player = await deps.openDotaClient.json<OpenDotaPlayer>(`${OPENDOTA_API}/players/${accountId}`, {
+      schema: openDotaPlayerSchema,
+    });
     const rank = normalizeDotaRank(player);
 
     return rank ? [rank] : [];
