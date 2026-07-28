@@ -21,6 +21,9 @@
 - **Snowflake — `string`.** Времена — `timestamptz` UTC. LP и MMR — целые.
 - **Зависимости приходят через `ModuleContext`**, не глобальным импортом.
 - **Сообщения zod указываются в двух местах одновременно** — параметром схемы (`z.string({ error: '…' })`) и вторым аргументом уточнения (`.min(1, '…')`). Первое покрывает проверку типа, второе — своё уточнение; одного из двух недостаточно, иначе на другом пути протекает английский текст zod. Актуально для валидации ответов провайдеров.
+- **Ассерты на ограничения БД пишутся через `cause`, не через текст ошибки.** Drizzle 0.45 оборачивает ошибку Postgres в `DrizzleQueryError`, у которого `.message` — это `"Failed query: …"`, а SQLSTATE и имя ограничения лежат в `.cause`. Поэтому `.rejects.toThrow(/имя_ограничения/)` **не работает**, нужно `.rejects.toMatchObject({ cause: { code: '23505', message: expect.stringMatching(/имя_ограничения/) } })`. Прецедент: `tests/integration/db/core-schema.test.ts:33-41`.
+- **Каждому клиенту `ioredis` обязателен слушатель `error`.** `ioredis` — это `EventEmitter`, и событие `error` без слушателя становится неперехваченным исключением, которое убивает процесс мимо аккуратного завершения: обрыв связи, рестарт контейнера, сработавший `maxmemory`. Это был единственный Critical этапа 0. Относится ко всему, что делает `new Redis(...)`: `Cache`, `createRateLimiter`, `createCooldown`.
+- **Ответ внешнего сервиса разыменовывается только после проверки схемой.** `FetchClient.json` превращает в `ProviderError` любой исход, кроме успеха, — но лишь если ему передали `schema`. Без схемы `data.response.players[0]` на неожиданном теле даёт `TypeError`, который роутер команд покажет как поломку на нашей стороне, и breaker такой сбой не посчитает. Поэтому любой вызов `client.json(...)`, чей результат читается по полям, обязан передавать `schema`.
 
 Значения из спеки, зафиксированные и не подлежащие изменению при реализации:
 
@@ -85,7 +88,7 @@ import { bigint, bigserial, index, integer, jsonb, pgTable, text, timestamp, uni
 import { guilds, users } from '../../core/db/schema/core.js';
 
 export type ProviderId = 'steam' | 'riot-lol' | 'riot-tft' | 'riot-valorant';
-export type RankScale = 'riot-tier' | 'dota-mmr';
+export type RankScale = 'riot-tier' | 'valorant-tier' | 'dota-mmr';
 export type RankSource = 'api' | 'manual';
 export type VerificationMethod = 'steam-openid' | 'riot-third-party-code' | 'manual';
 
@@ -236,7 +239,9 @@ describe('схема identity', () => {
         displayName: 'alice-клон',
         verificationMethod: 'manual',
       }),
-    ).rejects.toThrow(/game_accounts_provider_external_uq/);
+    ).rejects.toMatchObject({
+      cause: { code: '23505', message: expect.stringMatching(/game_accounts_provider_external_uq/) },
+    });
   });
 
   it('запрещает второй аккаунт того же провайдера у одного пользователя', async () => {
@@ -248,7 +253,9 @@ describe('схема identity', () => {
         displayName: 'смурф',
         verificationMethod: 'manual',
       }),
-    ).rejects.toThrow(/game_accounts_user_provider_uq/);
+    ).rejects.toMatchObject({
+      cause: { code: '23505', message: expect.stringMatching(/game_accounts_user_provider_uq/) },
+    });
   });
 
   it('хранит историю рангов, а не одно значение', async () => {
@@ -289,7 +296,9 @@ describe('схема identity', () => {
         tier: 'PLATINUM',
         roleId: '555555555555555555',
       }),
-    ).rejects.toThrow(/role_mappings_uq/);
+    ).rejects.toMatchObject({
+      cause: { code: '23505', message: expect.stringMatching(/role_mappings_uq/) },
+    });
   });
 });
 ```
@@ -738,14 +747,15 @@ const DIVISION_ORDER: Record<string, number> = { IV: 0, III: 1, II: 2, I: 3, '1'
 const TIER_POINTS = 1_000;
 const DIVISION_POINTS = 100;
 
+// Шкала выбирается по `rank.scale` однозначно, без перебора. Перебор двух списков
+// сразу давал коллизию: в Valorant нет Emerald, поэтому валорантовый DIAMOND
+// получал индекс ASCENDANT и оказывался выше, чем должен.
 function tierIndex(rank: RankInfo): number {
   if (!rank.tier) return -1;
-  const scales = rank.scale === 'dota-mmr' ? [DOTA_MEDALS] : [RIOT_TIERS, VALORANT_TIERS];
-  for (const scale of scales) {
-    const index = (scale as readonly string[]).indexOf(rank.tier);
-    if (index >= 0) return index;
-  }
-  return -1;
+  const scale = rank.scale === 'dota-mmr' ? DOTA_MEDALS :
+                rank.scale === 'valorant-tier' ? VALORANT_TIERS :
+                RIOT_TIERS;
+  return (scale as readonly string[]).indexOf(rank.tier);
 }
 
 /**
@@ -756,10 +766,20 @@ export function rankScore(rank: RankInfo): number {
   const tier = tierIndex(rank);
   if (tier < 0) return 0;
 
-  const division = rank.division ? (DIVISION_ORDER[rank.division] ?? 0) : 0;
+  const division = rank.division !== null ? (DIVISION_ORDER[rank.division] ?? 0) : 0;
   const points = rank.points ?? 0;
-  // Очки внутри дивизиона ограничены сотней, чтобы не перескочить дивизион.
-  return tier * TIER_POINTS + division * DIVISION_POINTS + Math.min(points, DIVISION_POINTS - 1);
+  // Для dota-mmr очки не учитываются: в `points` лежит место в лидерборде, где
+  // меньше — лучше, и прибавлять его как «больше — лучше» значит ставить
+  // Immortal #90 выше Immortal #5. Медаль со звездой и есть ранг Dota.
+  // У тиров без дивизионов (Master/GM/Challenger/Radiant) ступенька — это тир,
+  // а не дивизион, и LP там измеряется сотнями: отсечка по сотне схлопывала бы
+  // Master/1200 и Challenger/1200 в одинаковую прибавку.
+  const pointsCapped = rank.scale === 'dota-mmr'
+    ? 0
+    : rank.division !== null
+      ? Math.min(points, DIVISION_POINTS - 1)
+      : Math.min(points, TIER_POINTS - 1);
+  return tier * TIER_POINTS + division * DIVISION_POINTS + pointsCapped;
 }
 
 /**
@@ -779,7 +799,7 @@ export function hasRankChanged(previous: RankInfo | null, next: RankInfo): boole
 - [ ] **Step 6: Прогнать тесты**
 
 Run: `npx vitest run tests/modules/identity/ranks/ && npm run typecheck`
-Expected: 12 тестов PASS.
+Expected: 18 тестов PASS.
 
 - [ ] **Step 7: Коммит**
 
@@ -1013,7 +1033,7 @@ export function createFetchClient(deps: FetchClientDeps): FetchClient {
   return {
     async json<T>(url: string, init: RequestInit & { schema?: { parse(input: unknown): T } } = {}): Promise<T> {
       if (breakerIsOpen()) {
-        throw new ProviderError(`breaker открыт`, deps.provider);
+        throw new ProviderError(`${deps.provider} недоступен: circuit breaker открыт`, deps.provider);
       }
 
       let lastProblem = 'неизвестная ошибка';
@@ -1031,11 +1051,28 @@ export function createFetchClient(deps: FetchClientDeps): FetchClient {
         }
 
         if (response.ok) {
-          consecutiveFailures = 0;
-          const payload: unknown = await response.json();
-          if (!init.schema) return payload as T;
+          // Разбор тела обёрнут, а счётчик сбрасывается только после полного успеха.
+          // Сброс до разбора делал breaker недостижимым на потоке «HTTP 200, тело мусор» —
+          // а это как раз тот отказ, ради которого breaker и нужен: провайдер жив и быстр,
+          // но данные негодные. Непойманный `response.json()` при этом выпускал наружу
+          // SyntaxError вместо ProviderError, и роутер команд показывал его как нашу поломку.
+          let payload: unknown;
           try {
-            return init.schema.parse(payload);
+            payload = await response.json();
+          } catch (error) {
+            // Ответ пришёл (200), но тело не разобралось — повторять бессмысленно, тело уже такое.
+            recordFailure();
+            throw new ProviderError(`не удалось разобрать ответ: ${(error as Error).message}`, deps.provider, error);
+          }
+
+          if (!init.schema) {
+            consecutiveFailures = 0;
+            return payload as T;
+          }
+          try {
+            const parsed = init.schema.parse(payload);
+            consecutiveFailures = 0;
+            return parsed;
           } catch (error) {
             // Ответ пришёл, но формат не тот — повторять бессмысленно.
             recordFailure();
@@ -1059,7 +1096,7 @@ export function createFetchClient(deps: FetchClientDeps): FetchClient {
 - [ ] **Step 4: Прогнать тесты**
 
 Run: `npx vitest run tests/core/fetch-client.test.ts && npm run typecheck`
-Expected: 8 тестов PASS.
+Expected: 10 тестов PASS.
 
 - [ ] **Step 5: Коммит**
 
@@ -1178,6 +1215,14 @@ const MAX_WAIT_MS = 30_000;
 
 export function createRateLimiter(deps: { redisUrl: string; logger: Logger }): RateLimiter {
   const redis = new Redis(deps.redisUrl, { maxRetriesPerRequest: 3 });
+
+  // ОБЯЗАТЕЛЬНО. `ioredis` — это EventEmitter, и событие `error` без слушателя
+  // становится неперехваченным исключением, которое убивает процесс мимо
+  // аккуратного завершения: обрыв связи, рестарт контейнера, сработавший maxmemory.
+  // Ровно этот дефект был единственным Critical этапа 0 (см. Cache в src/core/cache.ts).
+  redis.on('error', (error) => {
+    deps.logger.error({ err: error }, 'ошибка соединения с Redis у лимитера запросов');
+  });
 
   async function tryTake(key: string, limit: Limit): Promise<boolean> {
     const bucketKey = `ratelimit:${key}:${limit.windowMs}`;
@@ -1425,6 +1470,18 @@ describe('extractSteamId', () => {
   it('возвращает null, если идентификатор не похож на SteamID64', () => {
     expect(extractSteamId('https://steamcommunity.com/openid/id/не-число')).toBeNull();
   });
+
+  // Без этих двух тест на evil.example.com проходит вакуумно: префикс Steam ровно
+  // 37 символов, у `https://evil.example.com/openid/id/` их 35, поэтому slice(37)
+  // съедает две лишние цифры и null возвращается по случайной причине, а не потому,
+  // что проверка домена работает. Удаление проверки префикса тест не валит.
+  it('возвращает null для чужого домена, подогнанного по длине под Steam', () => {
+    expect(extractSteamId('https://notsteamcommun.com/openid/id/76561198000000001')).toBeNull();
+  });
+
+  it('возвращает null для верного домена с чужим путём', () => {
+    expect(extractSteamId('https://steamcommunity.com/openid/ID/76561198000000001')).toBeNull();
+  });
 });
 
 describe('verifySteamAssertion', () => {
@@ -1447,7 +1504,13 @@ describe('verifySteamAssertion', () => {
     const fetchMock = vi.fn(async () => new Response('is_valid:true\n'));
     await verifySteamAssertion(validParams(), { fetch: fetchMock as unknown as typeof fetch });
 
-    const body = fetchMock.mock.calls[0]?.[1]?.body as URLSearchParams;
+    // Разворачиваем вручную: `vi.fn(async () => …)` без параметров даёт
+    // `Parameters<T> = []`, и при noUncheckedIndexedAccess обращение
+    // `calls[0]?.[1]` не компилируется — TS2493.
+    const call = fetchMock.mock.calls[0] as unknown[] | undefined;
+    if (!call || call.length < 2) throw new Error('fetchMock не был вызван');
+    const requestInit = call[1] as unknown as Record<string, unknown>;
+    const body = new URLSearchParams(requestInit.body as string);
     expect(body.get('openid.mode')).toBe('check_authentication');
   });
 
@@ -1467,6 +1530,19 @@ describe('verifySteamAssertion', () => {
   it('отвергает claimed_id с чужого домена, не обращаясь к сети', async () => {
     const params = validParams();
     params.set('openid.claimed_id', 'https://evil.example.com/openid/id/76561198000000001');
+    const fetchMock = vi.fn();
+
+    await expect(verifySteamAssertion(params, { fetch: fetchMock as unknown as typeof fetch })).rejects.toThrow(
+      ProviderError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Тот же случай, но с домена, подогнанного по длине: без проверки префикса
+  // запрос ушёл бы наружу, и предыдущий тест этого не поймал бы.
+  it('не ходит в сеть и на чужом домене, подогнанном по длине под Steam', async () => {
+    const params = validParams();
+    params.set('openid.claimed_id', 'https://notsteamcommun.com/openid/id/76561198000000001');
     const fetchMock = vi.fn();
 
     await expect(verifySteamAssertion(params, { fetch: fetchMock as unknown as typeof fetch })).rejects.toThrow(
@@ -1520,7 +1596,8 @@ export async function verifySteamAssertion(
 ): Promise<string> {
   const mode = params.get('openid.mode');
   if (mode !== 'id_res') {
-    throw new ProviderError(`вход отменён или прерван (mode=${mode ?? 'отсутствует'})`, 'steam');
+    // Текст обязан содержать «отменена» — именно это ищет тест.
+    throw new ProviderError(`авторизация отменена или прервана (mode=${mode ?? 'отсутствует'})`, 'steam');
   }
 
   const claimedId = params.get('openid.claimed_id') ?? '';
@@ -1551,7 +1628,7 @@ export async function verifySteamAssertion(
 - [ ] **Step 4: Прогнать тесты**
 
 Run: `npx vitest run tests/modules/identity/providers/steam-openid.test.ts && npm run typecheck`
-Expected: 8 тестов PASS.
+Expected: 12 тестов PASS.
 
 - [ ] **Step 5: Коммит**
 
@@ -4136,7 +4213,7 @@ git commit -m "feat(identity): команды /link и /unlink и колбэк S
 
 **Interfaces:**
 - Consumes: `IdentityDeps` (Task 14), `RoleMappingService` (Task 12), `RankSyncService` (Task 13), `RIOT_TIERS` / `VALORANT_TIERS` (Task 2), `DOTA_MEDALS` (Task 3).
-- Produces: `createCooldown(deps: { redisUrl: string }): Cooldown` где `interface Cooldown { hit(key: string, windowMs: number): Promise<{ allowed: boolean; retryAfterMs: number }>; close(): Promise<void> }`; `createRankSyncCommand(deps: IdentityDeps & { cooldown: Cooldown }): CommandDefinition`; `createRoleMapCommand(deps: IdentityDeps): CommandDefinition`.
+- Produces: `createCooldown(deps: { redisUrl: string; logger: Logger }): Cooldown` где `interface Cooldown { hit(key: string, windowMs: number): Promise<{ allowed: boolean; retryAfterMs: number }>; close(): Promise<void> }`; `createRankSyncCommand(deps: IdentityDeps & { cooldown: Cooldown }): CommandDefinition`; `createRoleMapCommand(deps: IdentityDeps): CommandDefinition`.
 
 - [ ] **Step 1: Написать падающий тест кулдауна**
 
@@ -4144,20 +4221,33 @@ git commit -m "feat(identity): команды /link и /unlink и колбэк S
 
 ```ts
 import { describe, expect, it } from 'vitest';
+import type { Config } from '../../src/core/config.js';
 import { createCooldown } from '../../src/core/cooldown.js';
+import { createLogger } from '../../src/core/logger.js';
 import { withRedis } from '../helpers/redis.js';
 
 const redis = withRedis();
+const logger = createLogger({ LOG_LEVEL: 'fatal', NODE_ENV: 'test' } as Config);
 
 describe('createCooldown', () => {
+  it('вешает обработчик error на клиент Redis, чтобы обрыв соединения не ронял процесс', async () => {
+    // Без слушателя необработанное 'error' у ioredis (EventEmitter) убивает процесс.
+    const cooldown = createCooldown({ redisUrl: redis.url, logger });
+    const internal = cooldown as unknown as { redis: { listenerCount(event: string): number } };
+
+    expect(internal.redis.listenerCount('error')).toBeGreaterThan(0);
+
+    await cooldown.close();
+  });
+
   it('пропускает первый вызов', async () => {
-    const cooldown = createCooldown({ redisUrl: redis.url });
+    const cooldown = createCooldown({ redisUrl: redis.url, logger });
     await expect(cooldown.hit('u:1', 10_000)).resolves.toMatchObject({ allowed: true });
     await cooldown.close();
   });
 
   it('отказывает во втором вызове внутри окна и сообщает остаток', async () => {
-    const cooldown = createCooldown({ redisUrl: redis.url });
+    const cooldown = createCooldown({ redisUrl: redis.url, logger });
     await cooldown.hit('u:2', 10_000);
 
     const second = await cooldown.hit('u:2', 10_000);
@@ -4169,7 +4259,7 @@ describe('createCooldown', () => {
   });
 
   it('снова пропускает после истечения окна', async () => {
-    const cooldown = createCooldown({ redisUrl: redis.url });
+    const cooldown = createCooldown({ redisUrl: redis.url, logger });
     await cooldown.hit('u:3', 150);
     await new Promise((resolve) => setTimeout(resolve, 250));
 
@@ -4178,7 +4268,7 @@ describe('createCooldown', () => {
   });
 
   it('ведёт независимый учёт по ключам', async () => {
-    const cooldown = createCooldown({ redisUrl: redis.url });
+    const cooldown = createCooldown({ redisUrl: redis.url, logger });
     await cooldown.hit('u:4', 10_000);
 
     await expect(cooldown.hit('u:5', 10_000)).resolves.toMatchObject({ allowed: true });
@@ -4196,6 +4286,7 @@ Expected: FAIL — модуль не найден.
 
 ```ts
 import { Redis } from 'ioredis';
+import type { Logger } from './logger.js';
 
 export interface CooldownVerdict {
   allowed: boolean;
@@ -4207,10 +4298,23 @@ export interface Cooldown {
   close(): Promise<void>;
 }
 
-export function createCooldown(deps: { redisUrl: string }): Cooldown {
+export function createCooldown(deps: { redisUrl: string; logger: Logger }): Cooldown {
   const redis = new Redis(deps.redisUrl, { maxRetriesPerRequest: 3 });
 
-  return {
+  // ОБЯЗАТЕЛЬНО, тот же случай, что у createRateLimiter: `ioredis` — EventEmitter,
+  // и событие `error` без слушателя становится неперехваченным исключением,
+  // которое убивает процесс. Это был единственный Critical этапа 0.
+  redis.on('error', (error) => {
+    deps.logger.error({ err: error }, 'ошибка соединения с Redis у кулдауна команд');
+  });
+
+  // `redis` физически лежит на возвращаемом объекте, чтобы тест мог проверить
+  // наличие слушателя тем же приёмом, что и у Cache в src/core/cache.ts.
+  // Промежуточная переменная нужна: вернуть литерал с лишним полем прямо под
+  // объявленным типом `Cooldown` не даст проверка избыточных свойств.
+  const cooldown: Cooldown & { redis: Redis } = {
+    redis,
+
     async hit(key, windowMs): Promise<CooldownVerdict> {
       const redisKey = `cooldown:${key}`;
       const acquired = await redis.set(redisKey, '1', 'PX', windowMs, 'NX');
@@ -4225,6 +4329,8 @@ export function createCooldown(deps: { redisUrl: string }): Cooldown {
       await redis.quit();
     },
   };
+
+  return cooldown;
 }
 ```
 
@@ -5105,7 +5211,7 @@ import { createProviderRegistry } from './modules/identity/providers/index.js';
 import { createLinkingService } from './modules/identity/services/linking.js';
 
 // Заменить строку `const modules: BotModule[] = [pingModule];` на:
-const cooldown = createCooldown({ redisUrl: config.REDIS_URL });
+const cooldown = createCooldown({ redisUrl: config.REDIS_URL, logger });
 const rateLimiter = createRateLimiter({ redisUrl: config.REDIS_URL, logger });
 const fetchClientFor = (provider: string) => createFetchClient({ provider, logger, metrics });
 
