@@ -6,12 +6,32 @@ Discord-бот игрового сообщества. Модульный мон�
 
 ## Запуск локально
 
-1. `cp .env.example .env` и заполнить `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`.
-2. `podman compose up -d postgres redis`
-3. `npm install`
-4. `npm run db:migrate`
-5. `npm run deploy-commands` — регистрирует slash-команды на сервере из `DISCORD_GUILD_ID`.
-6. `npm run dev`
+Нужно приложение Discord: [Developer Portal](https://discord.com/developers/applications) →
+**New Application** → вкладка **Bot** → **Reset Token** и скопировать значение. На той же
+вкладке включить привилегированный интент **Server Members Intent** — без него бот не
+увидит участников и не сможет выдавать роли. Пригласить бота на сервер: вкладка
+**OAuth2** → **URL Generator** → scopes `bot` и `applications.commands`, права
+`Manage Roles` и `Send Messages` → открыть получившуюся ссылку.
+
+ID сервера копируется правым кликом по серверу (нужен режим разработчика:
+Настройки → Расширенные → Режим разработчика).
+
+```bash
+npm install
+cp .env.example .env                      # заполнить DISCORD_TOKEN, DISCORD_APP_ID, DISCORD_GUILD_ID
+npm run test:services:up                  # Postgres на 55432, Redis на 56379
+podman exec disbot-test-pg createdb -U bot disbot_dev   # один раз: отдельная база для разработки
+npm run db:migrate
+npm run deploy-commands                   # регистрирует slash-команды на сервере из DISCORD_GUILD_ID
+npm run dev
+```
+
+База для разработки отделена от `disbot_test` намеренно: `npm run test:int` чистит
+таблицы в тестовой базе перед каждым файлом и снёс бы данные разработки.
+
+Готовность проверяется так: `curl localhost:3000/healthz` отдаёт
+`{"status":"ok","database":"ok","cache":"ok"}`, а `/ping` в Discord отвечает
+задержкой шлюза. На этом этапе других команд у бота нет.
 
 ## Проверки
 
