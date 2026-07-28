@@ -95,11 +95,23 @@ export function createFetchClient(deps: FetchClientDeps): FetchClient {
         }
 
         if (response.ok) {
-          consecutiveFailures = 0;
-          const payload: unknown = await response.json();
-          if (!init.schema) return payload as T;
+          let payload: unknown;
           try {
-            return init.schema.parse(payload);
+            payload = await response.json();
+          } catch (error) {
+            // Ответ пришёл (200), но тело не разобралось — повторять бессмысленно, тело уже такое.
+            recordFailure();
+            throw new ProviderError(`не удалось разобрать ответ: ${(error as Error).message}`, deps.provider, error);
+          }
+
+          if (!init.schema) {
+            consecutiveFailures = 0;
+            return payload as T;
+          }
+          try {
+            const parsed = init.schema.parse(payload);
+            consecutiveFailures = 0;
+            return parsed;
           } catch (error) {
             // Ответ пришёл, но формат не тот — повторять бессмысленно.
             recordFailure();

@@ -116,4 +116,32 @@ describe('createFetchClient', () => {
 
     await expect(client.json('https://api.test/x', { schema })).rejects.toThrow(ProviderError);
   });
+
+  it('бросает ProviderError при успешном ответе с битым телом', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response('не json', { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    const client = clientWith(fetchMock as unknown as typeof fetch);
+
+    await expect(client.json('https://api.test/x')).rejects.toThrow(ProviderError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('открывает breaker на потоке ответов, которые отвергает схема', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ wrong: 1 }));
+    const client = clientWith(fetchMock as unknown as typeof fetch);
+    const schema = {
+      parse: (): never => {
+        throw new Error('не та форма');
+      },
+    };
+
+    for (let i = 0; i < 5; i += 1) {
+      await client.json('https://api.test/x', { schema }).catch(() => {});
+    }
+    const callsBefore = fetchMock.mock.calls.length;
+
+    await expect(client.json('https://api.test/x', { schema })).rejects.toThrow(/недоступен/);
+    expect(fetchMock.mock.calls.length).toBe(callsBefore);
+  });
 });
