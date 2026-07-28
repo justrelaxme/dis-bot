@@ -1,3 +1,4 @@
+import type { Redis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
 import type { Config } from '../../src/core/config.js';
 import { createLogger } from '../../src/core/logger.js';
@@ -57,6 +58,19 @@ describe('createRateLimiter', () => {
     await limiter.acquire('k:b', limits);
 
     expect(Date.now() - startedAt).toBeLessThan(200);
+    await limiter.close();
+  });
+
+  it('вешает обработчик error на клиент Redis, чтобы обрыв соединения не ронял процесс', async () => {
+    // Без слушателя необработанное 'error' у ioredis (EventEmitter) убивает процесс —
+    // проверяем сам факт наличия слушателя, а не что-то в логе: писать в реальный
+    // Redis ошибку неудобно и хрупко. Доступ к приватному полю `redis` — тем же
+    // приёмом, что и в tests/integration/cache.test.ts (internal as unknown as {...}).
+    const limiter = createRateLimiter({ redisUrl: redis.url, logger });
+    const internal = limiter as unknown as { redis: Redis };
+
+    expect(internal.redis.listenerCount('error')).toBeGreaterThan(0);
+
     await limiter.close();
   });
 });

@@ -18,6 +18,13 @@ const MAX_WAIT_MS = 30_000;
 export function createRateLimiter(deps: { redisUrl: string; logger: Logger }): RateLimiter {
   const redis = new Redis(deps.redisUrl, { maxRetriesPerRequest: 3 });
 
+  // Без слушателя необработанное 'error' от ioredis (обрыв связи, рестарт контейнера,
+  // сработавший maxmemory) убивает процесс целиком — см. Cache в src/core/cache.ts,
+  // где ровно этот дефект был Critical на этапе 0.
+  redis.on('error', (error) => {
+    deps.logger.error({ err: error }, 'ошибка соединения с Redis у лимитера запросов');
+  });
+
   async function tryTake(key: string, limit: Limit): Promise<boolean> {
     const bucketKey = `ratelimit:${key}:${limit.windowMs}`;
     const count = await redis.incr(bucketKey);
@@ -30,7 +37,13 @@ export function createRateLimiter(deps: { redisUrl: string; logger: Logger }): R
     return false;
   }
 
-  return {
+  // `redis` не входит в публичный интерфейс RateLimiter, но физически присутствует на
+  // возвращаемом объекте — как приватное поле у Cache в src/core/cache.ts — и тест
+  // достаёт его тем же приёмом (`as unknown as { redis: Redis }`), чтобы проверить
+  // наличие слушателя 'error', не ломая инкапсуляцию сверх принятого в проекте образца.
+  const limiter: RateLimiter & { redis: Redis } = {
+    redis,
+
     async acquire(key: string, limits: Limit[]): Promise<void> {
       const deadline = Date.now() + MAX_WAIT_MS;
 
@@ -64,4 +77,6 @@ export function createRateLimiter(deps: { redisUrl: string; logger: Logger }): R
       await redis.quit();
     },
   };
+
+  return limiter;
 }
