@@ -1,0 +1,20 @@
+# Многоэтапная сборка: стадия build компилирует TypeScript, stage runtime
+# содержит только продовые зависимости и скомпилированный код.
+FROM node:24-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY tsconfig.json drizzle.config.ts ./
+COPY src ./src
+COPY scripts ./scripts
+RUN npx tsc -p tsconfig.json
+
+FROM node:24-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY --from=build /app/dist ./dist
+COPY src/core/db/migrations ./src/core/db/migrations
+USER node
+CMD ["node", "dist/src/index.js"]

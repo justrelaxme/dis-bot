@@ -6,7 +6,7 @@
 
 **Architecture:** Модульный монолит. Тонкое ядро (`src/core/`) не знает о фичах: оно создаёт Discord-клиент, собирает модули из реестра, маршрутизирует интеракции, держит границу ошибок и предоставляет модулям `ModuleContext` с зависимостями. Модули (`src/modules/`) объявляют команды, слушателей и cron-джобы данными и общаются между собой через типизированную шину событий, а не через прямые импорты.
 
-**Tech Stack:** Node.js 22 LTS, TypeScript (strict, ESM), discord.js 14.27, PostgreSQL 16 + Drizzle ORM, Redis 7 (ioredis), Fastify, pino, zod, prom-client, croner, vitest + Testcontainers, Docker Compose + Caddy.
+**Tech Stack:** Node.js 24 LTS, TypeScript (strict, ESM), discord.js 14.27, PostgreSQL 16 + Drizzle ORM, Redis 7 (ioredis), Fastify, pino, zod, prom-client, croner, vitest (интеграционные — на реальном Postgres и Redis в контейнерах Podman), Podman + Caddy.
 
 **Spec:** [docs/superpowers/specs/2026-07-27-discord-gaming-bot-design.md](../specs/2026-07-27-discord-gaming-bot-design.md)
 
@@ -14,15 +14,18 @@
 
 Требования ниже действуют для **каждой** задачи плана.
 
-- **Node.js `>=22.12.0`.** Требование `vitest 4` (`^20 || ^22 || >=24`); discord.js требует `>=18`.
+- **Node.js `>=24.0.0`.** Версия на машине разработки — 24 LTS. `vitest 4` требует `^20 || ^22 || >=24`, discord.js — `>=18`.
+- **Контейнеры — Podman, не Docker.** Вместо `docker compose` — `podman compose`, вместо `docker build` — `podman build`. `DOCKER_HOST` задавать **не нужно и вредно**: Podman сам публикует docker-совместимый named pipe, а явное значение вида `npipe:////./pipe/docker_engine` Node не переваривает.
+- **Интеграционные тесты подключаются к сервисам, поднятым `npm run test:services:up`, а не поднимают контейнеры сами.** Testcontainers исключён: на rootless Podman он зависает после успешного health check — `start()` не возвращается и ошибки не выдаёт (проверено на живом окружении). Требование «настоящий Postgres, а не мок» сохраняется полностью, меняется только то, кто управляет жизненным циклом контейнера. Перед `npm run test:int` нужен `npm run test:services:up`; адреса переопределяются переменными `DATABASE_URL_TEST` и `REDIS_URL_TEST` — их использует CI.
 - **discord.js `14.27.x`**, Postgres `16`, Redis `7`.
+- **TypeScript закреплён на `~5.9.3`, не 7.x.** `typescript-eslint@8` требует `typescript <6.1.0`, а его версии 9+ не существует; TypeScript 7 оставил бы проект без линтера. `@types/node` — `^24`, строго под рантайм.
 - **ESM.** В `package.json` стоит `"type": "module"`, в `tsconfig` — `"module": "nodenext"`. Следствие, которое ломает сборку чаще всего: **все относительные импорты пишутся с расширением `.js`**, даже когда файл на диске `.ts` (`import { loadConfig } from './config.js'`).
 - **TypeScript strict**, включая `noUncheckedIndexedAccess` и `exactOptionalPropertyTypes`. `any` допустим только со строкой комментария, объясняющей почему.
 - **Snowflake-идентификаторы Discord хранятся и передаются как `text`/`string`.** Никогда как число.
 - **Все времена — `timestamptz` в UTC.** XP, валюта, LP — целые числа, никогда float.
 - **Эфемерные ответы — через `flags: MessageFlags.Ephemeral`.** Опция `ephemeral: true` объявлена deprecated в discord.js и в новом коде не используется.
 - **Ответ на интеракцию не позже 3 секунд.** Любой хендлер, делающий сетевой вызов или запрос к БД дольше одного простого SELECT, обязан начинаться с `deferReply()`.
-- **Пользовательские строки и комментарии — по-русски.**
+- **Пользовательские строки и комментарии — по-русски.** В zod сообщение указывается **в двух местах одновременно**: параметром схемы (`z.string({ error: '…' })`) и вторым аргументом уточнения (`.min(1, '…')`, `.regex(re, '…')`). Первое покрывает только проверку типа, второе — только своё уточнение; указать одно из двух значит получить английский текст zod на другом пути. Сообщение хранится константой, чтобы две копии не разъехались.
 - **Коммиты в стиле conventional commits** (`feat:`, `fix:`, `chore:`, `test:`, `docs:`).
 - **Значения из спеки, не подлежащие изменению:** TTL кэша — профиль 24 ч (просроченное отдавать до 7 суток), ранг 20 мин (до 24 ч), история матчей 5 мин (до 1 ч); челлендж верификации 15 минут и 5 попыток; кулдаун `/ranksync` 10 минут; таймаут внешнего вызова 5 секунд при 3 попытках; circuit breaker открывается после 5 подряд сбоев и пробует снова через 60 секунд; cron синхронизации — каждые 30 минут по 100 аккаунтов.
 
@@ -56,8 +59,8 @@
 | `src/modules/ping/index.ts` | эталонный модуль-образец |
 | `scripts/migrate.ts` | применение миграций отдельным шагом |
 | `scripts/deploy-commands.ts` | guild-scoped регистрация slash-команд |
-| `tests/helpers/postgres.ts` | Testcontainers-хелпер для интеграционных тестов |
-| `tests/helpers/redis.ts` | Testcontainers-хелпер для Redis |
+| `tests/helpers/postgres.ts` | подключение к тестовому Postgres, миграции, очистка таблиц |
+| `tests/helpers/redis.ts` | проверка доступности тестового Redis и сброс базы |
 | `tests/helpers/interaction.ts` | фейковая интеракция для тестов хендлеров |
 | `Dockerfile`, `docker-compose.yml`, `Caddyfile`, `.github/workflows/ci.yml` | деплой и CI |
 
@@ -81,7 +84,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.12.0" },
+  "engines": { "node": ">=24.0.0" },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
@@ -95,10 +98,10 @@
     "deploy-commands": "tsx scripts/deploy-commands.ts"
   },
   "dependencies": {
-    "croner": "^9.0.0",
+    "croner": "^10.0.1",
     "discord.js": "^14.27.0",
     "drizzle-orm": "^0.45.2",
-    "fastify": "^5.2.0",
+    "fastify": "^5.10.0",
     "ioredis": "^5.11.1",
     "pg": "^8.22.0",
     "pino": "^10.3.1",
@@ -106,20 +109,29 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@testcontainers/postgresql": "^10.16.0",
-    "@testcontainers/redis": "^10.16.0",
-    "@types/node": "^22.10.0",
-    "@types/pg": "^8.11.10",
+    "@testcontainers/postgresql": "^12.0.4",
+    "@testcontainers/redis": "^12.0.4",
+    "@types/node": "^24.13.3",
+    "@types/pg": "^8.20.0",
     "drizzle-kit": "^0.31.10",
-    "eslint": "^9.17.0",
-    "pino-pretty": "^13.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
-    "typescript-eslint": "^8.19.0",
+    "eslint": "^10.8.0",
+    "pino-pretty": "^13.1.3",
+    "tsx": "^4.23.1",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10"
   }
 }
 ```
+
+**TypeScript намеренно остаётся на 5.9, хотя вышел 7.x.** `typescript-eslint@8.65.0`
+объявляет peer-зависимость `typescript: >=4.8.4 <6.1.0`, а версии 9+ у него не
+выпущено. Взять TypeScript 7 — значит остаться без линтера вообще. Диапазон записан
+как `~5.9.3`, чтобы `npm install` не подтянул мажор молча. Пересматривать после
+выхода `typescript-eslint`, поддерживающего 7.x.
+
+**`@types/node` привязан к 24.x, а не к последней 26.x** — типы должны соответствовать
+рантайму, иначе компилятор разрешит вызовы API, которых на Node 24 нет.
 
 - [ ] **Step 2: Создать `tsconfig.json`**
 
@@ -167,7 +179,7 @@ export default tseslint.config(
 
 - [ ] **Step 4: Создать `vitest.config.ts`**
 
-Интеграционные тесты исключены — они требуют Docker и запускаются отдельной командой.
+Интеграционные тесты исключены — они требуют запущенную podman-машину и запускаются отдельной командой.
 
 ```ts
 import { defineConfig } from 'vitest/config';
@@ -320,6 +332,30 @@ describe('loadConfig', () => {
     const config = loadConfig({ ...valid, RIOT_API_KEY: '' });
     expect(config.RIOT_API_KEY).toBeUndefined();
   });
+
+  // Проверка имени поля в сообщении ничего не говорит о языке: «DATABASE_URL» есть и в
+  // русском, и в английском варианте. Эти тесты пиннят именно язык, причём на обоих путях
+  // zod — «значения нет» и «значение есть, но не проходит проверку», — потому что источник
+  // текста у них разный и починка одного ломает другой.
+  describe.each([
+    ['переменная отсутствует', { DISCORD_TOKEN: 'token' }, 'обязателен'],
+    ['snowflake присутствует, но кривой', { ...valid, DISCORD_APP_ID: 'не-число' }, 'snowflake'],
+    ['обязательная строка пуста', { ...valid, DISCORD_TOKEN: '' }, 'обязателен'],
+    ['порт вне диапазона', { ...valid, HTTP_PORT: '99999' }, 'порта'],
+  ])('сообщение по-русски: %s', (_name, env, expectedFragment) => {
+    it('не содержит английского текста zod', () => {
+      let message = '';
+      try {
+        loadConfig(env);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).not.toBe('');
+      expect(message).not.toMatch(/Invalid input|Invalid string|Too small|Too big|expected/);
+      expect(message).toContain(expectedFragment);
+    });
+  });
 });
 ```
 
@@ -335,23 +371,50 @@ Expected: FAIL — `Cannot find module '../../src/core/config.js'`.
 ```ts
 import { z } from 'zod';
 
-const snowflake = z.string().regex(/^\d{17,20}$/, 'ожидается Discord snowflake из 17–20 цифр');
+/**
+ * У zod два независимых места, откуда берётся текст ошибки, и они не перекрывают
+ * друг друга:
+ *   - `{ error }` в конструкторе схемы покрывает только базовую проверку типа
+ *     (значение отсутствует или не той природы);
+ *   - второй аргумент `.min()` / `.regex()` покрывает только своё уточнение
+ *     (значение есть и нужного типа, но не проходит проверку).
+ * Указать сообщение лишь в одном месте — значит получить английский текст zod в
+ * другом. Поэтому оно передаётся в оба и хранится константой, чтобы не разъехалось.
+ */
+const SNOWFLAKE_MSG = 'ожидается Discord snowflake из 17–20 цифр';
+const REQUIRED_MSG = 'обязателен';
+const PORT_MSG = 'ожидается целое число порта от 1 до 65535';
+
+const snowflake = z.string({ error: SNOWFLAKE_MSG }).regex(/^\d{17,20}$/, SNOWFLAKE_MSG);
+
+const requiredString = () => z.string({ error: REQUIRED_MSG }).min(1, REQUIRED_MSG);
 
 const emptyToUndefined = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema);
 
 const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+  NODE_ENV: z
+    .enum(['development', 'test', 'production'], { error: 'допустимо: development, test, production' })
+    .default('development'),
+  LOG_LEVEL: z
+    .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'], {
+      error: 'допустимо: trace, debug, info, warn, error, fatal',
+    })
+    .default('info'),
 
-  DISCORD_TOKEN: z.string().min(1, 'обязателен'),
+  DISCORD_TOKEN: requiredString(),
   DISCORD_APP_ID: snowflake,
   DISCORD_GUILD_ID: snowflake,
 
-  DATABASE_URL: z.string().min(1, 'обязателен'),
-  REDIS_URL: z.string().min(1, 'обязателен'),
+  DATABASE_URL: requiredString(),
+  REDIS_URL: requiredString(),
 
-  HTTP_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  HTTP_PORT: z.coerce
+    .number({ error: PORT_MSG })
+    .int(PORT_MSG)
+    .min(1, PORT_MSG)
+    .max(65535, PORT_MSG)
+    .default(3000),
   PUBLIC_BASE_URL: z.url('ожидается абсолютный URL'),
 
   STEAM_API_KEY: emptyToUndefined(z.string().min(1).optional()),
@@ -361,8 +424,8 @@ const envSchema = z.object({
 export type Config = z.infer<typeof envSchema>;
 
 /**
- * Валидирует окружение целиком. Бросает при первой же проблеме, но перечисляет
- * в сообщении все найденные — чтобы не выяснять их по одной за пять перезапусков.
+ * Валидирует окружение целиком. Бросает одну ошибку, перечисляя в ней все найденные
+ * проблемы, — чтобы не выяснять их по одной за пять перезапусков.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = envSchema.safeParse(env);
@@ -511,13 +574,19 @@ export function describeForUser(error: unknown): UserFacingError {
 Редакция обязательна: токен бота и ключи API не должны попасть в лог ни при каком стечении обстоятельств.
 
 ```ts
-import { pino } from 'pino';
+import pino from 'pino';
+import type { DestinationStream, Logger } from 'pino';
 import type { Config } from './config.js';
 
-export type Logger = pino.Logger;
+export type { Logger };
 
-export function createLogger(config: Config): Logger {
-  return pino({
+/**
+ * `destination` существует ради тестируемости: редакция секретов — защита от
+ * утечки токена в логи, и её надо проверять автотестом, а не глазами. По
+ * умолчанию pino пишет в stdout, как и положено.
+ */
+export function createLogger(config: Config, destination?: DestinationStream): Logger {
+  const options = {
     level: config.LOG_LEVEL,
     redact: {
       paths: [
@@ -529,22 +598,102 @@ export function createLogger(config: Config): Logger {
       ],
       censor: '[вырезано]',
     },
-    ...(config.NODE_ENV === 'development'
+    // pino-pretty подключается только в разработке: в проде нужен машинночитаемый JSON.
+    // При заданном destination транспорт не ставится — иначе вывод ушёл бы мимо потока.
+    ...(config.NODE_ENV === 'development' && !destination
       ? { transport: { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } } }
       : {}),
-  });
+  };
+
+  return destination ? pino(options, destination) : pino(options);
 }
 ```
 
-- [ ] **Step 5: Прогнать тесты**
+- [ ] **Step 5: Написать падающий тест редакции секретов**
 
-Run: `npx vitest run tests/core/errors.test.ts && npm run typecheck`
+Файл `tests/core/logger.test.ts`. Этот тест не косметика: если `redact` однажды сломается, токен бота уедет в логи, и узнать об этом можно будет только из чужого доступа к логам. Контрольный случай в конце проверяет, что секреты вырезает именно `redact`, а не что-то другое по пути.
+
+```ts
+import { Writable } from 'node:stream';
+import { describe, expect, it } from 'vitest';
+import type { Config } from '../../src/core/config.js';
+import { createLogger } from '../../src/core/logger.js';
+
+const TOKEN = 'СЕКРЕТ-ТОКЕН-БОТА';
+const STEAM = 'СЕКРЕТ-STEAM';
+const RIOT = 'СЕКРЕТ-RIOT';
+
+const config = {
+  LOG_LEVEL: 'info',
+  // production, чтобы pino-pretty не встал между логгером и потоком.
+  NODE_ENV: 'production',
+  DISCORD_TOKEN: TOKEN,
+  STEAM_API_KEY: STEAM,
+  RIOT_API_KEY: RIOT,
+} as unknown as Config;
+
+function captured(): { write: (payload: object, msg: string) => string } {
+  return {
+    write(payload, msg) {
+      let out = '';
+      const stream = new Writable({
+        write(chunk, _encoding, callback) {
+          out += String(chunk);
+          callback();
+        },
+      });
+      createLogger(config, stream).info(payload, msg);
+      return out;
+    },
+  };
+}
+
+describe('createLogger: редакция секретов', () => {
+  it('вырезает токен Discord и ключи API из объекта config', () => {
+    const out = captured().write({ config }, 'запуск');
+
+    expect(out).not.toContain(TOKEN);
+    expect(out).not.toContain(STEAM);
+    expect(out).not.toContain(RIOT);
+    expect(out).toContain('[вырезано]');
+  });
+
+  it('вырезает заголовки авторизации', () => {
+    const out = captured().write(
+      { headers: { authorization: 'Bearer СЕКРЕТ-AUTH', 'x-riot-token': 'СЕКРЕТ-XRIOT' } },
+      'запрос',
+    );
+
+    expect(out).not.toContain('СЕКРЕТ-AUTH');
+    expect(out).not.toContain('СЕКРЕТ-XRIOT');
+  });
+
+  it('сохраняет само сообщение и несекретные поля', () => {
+    const out = captured().write({ guildId: '111111111111111111' }, 'команда выполнена');
+
+    expect(out).toContain('команда выполнена');
+    expect(out).toContain('111111111111111111');
+  });
+
+  it('контроль: путь вне списка redact не вырезается', () => {
+    // Если этот тест начнёт падать, значит секреты скрывает что-то помимо redact,
+    // и предыдущие три теста перестали доказывать то, ради чего написаны.
+    const out = captured().write({ token: 'ЗНАЧЕНИЕ-ВНЕ-СПИСКА' }, 'контроль');
+
+    expect(out).toContain('ЗНАЧЕНИЕ-ВНЕ-СПИСКА');
+  });
+});
+```
+
+- [ ] **Step 6: Прогнать тесты**
+
+Run: `npx vitest run tests/core/errors.test.ts tests/core/logger.test.ts && npm run typecheck`
 Expected: 5 тестов PASS.
 
 - [ ] **Step 6: Коммит**
 
 ```bash
-git add src/core/errors.ts src/core/logger.ts tests/core/errors.test.ts
+git add src/core/errors.ts src/core/logger.ts tests/core/errors.test.ts tests/core/logger.test.ts
 git commit -m "feat: классы ошибок с кодами инцидентов и структурированный логгер"
 ```
 
@@ -703,48 +852,171 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 8: Создать хелпер `tests/helpers/postgres.ts`**
+- [ ] **Step 8: Убрать Testcontainers из зависимостей и поднять сервисы для тестов**
+
+**Почему не Testcontainers.** На rootless Podman библиотека зависает: контейнер поднимается и проходит health check, но `start()` не возвращается — процесс висит до таймаута без единой ошибки. Проверено на живом окружении. Требование спеки — «интеграционные тесты идут на настоящем Postgres, а не на моке» — сохраняется полностью: тесты подключаются к настоящему Postgres 16 в контейнере, просто его жизненным циклом управляет compose, а не библиотека. Побочная выгода: между прогонами контейнер не пересоздаётся, и набор идёт быстрее.
+
+Удалить из `devDependencies` пакета: `@testcontainers/postgresql` и `@testcontainers/redis`, затем `npm install`.
+
+**Почему не compose-файл.** `podman compose` — обёртка, требующая внешнего провайдера
+(`docker-compose` или `podman-compose`), которого на машине разработки нет. Ставить
+ещё одну зависимость ради двух контейнеров без сети между ними не стоит. Скрипт ниже
+проверен на живом окружении: 5.4 с с нуля, повторный запуск идемпотентен.
+
+Создать `scripts/test-services.mjs` (обычный `.mjs`, а не `.ts` — его вызывает npm
+напрямую, без tsx):
+
+```js
+#!/usr/bin/env node
+// Поднимает и гасит Postgres и Redis для интеграционных тестов.
+// Своим скриптом, а не compose: podman compose требует внешнего провайдера
+// (docker-compose или podman-compose), а здесь всего два контейнера без сети между ними.
+import { spawnSync } from 'node:child_process';
+
+const SERVICES = [
+  {
+    name: 'disbot-test-pg',
+    image: 'postgres:16-alpine',
+    args: [
+      '-e', 'POSTGRES_USER=bot',
+      '-e', 'POSTGRES_PASSWORD=bot',
+      '-e', 'POSTGRES_DB=disbot_test',
+      '-p', '55432:5432',
+    ],
+    ready: ['pg_isready', '-U', 'bot', '-d', 'disbot_test'],
+  },
+  {
+    name: 'disbot-test-redis',
+    image: 'redis:7-alpine',
+    args: ['-p', '56379:6379'],
+    ready: ['redis-cli', 'ping'],
+  },
+];
+
+const READY_TIMEOUT_MS = 60_000;
+const POLL_INTERVAL_MS = 500;
+
+function podman(args) {
+  return spawnSync('podman', args, { encoding: 'utf8' });
+}
+
+function fail(message) {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+}
+
+function exists(name) {
+  return podman(['container', 'exists', name]).status === 0;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitReady(service) {
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (podman(['exec', service.name, ...service.ready]).status === 0) return;
+    await sleep(POLL_INTERVAL_MS);
+  }
+  fail(`Сервис ${service.name} не стал готов за ${READY_TIMEOUT_MS / 1000}с. Логи: podman logs ${service.name}`);
+}
+
+async function up() {
+  if (podman(['info', '--format', '{{.Host.Arch}}']).status !== 0) {
+    fail('Podman недоступен. Запусти машину: podman machine start');
+  }
+
+  for (const service of SERVICES) {
+    if (exists(service.name)) {
+      podman(['start', service.name]);
+    } else {
+      const created = podman(['run', '-d', '--name', service.name, ...service.args, service.image]);
+      if (created.status !== 0) fail(`Не удалось создать ${service.name}: ${created.stderr.trim()}`);
+    }
+    await waitReady(service);
+    process.stderr.write(`готов: ${service.name}\n`);
+  }
+}
+
+function down() {
+  for (const service of SERVICES) {
+    podman(['rm', '-f', service.name]);
+    process.stderr.write(`удалён: ${service.name}\n`);
+  }
+}
+
+const command = process.argv[2];
+if (command === 'up') await up();
+else if (command === 'down') down();
+else fail('Использование: node scripts/test-services.mjs up|down');
+```
+
+Добавить в `scripts` пакета:
+
+```json
+    "test:services:up": "node scripts/test-services.mjs up",
+    "test:services:down": "node scripts/test-services.mjs down",
+```
+
+Порты 55432 и 56379 выбраны нестандартными, чтобы не конфликтовать с возможным
+локальным Postgres и с продовым стеком из `docker-compose.yml` (Task 14).
+
+- [ ] **Step 9: Создать хелпер `tests/helpers/postgres.ts`**
 
 ```ts
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { afterAll, beforeAll } from 'vitest';
 import { loadConfig } from '../../src/core/config.js';
 import { createDatabase, type Database } from '../../src/core/db/client.js';
+
+const DEFAULT_TEST_DATABASE_URL = 'postgres://bot:bot@localhost:55432/disbot_test';
 
 interface PostgresFixture {
   get db(): Database;
 }
 
 /**
- * Поднимает настоящий Postgres в контейнере и применяет миграции.
+ * Подключается к настоящему Postgres из тестовых сервисов и применяет миграции.
  * Мок здесь не годится: половина проверяемого поведения живёт в ограничениях схемы.
+ *
+ * Таблицы очищаются один раз на файл, а не перед каждым тестом: тесты внутри файла
+ * намеренно опираются на данные, созданные в его же beforeAll. Прогон файлов
+ * последовательный (`fileParallelism: false`), поэтому файлы друг другу не мешают.
  */
 export function withPostgres(): PostgresFixture {
-  let container: StartedPostgreSqlContainer;
   let db: Database;
   let close: () => Promise<void>;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('postgres:16-alpine').start();
     const config = loadConfig({
       DISCORD_TOKEN: 'test',
       DISCORD_APP_ID: '123456789012345678',
       DISCORD_GUILD_ID: '876543210987654321',
-      DATABASE_URL: container.getConnectionUri(),
-      REDIS_URL: 'redis://localhost:6379',
+      DATABASE_URL: process.env['DATABASE_URL_TEST'] ?? DEFAULT_TEST_DATABASE_URL,
+      REDIS_URL: 'redis://localhost:56379',
       PUBLIC_BASE_URL: 'https://test.example.com',
       NODE_ENV: 'test',
     });
+
     const created = createDatabase(config);
     db = created.db;
     close = created.close;
+
+    try {
+      await db.execute(sql`select 1`);
+    } catch (error) {
+      throw new Error(
+        `Тестовый Postgres недоступен по ${config.DATABASE_URL}. ` +
+          `Подними сервисы: npm run test:services:up. Исходная ошибка: ${(error as Error).message}`,
+      );
+    }
+
     await migrate(db, { migrationsFolder: 'src/core/db/migrations' });
+    await truncateAll(db);
   });
 
   afterAll(async () => {
     await close?.();
-    await container?.stop();
   });
 
   return {
@@ -753,9 +1025,22 @@ export function withPostgres(): PostgresFixture {
     },
   };
 }
+
+/** Чистит все таблицы схемы, кроме журнала миграций drizzle. */
+async function truncateAll(db: Database): Promise<void> {
+  const result = await db.execute<{ tablename: string }>(sql`
+    select tablename from pg_tables
+    where schemaname = 'public' and tablename not like '__drizzle%'
+  `);
+
+  const tables = result.rows.map((row) => `"${row.tablename}"`);
+  if (tables.length === 0) return;
+
+  await db.execute(sql.raw(`truncate table ${tables.join(', ')} restart identity cascade`));
+}
 ```
 
-- [ ] **Step 9: Написать падающий интеграционный тест**
+- [ ] **Step 10: Написать падающий интеграционный тест**
 
 Файл `tests/integration/db/core-schema.test.ts`:
 
@@ -810,15 +1095,19 @@ describe('схема ядра', () => {
 });
 ```
 
-- [ ] **Step 10: Запустить интеграционные тесты**
+- [ ] **Step 11: Запустить интеграционные тесты**
 
-Run: `npm run test:int`
-Expected: 4 теста PASS. Требуется запущенный Docker. Первый прогон дольше — тянется образ `postgres:16-alpine`.
+Run: `npm run test:services:up && npm run test:int`
+Expected: 4 теста PASS. Требуется запущенная podman-машина (`podman machine start`).
 
-- [ ] **Step 11: Коммит**
+Проверь заодно, что сообщение о недоступном Postgres внятное: останови сервисы
+(`npm run test:services:down`), запусти `npm run test:int` и убедись, что в ошибке есть
+подсказка `npm run test:services:up`, а не сырой `ECONNREFUSED`. Затем подними сервисы обратно.
+
+- [ ] **Step 12: Коммит**
 
 ```bash
-git add src/core/db drizzle.config.ts scripts/migrate.ts vitest.integration.config.ts tests/helpers/postgres.ts tests/integration/db/core-schema.test.ts
+git add src/core/db drizzle.config.ts scripts/migrate.ts scripts/test-services.mjs vitest.integration.config.ts package.json package-lock.json tests/helpers/postgres.ts tests/integration/db/core-schema.test.ts
 git commit -m "feat: схема ядра, клиент Postgres и миграции на Drizzle"
 ```
 
@@ -837,27 +1126,43 @@ git commit -m "feat: схема ядра, клиент Postgres и миграц�
 - [ ] **Step 1: Создать хелпер `tests/helpers/redis.ts`**
 
 ```ts
-import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
-import { afterAll, beforeAll } from 'vitest';
+import { Redis } from 'ioredis';
+import { beforeAll } from 'vitest';
+
+const DEFAULT_TEST_REDIS_URL = 'redis://localhost:56379';
 
 interface RedisFixture {
   get url(): string;
 }
 
+/**
+ * Отдаёт адрес настоящего Redis из тестовых сервисов, предварительно убедившись,
+ * что он отвечает. Жизненным циклом контейнера управляет compose, а не тест:
+ * Testcontainers на rootless Podman зависает после health check.
+ */
 export function withRedis(): RedisFixture {
-  let container: StartedRedisContainer;
+  const url = process.env['REDIS_URL_TEST'] ?? DEFAULT_TEST_REDIS_URL;
 
   beforeAll(async () => {
-    container = await new RedisContainer('redis:7-alpine').start();
-  }, 120_000);
-
-  afterAll(async () => {
-    await container?.stop();
+    const probe = new Redis(url, { maxRetriesPerRequest: 1, lazyConnect: true });
+    try {
+      await probe.connect();
+      await probe.ping();
+      // Чистим за предыдущими прогонами: ключи кэша и локи не должны перетекать.
+      await probe.flushdb();
+    } catch (error) {
+      throw new Error(
+        `Тестовый Redis недоступен по ${url}. ` +
+          `Подними сервисы: npm run test:services:up. Исходная ошибка: ${(error as Error).message}`,
+      );
+    } finally {
+      probe.disconnect();
+    }
   });
 
   return {
     get url() {
-      return container.getConnectionUrl();
+      return url;
     },
   };
 }
@@ -1006,6 +1311,12 @@ const REFRESH_LOCK_MS = 30_000;
 
 export class Cache {
   private readonly redis: Redis;
+  /**
+   * Фоновые обновления — fire-and-forget для вызывающего кода `swr()`, но не для
+   * `close()`: иначе `quit()` обрывает ещё не завершённый SET/DEL посреди работы,
+   * и вместо тихого закрытия получаем "Connection is closed" в логах.
+   */
+  private readonly pendingRefreshes = new Set<Promise<void>>();
 
   constructor(
     config: Config,
@@ -1023,7 +1334,7 @@ export class Cache {
     }
 
     if (entry && age < options.staleMs) {
-      void this.refreshInBackground(key, options);
+      this.refreshInBackground(key, options);
       return { value: entry.value, stale: true, storedAt: new Date(entry.storedAt) };
     }
 
@@ -1046,10 +1357,20 @@ export class Cache {
   }
 
   async close(): Promise<void> {
+    // Дожидаемся фоновых обновлений вместо того, чтобы оборвать их разрывом соединения.
+    await Promise.allSettled(this.pendingRefreshes);
     await this.redis.quit();
   }
 
-  private async refreshInBackground<T>(key: string, options: SwrOptions<T>): Promise<void> {
+  /** Планирует обновление в фоне, не блокируя вызывающего. Лок защищает от стампида. */
+  private refreshInBackground<T>(key: string, options: SwrOptions<T>): void {
+    const task: Promise<void> = this.doRefresh(key, options).finally(() => {
+      this.pendingRefreshes.delete(task);
+    });
+    this.pendingRefreshes.add(task);
+  }
+
+  private async doRefresh<T>(key: string, options: SwrOptions<T>): Promise<void> {
     const acquired = await this.redis.set(this.lockKey(key), '1', 'PX', REFRESH_LOCK_MS, 'NX');
     if (acquired !== 'OK') return;
 
@@ -1646,17 +1967,17 @@ import { SlashCommandBuilder } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { Config } from '../../src/core/config.js';
 import { createRouter } from '../../src/core/commands/router.js';
-import { UserError } from '../../src/core/errors.js';
+import { ProviderError, UserError } from '../../src/core/errors.js';
 import { createLogger } from '../../src/core/logger.js';
 import { createMetrics } from '../../src/core/metrics.js';
-import type { ModuleContext } from '../../src/core/module.js';
+import type { CommandDefinition, ModuleContext } from '../../src/core/module.js';
 import { buildRegistry } from '../../src/core/registry.js';
 import { fakeChatInputInteraction } from '../helpers/interaction.js';
 
 const logger = createLogger({ LOG_LEVEL: 'fatal', NODE_ENV: 'test' } as Config);
 const ctx = { logger } as unknown as ModuleContext;
 
-function routerFor(execute: () => Promise<void>, defer?: { ephemeral: boolean }) {
+function routerFor(execute: CommandDefinition['execute'], defer?: { ephemeral: boolean }) {
   const registry = buildRegistry([
     {
       name: 'test',
@@ -1743,6 +2064,65 @@ describe('createRouter', () => {
     await expect(route(interaction)).resolves.toBeUndefined();
     expect(calls.reply).not.toHaveBeenCalled();
   });
+
+  it('игнорирует интеракцию, не являющуюся slash-командой', async () => {
+    // Различающее утверждение здесь — `execute` не вызван. Проверять только reply и
+    // deferReply бессмысленно: без defer и с непадающим обработчиком они не вызвались бы
+    // и при полностью удалённой защите, то есть тест проходил бы всегда.
+    const execute = vi.fn(async () => {});
+    const route = routerFor(execute);
+    const { interaction, calls } = fakeChatInputInteraction('cmd');
+    Object.defineProperty(interaction, 'isChatInputCommand', { value: () => false });
+
+    await expect(route(interaction)).resolves.toBeUndefined();
+    expect(execute).not.toHaveBeenCalled();
+    expect(calls.reply).not.toHaveBeenCalled();
+    expect(calls.deferReply).not.toHaveBeenCalled();
+  });
+
+  it('превращает ProviderError в сообщение о недоступности сервиса без внутренних деталей', async () => {
+    const route = routerFor(async () => {
+      throw new ProviderError('502 Bad Gateway от upstream', 'riot-lol');
+    });
+    const { interaction, calls } = fakeChatInputInteraction('cmd');
+
+    await route(interaction);
+
+    const content = calls.reply.mock.calls[0]?.[0]?.content as string;
+    expect(content).toContain('riot-lol');
+    expect(content).not.toContain('502');
+    expect(content).not.toContain('Код инцидента');
+  });
+
+  it('не даёт упасть наружу, если само сообщение об ошибке не доставилось', async () => {
+    // Окно ответа Discord могло закрыться. Сообщить пользователю больше нечем,
+    // но исходная ошибка не должна быть заслонена ошибкой доставки.
+    const route = routerFor(async () => {
+      throw new Error('первичная поломка');
+    });
+    const { interaction, calls } = fakeChatInputInteraction('cmd');
+    calls.reply.mockRejectedValue(new Error('окно ответа закрыто'));
+
+    await expect(route(interaction)).resolves.toBeUndefined();
+    expect(calls.reply).toHaveBeenCalled();
+  });
+
+  it('передаёт обработчику логгер с correlationId, а не корневой', async () => {
+    // Иначе всё, что команда пишет сама, невозможно связать со строками роутера.
+    let seen: ModuleContext | undefined;
+    const route = routerFor(async (_interaction, handlerCtx) => {
+      seen = handlerCtx;
+    });
+    const { interaction } = fakeChatInputInteraction('cmd');
+
+    await route(interaction);
+
+    expect(seen).toBeDefined();
+    expect(seen!.logger).not.toBe(ctx.logger);
+    const bindings = (seen!.logger as unknown as { bindings(): Record<string, unknown> }).bindings();
+    expect(bindings['correlationId']).toBe(interaction.id);
+    expect(bindings['command']).toBe('cmd');
+  });
 });
 ```
 
@@ -1785,6 +2165,11 @@ export function createRouter(deps: RouterDeps): (interaction: Interaction) => Pr
       userId: interaction.user.id,
       correlationId: interaction.id,
     });
+    // Обработчик получает контекст с этим же логгером, а не с корневым: иначе всё,
+    // что команда пишет сама, останется без correlationId, и связать её строки с
+    // строками роутера будет нечем. Дешевле сделать здесь один раз, чем повторять
+    // .child({...}) в каждой команде и надеяться, что никто не забудет.
+    const scopedCtx: ModuleContext = { ...ctx, logger: log };
     const stopTimer = metrics.commandDuration.startTimer({ command: interaction.commandName });
 
     try {
@@ -1793,7 +2178,7 @@ export function createRouter(deps: RouterDeps): (interaction: Interaction) => Pr
           entry.command.defer.ephemeral ? { flags: MessageFlags.Ephemeral } : {},
         );
       }
-      await entry.command.execute(interaction, ctx);
+      await entry.command.execute(interaction, scopedCtx);
       stopTimer({ outcome: 'ok' });
       log.info('команда выполнена');
     } catch (error) {
@@ -2278,15 +2663,79 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 }
 ```
 
-- [ ] **Step 4: Прогнать тесты**
+- [ ] **Step 4: Написать падающий тест на защиту от наложения**
 
-Run: `npx vitest run tests/core/scheduler.test.ts && npm run typecheck`
-Expected: 5 тестов PASS.
+Отдельным файлом `tests/core/scheduler-protect.test.ts`, потому что здесь нужен мок
+`croner`, а тесты выше опираются на его настоящую валидацию расписаний.
+
+Тест пиннит **передачу опции**, а не поведение самого croner. Это сознательный
+компромисс: проверять поведение пришлось бы джобой на несколько секунд с
+секундным расписанием, что медленно и нестабильно. Реалистичный сценарий поломки —
+кто-то убирает `protect` при рефакторинге, — ловится и так.
+
+```ts
+import { describe, expect, it, vi } from 'vitest';
+
+/** Перехватываем аргументы конструктора Cron, не запуская настоящее расписание. */
+const constructorCalls: Array<{ expression: string; options: Record<string, unknown> }> = [];
+
+vi.mock('croner', () => ({
+  Cron: class {
+    constructor(expression: string, options: Record<string, unknown>) {
+      constructorCalls.push({ expression, options });
+    }
+    stop(): void {}
+  },
+}));
+
+import type { Config } from '../../src/core/config.js';
+import { createLogger } from '../../src/core/logger.js';
+import type { ModuleContext } from '../../src/core/module.js';
+import { buildRegistry } from '../../src/core/registry.js';
+import { createScheduler } from '../../src/core/scheduler.js';
+
+const logger = createLogger({ LOG_LEVEL: 'fatal', NODE_ENV: 'test' } as Config);
+const ctx = { logger } as unknown as ModuleContext;
+
+describe('createScheduler: защита от наложения запусков', () => {
+  it('передаёт croner protect: true для каждой джобы', () => {
+    // Без protect медленная джоба синхронизации рангов запустится параллельно с собой
+    // и удвоит расход лимита внешнего API — то есть сломает ровно то, ради чего
+    // существует весь rate limiting. Опция обязана быть.
+    constructorCalls.length = 0;
+    const registry = buildRegistry([
+      { name: 'm', jobs: [{ name: 'sync', cron: '*/30 * * * *', run: async () => {} }] },
+    ]);
+
+    createScheduler({ registry, ctx }).start();
+
+    expect(constructorCalls).toHaveLength(1);
+    expect(constructorCalls[0]?.options['protect']).toBe(true);
+    expect(constructorCalls[0]?.expression).toBe('*/30 * * * *');
+  });
+
+  it('передаёт имя джобы, чтобы её было видно в диагностике croner', () => {
+    constructorCalls.length = 0;
+    const registry = buildRegistry([
+      { name: 'm', jobs: [{ name: 'identity:rank-sync', cron: '*/30 * * * *', run: async () => {} }] },
+    ]);
+
+    createScheduler({ registry, ctx }).start();
+
+    expect(constructorCalls[0]?.options['name']).toBe('identity:rank-sync');
+  });
+});
+```
+
+- [ ] **Step 5: Прогнать тесты**
+
+Run: `npx vitest run tests/core/scheduler.test.ts tests/core/scheduler-protect.test.ts && npm run typecheck`
+Expected: 5 + 2 тестов PASS.
 
 - [ ] **Step 5: Коммит**
 
 ```bash
-git add src/core/scheduler.ts tests/core/scheduler.test.ts
+git add src/core/scheduler.ts tests/core/scheduler.test.ts tests/core/scheduler-protect.test.ts
 git commit -m "feat: планировщик cron-джоб с защитой от наложения запусков"
 ```
 
@@ -2580,7 +3029,7 @@ git commit -m "feat: bootstrap бота и graceful shutdown по SIGTERM"
 - [ ] **Step 1: Создать `Dockerfile`**
 
 ```dockerfile
-FROM node:22.12-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -2589,7 +3038,7 @@ COPY src ./src
 COPY scripts ./scripts
 RUN npx tsc -p tsconfig.json
 
-FROM node:22.12-alpine AS runtime
+FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
@@ -2725,7 +3174,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.12'
+          node-version: '24'
           cache: npm
       - run: npm ci
       - run: npm run lint
@@ -2734,14 +3183,35 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    # Сервисы поднимает сам runner: podman в CI не нужен, а образы те же.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bot
+          POSTGRES_PASSWORD: bot
+          POSTGRES_DB: disbot_test
+        ports: ['55432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bot -d disbot_test"
+          --health-interval 3s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['56379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.12'
+          node-version: '24'
           cache: npm
       - run: npm ci
       - run: npm run test:int
+        env:
+          DATABASE_URL_TEST: postgres://bot:bot@localhost:55432/disbot_test
+          REDIS_URL_TEST: redis://localhost:56379
 ```
 
 - [ ] **Step 6: Создать `README.md`**
@@ -2756,7 +3226,7 @@ Discord-бот игрового сообщества. Модульный мон�
 ## Запуск локально
 
 1. `cp .env.example .env` и заполнить `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`.
-2. `docker compose up -d postgres redis`
+2. `podman compose up -d postgres redis`
 3. `npm install`
 4. `npm run db:migrate`
 5. `npm run deploy-commands` — регистрирует slash-команды на сервере из `DISCORD_GUILD_ID`.
@@ -2767,20 +3237,20 @@ Discord-бот игрового сообщества. Модульный мон�
 | Команда | Что делает |
 |---|---|
 | `npm test` | unit-тесты |
-| `npm run test:int` | интеграционные тесты, требуют Docker |
+| `npm run test:int` | интеграционные тесты, требуют запущенную podman-машину |
 | `npm run typecheck` | проверка типов без сборки |
 | `npm run lint` | eslint |
 
 ## Деплой
 
-`docker compose up -d --build`. Домен задаётся переменной `BOT_DOMAIN`, TLS Caddy получает сам.
+`podman compose up -d --build`. Домен задаётся переменной `BOT_DOMAIN`, TLS Caddy получает сам.
 
 Бэкап базы обязателен: потеря Postgres означает безвозвратную потерю уровней и экономики.
 ```
 
 - [ ] **Step 7: Проверить сборку образа и полный прогон**
 
-Run: `docker build -t dis-bot:test . && npm test && npm run typecheck && npm run lint`
+Run: `podman build -t dis-bot:test . && npm test && npm run typecheck && npm run lint`
 Expected: образ собирается, все проверки зелёные.
 
 - [ ] **Step 8: Коммит**
@@ -2797,12 +3267,91 @@ git commit -m "chore: docker-деплой, Caddy с закрытым /metrics и
 Проверяются вручную после Task 14. Соответствуют разделу 10 спеки.
 
 - [ ] Бот подключается к серверу, `/ping` отвечает с латентностью.
-- [ ] `docker compose up -d postgres redis && npm run db:migrate && npm run dev` поднимает окружение.
-- [ ] Миграции применяются на чистой базе (`docker compose down -v`, затем заново).
+- [ ] `podman compose up -d postgres redis && npm run db:migrate && npm run dev` поднимает окружение.
+- [ ] Миграции применяются на чистой базе (`podman compose down -v`, затем заново).
 - [ ] Запуск с пустым `DISCORD_TOKEN` роняет процесс с сообщением, перечисляющим проблему.
-- [ ] `curl localhost:3000/healthz` отдаёт 200; после `docker compose stop postgres` — 503 с `"database":"error"`.
+- [ ] `curl localhost:3000/healthz` отдаёт 200; после `podman compose stop postgres` — 503 с `"database":"error"`.
 - [ ] `curl localhost:3000/metrics` содержит `bot_command_duration_seconds` после вызова `/ping`.
 - [ ] `npm test`, `npm run test:int`, `npm run typecheck`, `npm run lint` — все зелёные.
-- [ ] `docker compose restart bot` — бот возвращается в сеть без ручных действий.
-- [ ] `docker compose kill -s SIGTERM bot` в момент выполнения команды: в логах видно «дожидаемся незавершённой работы», процесс выходит с кодом 0.
+- [ ] `podman compose restart bot` — бот возвращается в сеть без ручных действий.
+- [ ] `podman compose kill -s SIGTERM bot` в момент выполнения команды: в логах видно «дожидаемся незавершённой работы», процесс выходит с кодом 0.
 - [ ] Запрос `https://<домен>/metrics` снаружи возвращает 404.
+
+---
+
+## Что изменилось после реализации (по итогам финального ревью ветки)
+
+Задачи выше описывают код таким, каким он писался. Финальное ревью всей ветки нашло
+1 Critical, 8 Important и 7 Minor, плюс 6 тестов, проходивших при вырезанной проверяемой
+фиче. Всё исправлено в ветке; этот раздел перечисляет расхождения, чтобы код и план не
+разъехались и никто не воспроизвёл дефекты заново.
+
+**Critical.** `createDatabase` теперь принимает логгер и вешает `pool.on('error')`.
+Без этого смерть простаивающего клиента (перезапуск Postgres, `pg_terminate_backend`,
+разрыв от NAT, failover managed-БД) была необработанным исключением и убивала процесс
+**в обход** graceful shutdown. Воспроизведено до фикса: `exit 42` на `57P01`. После
+фикса процесс выживает и пул восстанавливается.
+
+**Кэш.** Два изменения. Во-первых, `refreshInBackground` получил `.catch` — без него
+отклонение `doRefresh` становилось необработанным, потому что `.finally` удаляет задачу
+из `pendingRefreshes` раньше, чем отклонение всплывёт, и `allSettled` в `close()` его
+уже не видит. Во-вторых, лок против стампида появился и на **холодном** промахе: раньше
+он стоял только в фоновом обновлении, и N одновременных промахов давали N вызовов
+загрузчика — прямо против того, что обещает Task 5. Проверено: 10 параллельных вызовов
+дают ровно один вызов загрузчика. Плюс `redis.on('error')` в конструкторе.
+
+**Graceful shutdown.** Порядок был обратным требованию спеки: `drain` ждал снимок
+незавершённой работы и только потом останавливал приём. Интеракции, пришедшие в окно
+дренажа, получали закрытые БД и Redis посреди работы. Введён флаг `stopping`,
+проверяемый **обоими** слушателями — интеракций и событий модулей; `scheduler.stop()`
+перенесён до `drain`. Джобы планировщика теперь идут через `shutdown.track`, иначе
+SIGTERM обрывал их посреди записи (croner `stop()` не прерывает текущий запуск).
+
+**Прочее в ядре.** Единый список модулей в `src/modules.ts` вместо двух копий в
+`index.ts` и `deploy-commands.ts`. Обработчики `unhandledRejection` и
+`uncaughtException`. В `redact` добавлены `config.DATABASE_URL`, `config.REDIS_URL` и
+`err.client` — последнее потому, что `pg-pool` вешает клиента на ошибку, и pino
+сериализовал его целиком: 3791 байт на строку с `"user":"bot"`, хостом и портом. После
+редакции 1089 байт с сохранёнными кодом и стеком. Проверка уникальности имён джоб в
+реестре. Валидация протокола у `DATABASE_URL` и `REDIS_URL`.
+
+**Деплой.** `BOT_DOMAIN` теперь доходит до контейнера Caddy; `POSTGRES_PASSWORD` и
+`BOT_DOMAIN` добавлены в `.env.example`; `DATABASE_URL` и `REDIS_URL` переопределяются
+для сервисов `migrate` и `bot`, потому что `localhost` из `.env` внутри контейнера
+означает сам контейнер. Форма `${BOT_DOMAIN:?}` заменена на `${BOT_DOMAIN:-}`: compose
+интерполирует файл целиком до выбора сервисов, и `:?` блокировал любую команду, включая
+локальный шаг из README.
+
+**Тесты, проходившие при вырезанной фиче.** Исправлены шесть: проверка остановки джоб
+утверждала только отсутствие исключения; тест отклонённой работы в `shutdown` сам
+навешивал `.catch`, поэтому не пиннил внутренний обработчик `track`; `ping` проверял
+`flags` на `toBeDefined()`, что верно и для нуля; тест внешнего ключа принимал любую
+ошибку вместо кода `23503`; гистограмму длительности команд не наблюдал никто; и
+`tests/smoke.test.ts` удалён вместе с мёртвым `src/core/meta.ts`.
+
+**Опровергнутая посылка.** Ре-ревью утверждало, что перестановка `.catch` и `.finally`
+в `refreshInBackground` возвращает необработанное отклонение. Проверено мутацией — не
+возвращает: `.catch` гасит отклонение с любой позиции в цепочке. Настоящее свойство —
+наличие `.catch` вообще, и его удаление тест валит. Комментарий в тесте исправлен,
+иначе следующий читатель проверил бы перестановку, увидел зелёный тест и счёл его
+вакуумным.
+
+### Осознанно оставлено
+
+Каждый пункт — решение с обоснованием, а не забытая недоделка. Проверять при работе над
+соответствующим кодом.
+
+| Что | Почему оставлено |
+|---|---|
+| Гарантия против стампида держится только для загрузчиков быстрее 2 с; сверх этого проигравшие вызывают загрузчик параллельно | Стампид отложен, а не предотвращён, но границы известны и ограничены. Предохранитель нужен: застрявший победитель не должен блокировать всех |
+| `pollForData` спит 50 мс до первого чтения и не перепроверяет возраст записи | Проигравший платит ≥50 мс даже при быстром победителе. Возраст: узкая достижимость — нужен лаг TTL Redis или расхождение часов |
+| Предохранитель кэша в 2 с превышает таймаут проверки healthz в 1 с | Проба healthz идёт холодным путём каждую проверку; при застрявшем локе healthz отдаст `cache: timeout`. Лок живёт ≤30 с, нужно 3 подряд отказа — контейнер не флапнет |
+| `HTTP_PORT=""` бросает вместо подстановки 3000 | Падает громко на старте с внятным сообщением, `.env.example` содержит 3000 |
+| Порт 3000 захардкожен в healthcheck compose и в Caddyfile | Смена `HTTP_PORT` молча сломает проксирование. Реальный риск низкий: порт никто не меняет |
+| Пароль интерполируется в URL в compose | Ломается на символах `@ : / ? # %` в пароле. Предупреждения в `.env.example` нет |
+| `scheduler.ts` помечает любой throw конструктора croner как некорректное расписание | После добавления проверки уникальности имён джоб этот путь недостижим |
+| Двойной SIGTERM даёт два параллельных `drain` | Предсуществующее; ошибки ловятся пошагово в `onSignal`. Флаг `stopping` делает это однострочной правкой, если понадобится |
+| `bot_provider_errors_total` объявлен, но не инкрементируется | Единственное место инкремента появляется на этапе 1 вместе с HTTP-клиентом провайдеров |
+| Сообщение `test-services.mjs` говорит «запусти машину», когда причина — `podman` не найден в PATH | Эргономика скрипта, не лежащего ни на одном продовом пути |
+| Мёртвый `COPY drizzle.config.ts` в Dockerfile | `tsconfig` его не включает, в образ не попадает ничего лишнего |
+| `@typescript-eslint/no-floating-promises` выключен | Все `void`-вызовы намеренны и корректны: `track` навешивает обработчик. Роль сети безопасности выполняют `unhandledRejection` и `uncaughtException` |
