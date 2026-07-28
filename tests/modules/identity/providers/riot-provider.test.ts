@@ -197,6 +197,28 @@ describe('createRiotProvider', () => {
     ).rejects.toThrow(UserError);
   });
 
+  it('берёт квоту перед каждым из вызовов к Riot, а не только перед первым', async () => {
+    // completeVerification делает два обращения к Riot: сперва account by-riot-id,
+    // потом third-party-code. Проверяем точное число вызовов acquire (а не «хотя бы
+    // раз»), чтобы пропажа квоты у любого из двух вызовов, а не только у первого,
+    // была замечена — noopLimiter в остальных тестах для этого не годится, так как
+    // он не обёрнут в vi.fn() и число вызовов нигде не проверяет.
+    const acquire = vi.fn(async () => {});
+    const provider = createRiotProvider({
+      game: 'lol',
+      apiKey: 'k',
+      client: clientSequence(account, 'КОД1234'),
+      rateLimiter: { acquire, close: async () => {} },
+    });
+
+    await provider.completeVerification!(
+      { challenge: 'КОД1234', expiresAt: new Date(Date.now() + 60_000), payload: { platform: 'euw1' } },
+      'Игрок#EUW',
+    );
+
+    expect(acquire).toHaveBeenCalledTimes(2);
+  });
+
   it('бросает ProviderError, а не TypeError, на неожиданной форме ответа ранга', async () => {
     // Долг из Task 2: normalizeRiotEntry не валидирует форму входа сама и на битом JSON
     // бросит TypeError. Эту работу должна делать schema, переданная в client.json —
