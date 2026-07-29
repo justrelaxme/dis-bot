@@ -8,10 +8,27 @@ import {
   type ButtonInteraction,
   type Guild,
   type Interaction,
+  type ModalSubmitInteraction,
+  type StringSelectMenuInteraction,
 } from 'discord.js';
 import { UserError, describeForUser } from '../../../core/errors.js';
 import type { CommandDefinition, EventHandler, ModuleContext } from '../../../core/module.js';
 import type { ChannelsGateway } from '../discord/channels.js';
+import {
+  BTN_CHECKIN,
+  BTN_PANEL_CREATE,
+  BTN_PANEL_FIND,
+  BTN_PANEL_HELP,
+  BTN_PANEL_SOLO,
+  MODAL_TEAM_NAME,
+  SELECT_TEAM_JOIN,
+  nextStepText,
+  rosterFullNudge,
+  teamNameModal,
+  teamPicker,
+} from '../discord/onboarding.js';
+import { TOURNAMENT_GAME_LABELS } from '../games.js';
+import { hasVerifiedLink, linkCommandFor } from '../services/strength.js';
 import type { TournamentsService } from '../services/tournaments.js';
 
 /**
@@ -323,29 +340,166 @@ async function cleanup(deps: PlayDeps, guild: Guild, tournamentId: number, ctx: 
  * `interactionCreate` сам и разбирает свои кнопки по префиксу custom_id.
  */
 export function createButtonHandler(deps: PlayDeps): EventHandler<'interactionCreate'> {
+  const MATCH_PREFIXES = [BTN_JOIN, BTN_CONFIRM, BTN_DISPUTE];
+  const PANEL_IDS = [BTN_PANEL_CREATE, BTN_PANEL_FIND, BTN_PANEL_HELP, BTN_PANEL_SOLO, BTN_CHECKIN];
+
   return {
     event: 'interactionCreate',
     async handle(ctx, interaction: Interaction): Promise<void> {
-      if (!interaction.isButton()) return;
-      const [prefix, rawId] = interaction.customId.split(':');
-      if (prefix !== BTN_JOIN && prefix !== BTN_CONFIRM && prefix !== BTN_DISPUTE) return;
-
-      const id = Number.parseInt(rawId ?? '', 10);
-      if (!Number.isInteger(id)) return;
+      const isOurs =
+        (interaction.isButton() &&
+          (PANEL_IDS.includes(interaction.customId) ||
+            MATCH_PREFIXES.includes(interaction.customId.split(':')[0] ?? ''))) ||
+        (interaction.isModalSubmit() && interaction.customId === MODAL_TEAM_NAME) ||
+        (interaction.isStringSelectMenu() && interaction.customId === SELECT_TEAM_JOIN);
+      if (!isOurs) return;
 
       try {
+        if (interaction.isModalSubmit()) {
+          await handleTeamNameModal(deps, interaction);
+          return;
+        }
+        if (interaction.isStringSelectMenu()) {
+          await handleTeamPick(deps, interaction);
+          return;
+        }
+        if (!interaction.isButton()) return;
+
+        if (PANEL_IDS.includes(interaction.customId)) {
+          await handlePanel(deps, interaction, ctx);
+          return;
+        }
+
+        const [prefix, rawId] = interaction.customId.split(':');
+        const id = Number.parseInt(rawId ?? '', 10);
+        if (!Number.isInteger(id) || prefix === undefined) return;
         await handleButton(deps, interaction, prefix, id, ctx);
       } catch (error) {
         const described = describeForUser(error);
         if (described.incidentId) {
-          ctx.logger.error({ err: error, incidentId: described.incidentId }, 'кнопка турнира упала');
+          ctx.logger.error({ err: error, incidentId: described.incidentId }, 'взаимодействие турнира упало');
         }
         const payload = { content: described.text, flags: MessageFlags.Ephemeral } as const;
-        if (interaction.deferred || interaction.replied) await interaction.followUp(payload);
-        else await interaction.reply(payload);
+        // update() уже мог закрыть взаимодействие — тогда добавляем сообщение, а не отвечаем.
+        if (interaction.isRepliable()) {
+          if (interaction.deferred || interaction.replied) await interaction.followUp(payload);
+          else await interaction.reply(payload);
+        }
       }
     },
   };
+}
+
+/** Панель регистрации: всё, что нужно новичку, здесь и кнопками. */
+async function handlePanel(deps: PlayDeps, interaction: ButtonInteraction, ctx: ModuleContext): Promise<void> {
+  const guild = requireGuild(interaction.guild);
+  const tournament = await currentTournament(deps, guild);
+  const userId = interaction.user.id;
+
+  if (interaction.customId === BTN_PANEL_CREATE) {
+    // Модальное окно нельзя показать после defer — отвечаем им сразу.
+    await interaction.showModal(teamNameModal());
+    return;
+  }
+
+  if (interaction.customId === BTN_PANEL_SOLO) {
+    const entrant = await deps.tournaments.createEntrant(tournament.id, userId, interaction.user.displayName);
+    await interaction.reply({
+      content: `Записал: **${entrant.displayName}**. Перед стартом нажми **Я готов**.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.customId === BTN_CHECKIN) {
+    const entrant = await deps.tournaments.checkIn(tournament.id, userId);
+    await interaction.reply({
+      content: `**${entrant.displayName}** отмечена и попадёт в сетку.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.customId === BTN_PANEL_FIND) {
+    const teams = await deps.tournaments.activeEntrants(tournament.id);
+    const withCounts = await Promise.all(
+      teams.map(async (entrant) => ({ entrant, have: (await deps.tournaments.membersOf(entrant.id)).length })),
+    );
+    const picker = teamPicker(withCounts, tournament.teamSize);
+
+    await interaction.reply({
+      content: picker
+        ? 'Выбери команду — вступишь сразу, подтверждения капитана не нужно.'
+        : 'Пока никто не набирает состав. Создай свою команду — остальные вступят к тебе.',
+      ...(picker ? { components: [picker] } : {}),
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  // Что мне делать: смотрим на состояние именно этого человека.
+  const entrant = await deps.tournaments.entrantOfUser(tournament.id, userId);
+  const roster = entrant ? await deps.tournaments.membersOf(entrant.id) : [];
+  const all = await deps.tournaments.activeEntrants(tournament.id);
+  const openCounts = await Promise.all(all.map((row) => deps.tournaments.membersOf(row.id)));
+
+  await interaction.reply({
+    content: nextStepText({
+      linked: tournament.requireVerified ? await hasVerifiedLink(ctx.db, userId, tournament.game) : true,
+      linkCommand: linkCommandFor(tournament.game),
+      gameLabel: TOURNAMENT_GAME_LABELS[tournament.game] ?? tournament.game,
+      entrant,
+      isCaptain: entrant?.captainUserId === userId,
+      rosterSize: roster.length,
+      teamSize: tournament.teamSize,
+      openTeams: openCounts.filter((members) => members.length < tournament.teamSize).length,
+      registrationOpen: tournament.state === 'registration',
+    }),
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleTeamNameModal(deps: PlayDeps, interaction: ModalSubmitInteraction): Promise<void> {
+  const guild = requireGuild(interaction.guild);
+  const tournament = await currentTournament(deps, guild);
+  const name = interaction.fields.getTextInputValue('name');
+
+  const entrant = await deps.tournaments.createEntrant(tournament.id, interaction.user.id, name);
+  await interaction.reply({
+    content: [
+      `Команда **${entrant.displayName}** создана, ты капитан.`,
+      `Осталось набрать ${tournament.teamSize - 1}: скажи своим нажать **Найти команду** и выбрать вашу.`,
+      'Как соберётесь — нажми **Я готов**.',
+    ].join('\n'),
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleTeamPick(deps: PlayDeps, interaction: StringSelectMenuInteraction): Promise<void> {
+  const guild = requireGuild(interaction.guild);
+  const tournament = await currentTournament(deps, guild);
+  const entrantId = Number.parseInt(interaction.values[0] ?? '', 10);
+  if (!Number.isInteger(entrantId)) throw new UserError('Не понял, какая это команда.');
+
+  const entrant = await deps.tournaments.joinEntrant(entrantId, interaction.user.id);
+  const roster = await deps.tournaments.membersOf(entrant.id);
+  const missing = tournament.teamSize - roster.length;
+
+  await interaction.update({
+    content: [
+      `Ты в составе **${entrant.displayName}** — ${roster.length} из ${tournament.teamSize}.`,
+      missing > 0
+        ? `Не хватает ещё ${missing}.`
+        : 'Состав собран. Осталось, чтобы капитан нажал **Я готов**.',
+    ].join('\n'),
+    components: [],
+  });
+
+  // Состав только что стал полным — подсказываем капитану, иначе команда просто не попадёт
+  // в сетку, и человек узнает об этом уже после старта.
+  if (missing === 0 && interaction.channel?.isSendable()) {
+    await interaction.channel.send(rosterFullNudge(entrant.displayName, entrant.captainUserId));
+  }
 }
 
 async function handleButton(

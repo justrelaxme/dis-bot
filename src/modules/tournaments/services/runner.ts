@@ -3,7 +3,8 @@ import type { Database } from '../../../core/db/client.js';
 import type { Logger } from '../../../core/logger.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { ScheduleRow, TournamentGame } from '../schema.js';
-import { announcementText, eventLabel, localParts, parseClock, type CycleService } from './cycle.js';
+import { checkinReminder, registrationPanel } from '../discord/onboarding.js';
+import { eventLabel, localParts, parseClock, type CycleService } from './cycle.js';
 import type { PollsService } from './polls.js';
 import { entrantStrengths } from './strength.js';
 import type { TournamentsService } from './tournaments.js';
@@ -19,6 +20,9 @@ export interface RunnerDeps {
 }
 
 const POLL_QUESTION = 'По какой дисциплине проводим турнир сегодня?';
+
+/** За сколько минут до старта напоминать неотметившимся. */
+const REMINDER_LEAD_MINUTES = 15;
 
 async function announceChannel(client: Client, schedule: ScheduleRow): Promise<TextChannel | null> {
   if (!schedule.announceChannelId) return null;
@@ -156,24 +160,40 @@ async function runGuild(
     await deps.cycles.updateCycle(cycle.id, { stage: 'registration', tournamentId: tournament.id });
 
     const channel = await announceChannel(client, schedule);
-    await channel?.send(
-      announcementText({
-        name: tournament.name,
-        game,
-        entryMode: schedule.entryMode,
-        teamSize: schedule.teamSize,
-        maxEntrants: schedule.maxEntrants,
-        startsAtUnix: Math.floor(startsAt.getTime() / 1_000),
-        bracketUrl: `${deps.publicBaseUrl}/t/${tournament.id}`,
-      }),
-    );
+    if (channel) {
+      // Панель с кнопками, а не инструкция текстом: новичок не должен разбираться, какую
+      // команду набрать, — он нажимает «Что мне делать?» и получает свой следующий шаг.
+      const panel = registrationPanel(tournament);
+      await channel.send({
+        content: [
+          panel.content,
+          '',
+          `Старт <t:${Math.floor(startsAt.getTime() / 1_000)}:t> · сетка: ${deps.publicBaseUrl}/t/${tournament.id}`,
+        ].join('\n'),
+        components: panel.components,
+      });
+    }
     return;
   }
 
   // Шаг 3: время старта — жеребьёвка, сетка, комнаты.
   if (cycle.stage === 'registration') {
-    if (minutes < startAt) return;
     if (cycle.tournamentId === null) return;
+
+    // За четверть часа до старта напоминаем тем, кто не отметился: команда, забывшая
+    // нажать «Я готов», узнаёт об этом уже после жеребьёвки, когда её в сетке нет.
+    // Условие на точное совпадение минуты, а тик — раз в минуту: напоминание уходит один раз.
+    if (minutes === startAt - REMINDER_LEAD_MINUTES) {
+      const waiting = (await deps.tournaments.activeEntrants(cycle.tournamentId)).filter(
+        (entrant) => entrant.checkedInAt === null,
+      );
+      if (waiting.length > 0) {
+        const channel = await announceChannel(client, schedule);
+        await channel?.send(checkinReminder(waiting, REMINDER_LEAD_MINUTES));
+      }
+    }
+
+    if (minutes < startAt) return;
 
     const entrants = await deps.tournaments.activeEntrants(cycle.tournamentId);
     const ready = entrants.filter((entrant) => entrant.checkedInAt !== null);

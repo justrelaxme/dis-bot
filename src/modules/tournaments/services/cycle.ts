@@ -2,14 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
 import type { Logger } from '../../../core/logger.js';
 import { EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
-import { TOURNAMENT_GAME_LABELS } from '../games.js';
-import {
-  tournamentCycles,
-  tournamentSchedules,
-  type CycleRow,
-  type ScheduleRow,
-  type TournamentGame,
-} from '../schema.js';
+import { tournamentCycles, tournamentSchedules, type CycleRow, type ScheduleRow } from '../schema.js';
 
 /** Сколько дней подряд без участников терпим, прежде чем встать на паузу. */
 export const EMPTY_DAYS_LIMIT = 3;
@@ -135,42 +128,6 @@ export function createCycleService(deps: CycleServiceDeps) {
 }
 
 export type CycleService = ReturnType<typeof createCycleService>;
-
-/** Текст, которым бот объявляет условия участия. Отдельная функция — чтобы его было видно. */
-export function announcementText(input: {
-  name: string;
-  game: TournamentGame;
-  entryMode: 'solo' | 'team';
-  teamSize: number;
-  maxEntrants: number;
-  startsAtUnix: number;
-  bracketUrl: string;
-}): string {
-  const gameLabel = TOURNAMENT_GAME_LABELS[input.game] ?? input.game;
-
-  const howTo =
-    input.entryMode === 'team'
-      ? [
-          `**Как попасть.** Капитан пишет \`/team create\` с названием — бот вывесит карточку с кнопкой «Вступить». Остальные жмут её сами, приглашать никого не надо.`,
-          `**Состав:** ${input.teamSize} человек. Каждому нужна подтверждённая привязка ${gameLabel} — команда \`/link\`.`,
-          `**До старта** капитан отмечает состав: \`/checkin\`. Не отметились — в сетку не попадёте.`,
-        ]
-      : [
-          `**Как попасть.** Напиши \`/team create\` со своим ником — состав тут не нужен.`,
-          `**Нужна подтверждённая привязка** ${gameLabel} — команда \`/link\`.`,
-          `**До старта** отметься: \`/checkin\`.`,
-        ];
-
-  return [
-    `## ${input.name}`,
-    `${gameLabel} · ${input.entryMode === 'team' ? `команды по ${input.teamSize}` : 'одиночки'} · до ${input.maxEntrants} участников`,
-    `Старт <t:${input.startsAtUnix}:t>, регистрация до этого времени.`,
-    '',
-    ...howTo,
-    '',
-    `Сетка и результаты: ${input.bracketUrl}`,
-  ].join('\n');
-}
 
 /** Как назвать событие по числу участников: два — уже не турнир, но проводим. */
 export function eventLabel(entrantCount: number): string {

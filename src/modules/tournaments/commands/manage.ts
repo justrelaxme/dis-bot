@@ -4,6 +4,7 @@ import type { CommandDefinition, ModuleContext } from '../../../core/module.js';
 import { EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
 import { createTournamentRooms } from './play.js';
 import type { ChannelsGateway } from '../discord/channels.js';
+import { registrationPanel } from '../discord/onboarding.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentGame } from '../schema.js';
 import { parseClock, type CycleService } from '../services/cycle.js';
@@ -186,31 +187,16 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
   const closesAt = new Date(Date.now() + hours * 60 * 60 * 1_000);
   await deps.tournaments.openRegistration(tournament.id, closesAt);
 
-  // Условия участия — отдельный шаг, а не приписка: человек, впервые зашедший на сервер,
-  // должен понять из одного сообщения, что делать.
-  const howTo =
-    mode === 'team'
-      ? [
-          `**Как попасть.** Капитан пишет \`/team create\` с названием — бот вывесит карточку команды с кнопкой «Вступить». Остальные жмут кнопку сами, приглашать никого не надо.`,
-          `**Состав:** ${teamSize} человек. Нужна подтверждённая привязка ${TOURNAMENT_GAME_LABELS[game]} у каждого — делается командой \`/link\`.`,
-          `**Перед старом** капитан отмечает состав командой \`/checkin\`. Не отметились — в сетку не попадёте.`,
-        ]
-      : [
-          `**Как попасть.** Напиши \`/team create\` со своим ником — этого достаточно, состав тут не нужен.`,
-          `**Нужна подтверждённая привязка** ${TOURNAMENT_GAME_LABELS[game]} — делается командой \`/link\`.`,
-          `**Перед старом** отметься командой \`/checkin\`.`,
-        ];
-
+  // Панель с кнопками вместо инструкции текстом: новичку не надо разбираться, какую
+  // команду набрать, — он нажимает «Что мне делать?» и получает свой следующий шаг.
+  const panel = registrationPanel(tournament);
   await interaction.editReply({
     content: [
-      `## ${name}`,
-      `${TOURNAMENT_GAME_LABELS[game]} · ${mode === 'team' ? `команды по ${teamSize}` : 'одиночки'} · до ${maxEntrants} участников`,
-      `Регистрация открыта до <t:${Math.floor(closesAt.getTime() / 1_000)}:t>.`,
+      panel.content,
       '',
-      ...howTo,
-      '',
-      `Сетка и результаты: ${deps.publicBaseUrl}/t/${tournament.id}`,
+      `Старт <t:${Math.floor(closesAt.getTime() / 1_000)}:t> · сетка: ${deps.publicBaseUrl}/t/${tournament.id}`,
     ].join('\n'),
+    components: panel.components,
   });
 }
 

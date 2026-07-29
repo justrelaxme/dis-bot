@@ -32,6 +32,41 @@ interface StrengthRow extends Record<string, unknown> {
 }
 
 /**
+ * Есть ли у человека подтверждённая привязка под эту дисциплину. Нужно проводнику:
+ * новичок, которому просто сказали «нужна привязка», не понимает, есть она у него или нет,
+ * и упирается в отказ уже на регистрации. Бот должен уметь ответить за него.
+ *
+ * Для `other` провайдера нет — привязка не требуется, и это законное состояние.
+ */
+export async function hasVerifiedLink(db: Database, userId: string, game: TournamentGame): Promise<boolean> {
+  const provider = GAME_TO_PROVIDER[game];
+  if (provider === null) return true;
+
+  const result = await db.execute<{ ok: number }>(sql`
+    select 1 as ok
+    from game_accounts
+    where user_id = ${userId} and provider = ${provider} and verified_at is not null
+    limit 1
+  `);
+  return result.rows.length > 0;
+}
+
+/** Как называется команда привязки для этой дисциплины — чтобы подсказка была точной. */
+export function linkCommandFor(game: TournamentGame): string {
+  switch (game) {
+    case 'dota2':
+      return '/link steam';
+    case 'lol':
+    case 'tft':
+      return '/link riot';
+    case 'valorant':
+      return '/link valorant';
+    default:
+      return '/link';
+  }
+}
+
+/**
  * Сила каждого участника: для команды — **средний** ранг состава, для одиночки — его
  * собственный. Средний, а не максимальный: команда из одного Immortal и четырёх Herald
  * играет не как Immortal, и сеять её первой значило бы отдать ей пропуск, которого она
