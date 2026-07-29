@@ -49,6 +49,23 @@ export class Cache {
     });
   }
 
+  /**
+   * Счётчик событий в скользящем окне: возвращает, сколько раз это случилось с начала окна.
+   *
+   * `INCR` атомарен, поэтому два одновременных сообщения не потеряют друг друга — а именно
+   * это и происходит при флуде, ради распознавания которого счётчик и нужен. Срок ставится
+   * только на первом инкременте: иначе каждое новое событие продлевало бы окно, и оно
+   * никогда бы не закрылось.
+   *
+   * Счётчик в Redis, а не в памяти процесса, по той же причине, что и пауза начисления
+   * опыта: после перезапуска нарушителю не должно доставаться чистое окно.
+   */
+  async incrementInWindow(key: string, windowMs: number): Promise<number> {
+    const count = await this.redis.incr(`window:${key}`);
+    if (count === 1) await this.redis.pexpire(`window:${key}`, windowMs);
+    return count;
+  }
+
   async swr<T>(key: string, options: SwrOptions<T>): Promise<CachedValue<T>> {
     const entry = await this.read<T>(key);
     const age = entry ? Date.now() - entry.storedAt : Number.POSITIVE_INFINITY;
