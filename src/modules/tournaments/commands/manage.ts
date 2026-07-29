@@ -2,6 +2,7 @@ import { PermissionFlagsBits, SlashCommandBuilder, type Guild } from 'discord.js
 import { UserError } from '../../../core/errors.js';
 import type { CommandDefinition, ModuleContext } from '../../../core/module.js';
 import { EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
+import { ensureMatchThreads } from './play.js';
 import type { ChannelsGateway } from '../discord/channels.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentGame } from '../schema.js';
@@ -201,6 +202,10 @@ async function start(interaction: Interaction, guild: Guild, deps: ManageDeps, c
     });
     if (channelId) await deps.tournaments.attachVoice(entrant.id, channelId);
   }
+
+  // Комнаты матчей первого круга: соперникам надо договориться о лобби, а каналы команд
+  // приватные и друг друга не видят.
+  await ensureMatchThreads(deps, guild, tournament.id);
 
   const pairs = view.matches
     .filter((match) => match.round === 1 && match.entrantAId !== null && match.entrantBId !== null)

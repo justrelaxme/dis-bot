@@ -237,8 +237,44 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
       });
 
       if (result.finished) await cleanup(deps, guild, tournament.id, ctx);
+      else await ensureMatchThreads(deps, guild, tournament.id);
     },
   };
+}
+
+/**
+ * Создаёт комнаты матчам, которым они нужны. Вызывается после каждого изменения сетки:
+ * выборка идёт по отсутствию ветки, поэтому повторный вызов добирает то, что не удалось
+ * создать в прошлый раз, и ничего не дублирует.
+ *
+ * Каналы команд приватные, значит без этой комнаты соперники друг с другом не свяжутся —
+ * а им надо договориться о лобби, пароле и времени.
+ */
+export async function ensureMatchThreads(deps: PlayDeps, guild: Guild, tournamentId: number): Promise<void> {
+  const tournament = await deps.tournaments.byId(tournamentId);
+  if (!tournament.matchParentId) return;
+
+  const pending = await deps.tournaments.matchesNeedingThread(tournamentId);
+  if (pending.length === 0) return;
+
+  const view = await deps.tournaments.bracket(tournamentId);
+  const nameOf = (id: number | null): string =>
+    view.entrants.find((entrant) => entrant.id === id)?.displayName ?? '?';
+
+  for (const match of pending) {
+    const [a, b] = await Promise.all([
+      deps.tournaments.membersOf(match.entrantAId ?? 0),
+      deps.tournaments.membersOf(match.entrantBId ?? 0),
+    ]);
+
+    const threadId = await deps.channels.createMatchThread({
+      guild,
+      parentId: tournament.matchParentId,
+      title: `Матч ${match.id}: ${nameOf(match.entrantAId)} — ${nameOf(match.entrantBId)}`,
+      memberIds: [...a, ...b],
+    });
+    if (threadId) await deps.tournaments.attachThread(match.id, threadId);
+  }
 }
 
 /** Уборка комнат после турнира: без неё сервер за месяц ежедневных турниров забьётся. */
@@ -247,6 +283,13 @@ async function cleanup(deps: PlayDeps, guild: Guild, tournamentId: number, ctx: 
   for (const entrant of entrants) {
     if (entrant.voiceChannelId) await deps.channels.deleteChannel(guild, entrant.voiceChannelId);
   }
+
+  // Ветки не удаляем, а архивируем: в них осталась переписка о матче, и она может
+  // понадобиться, если кто-то придёт спорить об уже закрытом результате.
+  for (const threadId of await deps.tournaments.closedThreads(tournamentId)) {
+    await deps.channels.archiveThread(guild, threadId);
+  }
+
   ctx.logger.info({ tournamentId }, 'комнаты турнира убраны');
 }
 
@@ -266,7 +309,7 @@ export function createButtonHandler(deps: PlayDeps): EventHandler<'interactionCr
       if (!Number.isInteger(id)) return;
 
       try {
-        await handleButton(deps, interaction, prefix, id);
+        await handleButton(deps, interaction, prefix, id, ctx);
       } catch (error) {
         const described = describeForUser(error);
         if (described.incidentId) {
@@ -285,6 +328,7 @@ async function handleButton(
   interaction: ButtonInteraction,
   prefix: string,
   id: number,
+  ctx: ModuleContext,
 ): Promise<void> {
   const guild = requireGuild(interaction.guild);
   const tournament = await currentTournament(deps, guild);
@@ -311,6 +355,12 @@ async function handleButton(
     await interaction.followUp({
       content: `Матч №${match.id} подтверждён: победа **${winner?.displayName ?? '?'}**.${finished ? `\n\n🏆 Турнир завершён. Победитель — **${winner?.displayName ?? '?'}**.` : ''}`,
     });
+
+    // Победитель продвинулся — у следующего матча появились оба соперника, значит ему
+    // нужна комната. А если это был последний матч, комнаты пора убирать: раньше этот
+    // путь уборку не запускал, и после турнира, закрытого кнопкой, каналы оставались.
+    if (finished) await cleanup(deps, guild, tournament.id, ctx);
+    else await ensureMatchThreads(deps, guild, tournament.id);
     return;
   }
 

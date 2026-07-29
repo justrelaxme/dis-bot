@@ -425,6 +425,41 @@ export function createTournamentsService(deps: { db: Database }) {
         .where(eq(tournamentEntrants.id, entrantId));
     },
 
+    /**
+     * Матчи, которым нужна комната: оба соперника известны, играть можно, а ветки ещё нет.
+     * Выборка идёт по факту отсутствия `threadId`, а не по «только что созданным», поэтому
+     * повторный вызов сам добирает то, что не удалось создать в прошлый раз — отказ Discord
+     * лечится следующей попыткой, а не остаётся навсегда.
+     */
+    async matchesNeedingThread(tournamentId: number): Promise<MatchRow[]> {
+      return db
+        .select()
+        .from(tournamentMatches)
+        .where(
+          and(
+            eq(tournamentMatches.tournamentId, tournamentId),
+            inArray(tournamentMatches.state, ['ready', 'reported', 'disputed']),
+            isNull(tournamentMatches.threadId),
+            sql`${tournamentMatches.entrantAId} is not null`,
+            sql`${tournamentMatches.entrantBId} is not null`,
+          ),
+        )
+        .orderBy(asc(tournamentMatches.round), asc(tournamentMatches.slot));
+    },
+
+    async attachThread(matchId: number, threadId: string): Promise<void> {
+      await db.update(tournamentMatches).set({ threadId }).where(eq(tournamentMatches.id, matchId));
+    },
+
+    /** Ветки закрытых матчей — чтобы архивировать их при уборке. */
+    async closedThreads(tournamentId: number): Promise<string[]> {
+      const rows = await db
+        .select({ threadId: tournamentMatches.threadId })
+        .from(tournamentMatches)
+        .where(eq(tournamentMatches.tournamentId, tournamentId));
+      return rows.map((row) => row.threadId).filter((id): id is string => id !== null);
+    },
+
     async bracket(tournamentId: number): Promise<BracketView> {
       const tournament = await byId(tournamentId);
       const [entrants, matches] = await Promise.all([
