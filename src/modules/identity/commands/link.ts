@@ -1,5 +1,5 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
-import { UserError } from '../../../core/errors.js';
+import { describeForUser, UserError } from '../../../core/errors.js';
 import type { EventBus } from '../../../core/events/bus.js';
 import type { CommandDefinition } from '../../../core/module.js';
 import { canVerify, type GameProvider } from '../providers/provider.js';
@@ -82,7 +82,7 @@ export function createLinkCommand(deps: IdentityDeps): CommandDefinition {
           ),
       ),
 
-    async execute(interaction) {
+    async execute(interaction, ctx) {
       const userId = interaction.user.id;
       await deps.linking.ensureUser(userId);
 
@@ -162,31 +162,92 @@ export function createLinkCommand(deps: IdentityDeps): CommandDefinition {
 
       // takeChallenge помечает испытание использованным (инкремент попыток, выброс по
       // истечении/лимиту) — это одноразовость подтверждения, и её сайд-эффект нужен
-      // даже если сам возврат не используется. Данные для проверки при этом берутся
-      // из уже прочитанного pending: pendingChallenge и takeChallenge читают одну и ту
-      // же строку accountVerifications, так что оба payload равнозначны.
+      // даже если сам возврат не используется.
+      //
+      // Платформа в payload при этом обновляется на ту, что указана в ТЕКУЩЕМ вызове,
+      // а не оставляется из pending.payload (записанного на первом вызове). Игрок мог
+      // ошибиться в платформе, когда запрашивал код, и указать верную только на этом,
+      // подтверждающем шаге — именно она проверяется выше (platformToRegionalRoute) и
+      // именно она обязана дойти до completeVerification. Если бы использовалась
+      // сохранённая платформа, аргумент этого вызова проверялся бы и тут же
+      // отбрасывался: запрос ушёл бы на регион первого (возможно, ошибочного) вызова,
+      // третий-парти-код почти наверняка не нашёлся бы там (404 → ProviderError →
+      // «сервис недоступен» пользователю, хотя он всё указал верно), и он терял бы
+      // одну из пяти попыток на нашу же ошибку.
       await deps.linking.takeChallenge(pending.challenge);
       const verified = await completeVerification(
-        { challenge: pending.challenge, expiresAt: new Date(Date.now() + 60_000), payload: pending.payload },
+        { challenge: pending.challenge, expiresAt: new Date(Date.now() + 60_000), payload: { ...pending.payload, platform } },
         riotId,
       );
 
       // PUUID и подтверждение владения общие для LoL и TFT, поэтому привязываются оба:
-      // иначе маппинги ролей для tft-ranked никогда бы не срабатывали.
+      // иначе маппинги ролей для tft-ranked никогда бы не срабатывали. Обе записи не в
+      // транзакции (linkAccount — два независимых похода в БД), поэтому вторая
+      // итерация может упасть уже после того, как первая сохранена и её account.linked
+      // опубликован (например, riot-tft той же PUUID оказался приватизирован другим
+      // пользователем, который в своё время отвязал только половину пары). Ошибку
+      // первой итерации незачем ловить отдельно: пока linkedProviders пуст, это
+      // обычный сбой без частичного состояния, и он должен уйти наверх как раньше.
+      const linkedProviders: Array<'riot-lol' | 'riot-tft'> = [];
       const linkedIds: number[] = [];
+      let partialFailure: { provider: 'riot-lol' | 'riot-tft'; error: unknown } | null = null;
+
       for (const providerId of ['riot-lol', 'riot-tft'] as const) {
-        linkedIds.push(await deps.linking.linkAccount(userId, providerId, verified, true));
-        await deps.bus.emit('account.linked', {
-          userId,
-          provider: providerId,
-          externalId: verified.externalId,
-          verified: true,
-        });
+        try {
+          linkedIds.push(await deps.linking.linkAccount(userId, providerId, verified, true));
+          linkedProviders.push(providerId);
+          await deps.bus.emit('account.linked', {
+            userId,
+            provider: providerId,
+            externalId: verified.externalId,
+            verified: true,
+          });
+        } catch (error) {
+          if (linkedProviders.length === 0) throw error;
+          partialFailure = { provider: providerId, error };
+          break;
+        }
       }
 
+      // Синхронизация — для того, что реально успело привязаться, даже если вторая
+      // половина пары провалилась: riot-lol не должен ждать riot-tft, чтобы получить ранг.
       const accounts = await deps.linking.listAccounts(userId);
       for (const account of accounts.filter((a) => linkedIds.includes(a.id))) {
         await deps.rankSync.syncAccount(account);
+      }
+
+      if (partialFailure) {
+        // Откатывать нечем (нет транзакции — см. комментарий выше), поэтому единственный
+        // честный вариант — сказать игроку, что именно привязалось, а что нет, вместо
+        // голой ошибки второй итерации (которая иначе выглядела бы так, будто не
+        // привязалось вообще ничего). describeForUser — та же классификация, что и в
+        // роутере: текст UserError показывается как есть, для прочего — общая фраза с
+        // incidentId, который дальше в лог кладём сами (роутер этого сбоя уже не увидит).
+        const described = describeForUser(partialFailure.error);
+        if (described.incidentId) {
+          ctx.logger.error(
+            { err: partialFailure.error, incidentId: described.incidentId, userId, failedProvider: partialFailure.provider, linkedProviders },
+            'riot: вторая привязка из пары LoL/TFT не удалась после первой',
+          );
+        } else {
+          ctx.logger.info(
+            { err: partialFailure.error, userId, failedProvider: partialFailure.provider, linkedProviders },
+            'riot: вторая привязка из пары LoL/TFT не удалась после первой (ожидаемая ошибка)',
+          );
+        }
+
+        const shortLabel: Record<'riot-lol' | 'riot-tft', string> = { 'riot-lol': 'LoL', 'riot-tft': 'TFT' };
+        const done = linkedProviders.map((p) => shortLabel[p]).join(' и ');
+        const failedLabel = shortLabel[partialFailure.provider];
+
+        await interaction.followUp({
+          content:
+            `Частично: **${verified.displayName}** привязан и подтверждён для ${done}. ` +
+            `Для ${failedLabel} не получилось: ${described.text} ` +
+            `Повтори \`/link riot\` с тем же Riot ID и платформой, чтобы досвязать ${failedLabel} — ${done} трогать не придётся.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
       }
 
       await interaction.followUp({

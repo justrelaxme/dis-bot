@@ -199,6 +199,104 @@ describe('/link', () => {
     expect(providers).toEqual(['riot-lol', 'riot-tft']);
   });
 
+  it('на подтверждающем вызове использует платформу текущего вызова, а не сохранённую в первом', async () => {
+    const linking = linkingStub();
+    // Игрок ошибся в платформе на первом вызове — в payload сохранён euw1.
+    linking.pendingChallenge = vi.fn<LinkingService['pendingChallenge']>(async () => ({
+      challenge: 'ABCD2345',
+      payload: { platform: 'euw1' },
+    }));
+    const completeVerification = vi.fn(async () => ({
+      externalId: 'PUUID-1',
+      displayName: 'Игрок#RU',
+      region: 'ru',
+      verificationMethod: 'riot-third-party-code' as const,
+    }));
+    const riot: GameProvider = {
+      id: 'riot-lol',
+      capabilities: { verification: 'riot-third-party-code', rank: 'api' },
+      startVerification: async () => ({ challenge: 'X', expiresAt: new Date(), payload: {} }),
+      completeVerification,
+      fetchProfile: async () => ({ externalId: 'PUUID-1', displayName: 'Игрок#RU' }),
+    };
+    const command = createLinkCommand(depsWith([['riot-lol', riot]], linking) as never);
+    // На подтверждающем вызове игрок указывает верную платформу ru — она должна
+    // дойти до completeVerification вместо сохранённой (ошибочной) euw1.
+    const { interaction } = interactionWithOptions('riot', { 'riot-id': 'Игрок#RU', platform: 'ru' });
+
+    await command.execute(interaction, ctx);
+
+    expect(completeVerification).toHaveBeenCalledWith(
+      expect.objectContaining({ payload: expect.objectContaining({ platform: 'ru' }) }),
+      'Игрок#RU',
+    );
+  });
+
+  it('riot: при сбое второй привязки (TFT) сообщает, что LoL уже привязан, а не только голую ошибку', async () => {
+    const linking = linkingStub();
+    linking.pendingChallenge = vi.fn<LinkingService['pendingChallenge']>(async () => ({
+      challenge: 'ABCD2345',
+      payload: { platform: 'euw1' },
+    }));
+    linking.linkAccount = vi.fn<LinkingService['linkAccount']>(async (_userId, providerId) => {
+      if (providerId === 'riot-tft') {
+        throw new UserError('Этот игровой аккаунт уже привязан к другому пользователю сервера.');
+      }
+      return 1;
+    });
+    const riot: GameProvider = {
+      id: 'riot-lol',
+      capabilities: { verification: 'riot-third-party-code', rank: 'api' },
+      startVerification: async () => ({ challenge: 'X', expiresAt: new Date(), payload: {} }),
+      completeVerification: async () => ({
+        externalId: 'PUUID-1',
+        displayName: 'Игрок#EUW',
+        region: 'euw1',
+        verificationMethod: 'riot-third-party-code',
+      }),
+      fetchProfile: async () => ({ externalId: 'PUUID-1', displayName: 'Игрок#EUW' }),
+    };
+    const command = createLinkCommand(depsWith([['riot-lol', riot]], linking) as never);
+    const { interaction, calls } = interactionWithOptions('riot', { 'riot-id': 'Игрок#EUW', platform: 'euw1' });
+
+    // Не должно бросать: частичный успех обрабатывается как ответ, а не исключение.
+    await command.execute(interaction, ctx);
+
+    expect(linking.linkAccount).toHaveBeenCalledWith('222222222222222222', 'riot-lol', expect.any(Object), true);
+    expect(linking.linkAccount).toHaveBeenCalledWith('222222222222222222', 'riot-tft', expect.any(Object), true);
+    const content = calls.followUp.mock.calls[0]?.[0]?.content as string;
+    expect(content).toContain('LoL');
+    expect(content).toContain('TFT');
+    expect(content).not.toMatch(/^Готово/);
+  });
+
+  it('riot: если не привязался даже первый провайдер (LoL), пробрасывает ошибку как обычно', async () => {
+    const linking = linkingStub();
+    linking.pendingChallenge = vi.fn<LinkingService['pendingChallenge']>(async () => ({
+      challenge: 'ABCD2345',
+      payload: { platform: 'euw1' },
+    }));
+    linking.linkAccount = vi.fn<LinkingService['linkAccount']>(async () => {
+      throw new UserError('Этот игровой аккаунт уже привязан к другому пользователю сервера.');
+    });
+    const riot: GameProvider = {
+      id: 'riot-lol',
+      capabilities: { verification: 'riot-third-party-code', rank: 'api' },
+      startVerification: async () => ({ challenge: 'X', expiresAt: new Date(), payload: {} }),
+      completeVerification: async () => ({
+        externalId: 'PUUID-1',
+        displayName: 'Игрок#EUW',
+        region: 'euw1',
+        verificationMethod: 'riot-third-party-code',
+      }),
+      fetchProfile: async () => ({ externalId: 'PUUID-1', displayName: 'Игрок#EUW' }),
+    };
+    const command = createLinkCommand(depsWith([['riot-lol', riot]], linking) as never);
+    const { interaction } = interactionWithOptions('riot', { 'riot-id': 'Игрок#EUW', platform: 'euw1' });
+
+    await expect(command.execute(interaction, ctx)).rejects.toThrow(UserError);
+  });
+
   it('отвергает неизвестную платформу Riot до обращения к API', async () => {
     const command = createLinkCommand(depsWith([]) as never);
     const { interaction } = interactionWithOptions('riot', { 'riot-id': 'Игрок#EUW', platform: 'марс1' });

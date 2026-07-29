@@ -15,17 +15,24 @@ export function createRankSyncCommand(deps: IdentityDeps & { cooldown: Cooldown 
     async execute(interaction) {
       const userId = interaction.user.id;
 
+      // Сначала проверяем, есть ли вообще что синхронизировать, и только потом тратим
+      // кулдаун. Раньше порядок был обратным: игрок без привязок получал совет «начни
+      // с /link steam», тут же тратил свою попытку на /ranksync за десять минут, и
+      // после первой же успешной привязки слышал «попробуй через 10 минут» — хотя ни
+      // разу ничего не синхронизировал. Проверка наличия аккаунтов — чтение из уже
+      // открытого соединения с БД и не расходует ничей лимит, поэтому её можно смело
+      // делать до cooldown.hit.
+      const accounts = await deps.linking.listAccounts(userId);
+      if (accounts.length === 0) {
+        throw new UserError('У тебя нет привязанных аккаунтов. Начни с `/link steam` или `/link riot`.');
+      }
+
       const verdict = await deps.cooldown.hit(`ranksync:${userId}`, RANKSYNC_COOLDOWN_MS);
       if (!verdict.allowed) {
         const minutes = Math.ceil(verdict.retryAfterMs / 60_000);
         throw new UserError(
           `Ранги обновляются сами каждые полчаса. Вручную можно раз в 10 минут — попробуй через ${minutes} мин.`,
         );
-      }
-
-      const accounts = await deps.linking.listAccounts(userId);
-      if (accounts.length === 0) {
-        throw new UserError('У тебя нет привязанных аккаунтов. Начни с `/link steam` или `/link riot`.');
       }
 
       let updated = 0;
