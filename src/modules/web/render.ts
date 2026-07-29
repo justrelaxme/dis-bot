@@ -4,13 +4,24 @@ import type { EntrantRow, MatchRow, TournamentGame, TournamentRow } from '../tou
 
 /**
  * Витрина отдаёт готовый HTML с сервера, без SPA и без сборки фронтенда: на страницах,
- * где нечего нажимать, одностраничное приложение — это лишний слой, лишний шаг сборки
- * и лишний способ сломаться.
+ * где нечего нажимать, одностраничное приложение — лишний слой, лишний шаг сборки и
+ * лишний способ сломаться.
  *
- * Половина участников откроет ссылку с телефона, поэтому вёрстка мобильная: одна колонка,
- * относительные размеры, сетка турнира прокручивается по горизонтали внутри себя, а не
- * растягивает страницу.
+ * Визуальный язык взят из мира самих игр — из ранговых медалей. Отсюда латунный акцент
+ * вместо кислотного, тёплый цвет текста (как у бумажного листа сетки, приколотого к стене
+ * на LAN) поверх холодного фона и моноширинный шрифт для всего, что является данными:
+ * имена в сетке выстраиваются в колонки, как на настоящем турнирном листе.
+ *
+ * Подпись страницы — сама сетка. Линии связей считаются на сервере по точной геометрии
+ * (высота матча и шаг круга известны) и прорисовываются слева направо при загрузке,
+ * сходясь к финалу. Это и есть главное, что здесь есть: сетка — дерево последствий.
  */
+
+const MATCH_H = 58;
+const V_GAP = 12;
+const PITCH = MATCH_H + V_GAP;
+const COL_W = 208;
+const LINK_W = 44;
 
 function escape(value: string): string {
   return value
@@ -21,35 +32,153 @@ function escape(value: string): string {
     .replaceAll("'", '&#39;');
 }
 
+/** Цвета медалей и эмблем — те, которые игроки знают наизусть. */
+const TIER_COLORS: Record<string, string> = {
+  HERALD: '#8b8f95',
+  GUARDIAN: '#6f8f6a',
+  CRUSADER: '#a9895f',
+  ARCHON: '#6f7fb3',
+  LEGEND: '#9a6fb0',
+  ANCIENT: '#4f9c96',
+  DIVINE: '#6f8fe0',
+  IMMORTAL: '#e2543a',
+  IRON: '#6b6b6b',
+  BRONZE: '#8c6239',
+  SILVER: '#9aa4ad',
+  GOLD: '#d9a544',
+  PLATINUM: '#4fb3a8',
+  EMERALD: '#3fa96a',
+  DIAMOND: '#6f8fe0',
+  MASTER: '#a259c8',
+  GRANDMASTER: '#d0453c',
+  CHALLENGER: '#f0d67a',
+  ASCENDANT: '#3fa96a',
+  RADIANT: '#f0d67a',
+};
+
+function tierColor(tier: string | null): string {
+  if (!tier) return 'var(--rule)';
+  return TIER_COLORS[tier.toUpperCase()] ?? 'var(--rule)';
+}
+
 const STYLE = `
-:root { color-scheme: dark light; --bg:#0f1115; --card:#171a21; --line:#262b36; --text:#e6e8ec; --dim:#9aa3b2; --accent:#4f8cff; --win:#3fb950; }
-* { box-sizing: border-box; }
-body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
-a { color:var(--accent); text-decoration:none; }
-a:hover { text-decoration:underline; }
-.wrap { max-width: 62rem; margin:0 auto; padding:1.25rem 1rem 3rem; }
-h1 { font-size:1.5rem; margin:0 0 .25rem; }
-h2 { font-size:1.1rem; margin:2rem 0 .75rem; }
-.dim { color:var(--dim); }
-.badge { display:inline-block; padding:.15rem .5rem; border:1px solid var(--line); border-radius:999px; font-size:.8rem; color:var(--dim); }
-.card { background:var(--card); border:1px solid var(--line); border-radius:.6rem; padding:.85rem 1rem; margin:.5rem 0; }
-table { width:100%; border-collapse:collapse; }
-th,td { text-align:left; padding:.5rem .4rem; border-bottom:1px solid var(--line); }
-th { color:var(--dim); font-weight:500; font-size:.85rem; }
-td.num { text-align:right; font-variant-numeric:tabular-nums; color:var(--dim); }
-.bracket { display:flex; gap:1.5rem; overflow-x:auto; padding-bottom:.5rem; }
-.round { min-width:14rem; flex:0 0 auto; }
-.round h3 { font-size:.85rem; color:var(--dim); font-weight:500; margin:0 0 .5rem; }
-.match { background:var(--card); border:1px solid var(--line); border-radius:.5rem; margin-bottom:.6rem; overflow:hidden; }
-.side { display:flex; justify-content:space-between; gap:.5rem; padding:.45rem .6rem; font-size:.92rem; }
-.side + .side { border-top:1px solid var(--line); }
-.side.won { color:var(--win); font-weight:600; }
-.side.empty { color:var(--dim); font-style:italic; }
-.state { font-size:.75rem; color:var(--dim); padding:.25rem .6rem; border-top:1px solid var(--line); }
-nav { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:1.5rem; font-size:.9rem; }
-footer { margin-top:2.5rem; color:var(--dim); font-size:.85rem; }
-@media (prefers-color-scheme: light) {
-  :root { --bg:#f7f8fa; --card:#fff; --line:#e3e6ec; --text:#1a1d23; --dim:#616b7c; }
+:root {
+  --ink:#14121a; --sheet:#1c1a24; --sheet-2:#221f2c; --rule:#332e42;
+  --bone:#ece7dd; --dim:#9b93a8; --gold:#d9a544; --ember:#e2543a;
+  --mono: ui-monospace,'SF Mono','Cascadia Mono','JetBrains Mono',Consolas,'Liberation Mono',monospace;
+  --sans: ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --match-h:${MATCH_H}px; --pitch:${PITCH}px; --col-w:${COL_W}px; --link-w:${LINK_W}px;
+}
+* { box-sizing:border-box; }
+html { -webkit-text-size-adjust:100%; }
+body {
+  margin:0; background:var(--ink); color:var(--bone); font-family:var(--sans);
+  font-size:16px; line-height:1.5;
+  background-image:
+    radial-gradient(1100px 420px at 82% -8%, rgba(217,165,68,.10), transparent 62%),
+    radial-gradient(760px 380px at 8% 104%, rgba(226,84,58,.07), transparent 60%);
+  background-attachment:fixed;
+}
+a { color:inherit; text-decoration:none; }
+.wrap { max-width:74rem; margin:0 auto; padding:1.5rem 1.15rem 4rem; }
+
+/* Шапка: полоса состояния, а не украшение — она показывает, что происходит сейчас. */
+.top { display:flex; align-items:baseline; gap:1.25rem; flex-wrap:wrap; padding-bottom:1rem;
+  border-bottom:1px solid var(--rule); margin-bottom:1.75rem; }
+.mark { font-family:var(--mono); font-size:.72rem; letter-spacing:.24em; text-transform:uppercase;
+  color:var(--gold); }
+.top nav { display:flex; gap:1.1rem; margin-left:auto; font-family:var(--mono); font-size:.76rem;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--dim); flex-wrap:wrap; }
+.top nav a { padding-bottom:2px; border-bottom:1px solid transparent; transition:color .18s, border-color .18s; }
+.top nav a:hover, .top nav a:focus-visible { color:var(--bone); border-color:var(--gold); }
+
+h1 { font-size:clamp(1.85rem,5.5vw,2.9rem); line-height:1.02; margin:0 0 .5rem;
+  font-weight:800; letter-spacing:-.03em; text-transform:uppercase; }
+h2 { font-family:var(--mono); font-size:.76rem; letter-spacing:.22em; text-transform:uppercase;
+  color:var(--dim); font-weight:500; margin:2.5rem 0 .9rem; }
+.lede { color:var(--dim); font-size:.95rem; margin:0 0 1.5rem; }
+.mono { font-family:var(--mono); }
+
+/* Точка «идёт сейчас» пульсирует — единственный постоянный движок на странице. */
+.live { display:inline-flex; align-items:center; gap:.45rem; font-family:var(--mono);
+  font-size:.7rem; letter-spacing:.16em; text-transform:uppercase; color:var(--ember); }
+.live::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--ember);
+  box-shadow:0 0 0 0 rgba(226,84,58,.55); animation:pulse 2s ease-out infinite; }
+@keyframes pulse { 70%{box-shadow:0 0 0 9px rgba(226,84,58,0);} 100%{box-shadow:0 0 0 0 rgba(226,84,58,0);} }
+
+.chip { display:inline-block; font-family:var(--mono); font-size:.68rem; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--dim); border:1px solid var(--rule);
+  border-radius:2px; padding:.2rem .5rem; }
+
+/* Карточка турнира: латунная риска слева уезжает вправо при наведении. */
+.card { position:relative; display:block; background:var(--sheet); border:1px solid var(--rule);
+  border-radius:3px; padding:1rem 1.15rem 1rem 1.35rem; margin-bottom:.7rem; overflow:hidden;
+  transition:border-color .2s, transform .2s; }
+.card::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
+  background:var(--gold); transform:scaleY(.28); transform-origin:top; transition:transform .28s ease; }
+.card:hover, .card:focus-visible { border-color:var(--gold); transform:translateX(2px); }
+.card:hover::before, .card:focus-visible::before { transform:scaleY(1); }
+.card .name { font-size:1.12rem; font-weight:700; letter-spacing:-.01em; }
+.card .meta { color:var(--dim); font-size:.85rem; margin-top:.25rem; font-family:var(--mono); }
+
+/* Сетка. Колонки и связи позиционируются по точной геометрии, посчитанной на сервере. */
+.bracket { overflow-x:auto; overflow-y:hidden; padding:.25rem 0 1rem; -webkit-overflow-scrolling:touch; }
+.grid { position:relative; display:flex; align-items:stretch; }
+.col { position:relative; flex:0 0 var(--col-w); width:var(--col-w); }
+.col > .rlabel { position:absolute; top:-1.55rem; left:0; font-family:var(--mono); font-size:.68rem;
+  letter-spacing:.2em; text-transform:uppercase; color:var(--dim); }
+.links { position:relative; flex:0 0 var(--link-w); width:var(--link-w); }
+.links svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+.links path { fill:none; stroke:var(--rule); stroke-width:1.5;
+  stroke-dasharray:var(--len); stroke-dashoffset:var(--len);
+  animation:draw .55s ease-out forwards; animation-delay:var(--delay); }
+@keyframes draw { to { stroke-dashoffset:0; } }
+
+.m { position:absolute; left:0; width:100%; height:var(--match-h);
+  background:var(--sheet); border:1px solid var(--rule); border-radius:3px; overflow:hidden;
+  opacity:0; transform:translateY(6px); animation:rise .42s ease-out forwards;
+  animation-delay:var(--delay); transition:border-color .18s, box-shadow .18s; }
+@keyframes rise { to { opacity:1; transform:none; } }
+.m:hover { border-color:var(--gold); box-shadow:0 0 0 1px rgba(217,165,68,.25); }
+.m.live-m { border-color:rgba(226,84,58,.5); }
+.m .s { display:flex; align-items:center; justify-content:space-between; gap:.5rem;
+  height:calc(var(--match-h)/2 - 1px); padding:0 .6rem; font-family:var(--mono); font-size:.82rem; }
+.m .s + .s { border-top:1px solid var(--rule); }
+.m .s .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.m .s .sd { color:var(--dim); font-size:.7rem; }
+.m .s.won { color:var(--gold); }
+.m .s.won .sd { color:var(--gold); }
+.m .s.tbd { color:var(--dim); }
+.m .seed { color:var(--dim); font-size:.68rem; margin-right:.4rem; }
+
+/* Лидерборд: медальная плашка слева — тот же язык, что и в игре. */
+table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:.88rem; }
+thead th { text-align:left; padding:.5rem .5rem .6rem; border-bottom:1px solid var(--rule);
+  color:var(--dim); font-weight:500; font-size:.68rem; letter-spacing:.16em; text-transform:uppercase; }
+tbody td { padding:.62rem .5rem; border-bottom:1px solid rgba(51,46,66,.6); }
+tbody tr { animation:rise .3s ease-out backwards; animation-delay:var(--delay); }
+tbody tr:hover td { background:var(--sheet-2); }
+td.pos { color:var(--dim); text-align:right; width:2.6rem; font-size:.8rem; }
+td.acct { font-family:var(--sans); font-weight:600; }
+.medal { display:inline-flex; align-items:center; gap:.5rem; }
+.medal::before { content:''; width:9px; height:9px; border-radius:2px; transform:rotate(45deg);
+  background:var(--tc); box-shadow:0 0 8px -1px var(--tc); flex:0 0 auto; }
+td.num { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
+
+.empty { border:1px dashed var(--rule); border-radius:3px; padding:2rem 1.25rem; text-align:center; }
+.empty p { margin:.35rem 0; color:var(--dim); }
+.empty code { font-family:var(--mono); color:var(--gold); }
+
+footer { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--rule);
+  color:var(--dim); font-size:.78rem; font-family:var(--mono); }
+
+:focus-visible { outline:2px solid var(--gold); outline-offset:2px; }
+@media (max-width:640px) { :root { --col-w:170px; --link-w:30px; } .wrap { padding:1.15rem .85rem 3rem; } }
+@media (prefers-reduced-motion:reduce) {
+  .links path { animation:none; stroke-dashoffset:0; }
+  .m, tbody tr { animation:none; opacity:1; transform:none; }
+  .live::before { animation:none; }
+  * { transition:none !important; }
 }
 `;
 
@@ -58,15 +187,26 @@ export function page(title: string, body: string): string {
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>${escape(title)}</title>
 <style>${STYLE}</style>
 </head>
-<body><div class="wrap">
-<nav><a href="/">Турниры</a><a href="/leaderboard/dota2">Dota 2</a><a href="/leaderboard/lol">LoL</a><a href="/leaderboard/tft">TFT</a></nav>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a href="/" class="mark">Турниры сервера</a>
+    <nav>
+      <a href="/leaderboard/dota2">Dota 2</a>
+      <a href="/leaderboard/lol">LoL</a>
+      <a href="/leaderboard/tft">TFT</a>
+      <a href="/leaderboard/valorant">Valorant</a>
+    </nav>
+  </header>
 ${body}
-<footer>Данные собираются ботом из API игр. Показаны только подтверждённые привязки.</footer>
-</div></body>
+  <footer>Ранги приходят из API игр и обновляются каждые полчаса. Показаны только подтверждённые привязки.</footer>
+</div>
+</body>
 </html>`;
 }
 
@@ -80,84 +220,142 @@ const STATE_LABELS: Record<string, string> = {
 
 export function renderTournamentList(rows: (TournamentRow & { entrantCount: number })[]): string {
   if (rows.length === 0) {
-    return `<h1>Турниров пока нет</h1>
-<p class="dim">Когда бот объявит турнир, он появится здесь вместе с сеткой.</p>`;
+    return `<h1>Пока пусто</h1>
+<p class="lede">Бот объявляет турнир каждый день: сначала голосование по дисциплине, потом регистрация. Как только объявит — сетка появится здесь.</p>
+<div class="empty"><p>Привязать игровой аккаунт можно уже сейчас — командой <code>/link</code> в Discord.</p>
+<p>Тогда к первому турниру жеребьёвка разведёт фаворитов по разным половинам сетки.</p></div>`;
   }
 
-  const items = rows
+  const cards = rows
     .map((row) => {
       const size = eventSize(row.entrantCount);
       const kind = row.state === 'running' || row.state === 'finished' ? EVENT_SIZE_LABELS[size] : 'турнир';
-      return `<div class="card">
-<div><a href="/t/${row.id}"><strong>${escape(row.name)}</strong></a> <span class="badge">${escape(STATE_LABELS[row.state] ?? row.state)}</span></div>
-<div class="dim">${escape(TOURNAMENT_GAME_LABELS[row.game] ?? row.game)} · ${escape(kind)} · участников: ${row.entrantCount}${row.entryMode === 'team' ? ` · по ${row.teamSize} в команде` : ' · одиночки'}</div>
-</div>`;
+      const status =
+        row.state === 'running'
+          ? '<span class="live">идёт</span>'
+          : `<span class="chip">${escape(STATE_LABELS[row.state] ?? row.state)}</span>`;
+      const roster = row.entryMode === 'team' ? `по ${row.teamSize} в команде` : 'одиночки';
+      return `<a class="card" href="/t/${row.id}">
+  <div class="name">${escape(row.name)}</div>
+  <div class="meta">${escape(TOURNAMENT_GAME_LABELS[row.game] ?? row.game)} · ${escape(kind)} · ${row.entrantCount} уч. · ${escape(roster)}</div>
+  <div style="margin-top:.55rem">${status}</div>
+</a>`;
     })
     .join('\n');
 
-  return `<h1>Турниры</h1>\n${items}`;
+  return `<h1>Турниры</h1>
+<p class="lede">Сетки, составы и результаты. Обновляется по ходу вечера.</p>
+${cards}`;
 }
 
 function roundTitle(round: number, rounds: number): string {
   if (round === rounds) return 'Финал';
   if (round === rounds - 1) return 'Полуфинал';
-  if (round === rounds - 2) return 'Четвертьфинал';
+  if (round === rounds - 2) return '1/4';
+  if (round === rounds - 3) return '1/8';
   return `Круг ${round}`;
 }
 
-const MATCH_STATE_LABELS: Record<string, string> = {
-  pending: 'ждёт соперников',
-  ready: 'можно играть',
-  reported: 'результат заявлен, ждём подтверждения',
-  confirmed: '',
-  disputed: 'результат оспорен, разбирается',
+const MATCH_NOTE: Record<string, string> = {
+  reported: 'ждём подтверждения',
+  disputed: 'разбирается',
   walkover: 'без игры',
 };
 
+/**
+ * Геометрия сетки считается здесь, а не в CSS: шаг круга удваивается с каждым кругом
+ * (`PITCH * 2^(r-1)`), и центр матча — это `шаг * (позиция + 0.5)`. Зная это, связи между
+ * кругами можно нарисовать точными путями, а не подгонять псевдоэлементами.
+ */
 export function renderBracket(view: {
   tournament: TournamentRow;
   entrants: EntrantRow[];
   matches: MatchRow[];
 }): string {
-  const names = new Map<number, string>();
-  for (const entrant of view.entrants) names.set(entrant.id, entrant.displayName);
+  const names = new Map<number, { name: string; seed: number | null }>();
+  for (const entrant of view.entrants) names.set(entrant.id, { name: entrant.displayName, seed: entrant.seed });
 
   const active = view.entrants.filter((entrant) => entrant.withdrawnAt === null);
   const size = eventSize(active.length);
   const rounds = view.matches.reduce((max, match) => Math.max(max, match.round), 0);
 
-  const header = `<h1>${escape(view.tournament.name)}</h1>
-<p class="dim">${escape(TOURNAMENT_GAME_LABELS[view.tournament.game] ?? view.tournament.game)} · ${escape(EVENT_SIZE_LABELS[size])} · ${escape(STATE_LABELS[view.tournament.state] ?? view.tournament.state)} · участников: ${active.length}</p>`;
+  const status =
+    view.tournament.state === 'running'
+      ? '<span class="live">идёт</span>'
+      : `<span class="chip">${escape(STATE_LABELS[view.tournament.state] ?? view.tournament.state)}</span>`;
+
+  const head = `<h1>${escape(view.tournament.name)}</h1>
+<p class="lede">${escape(TOURNAMENT_GAME_LABELS[view.tournament.game] ?? view.tournament.game)} · ${escape(EVENT_SIZE_LABELS[size])} · ${active.length} участников · ${status}</p>`;
 
   if (view.matches.length === 0) {
     const list = active
-      .map((entrant) => `<div class="card">${escape(entrant.displayName)}${entrant.checkedInAt ? ' <span class="badge">отметился</span>' : ''}</div>`)
+      .map(
+        (entrant) => `<div class="card"><div class="name">${escape(entrant.displayName)}</div>
+<div class="meta">${entrant.checkedInAt ? 'состав отмечен' : 'ждём отметки капитана'}</div></div>`,
+      )
       .join('\n');
-    return `${header}
-<h2>Участники</h2>
-${list || '<p class="dim">Пока никто не записался.</p>'}`;
+    return `${head}<h2>Участники</h2>
+${list || '<div class="empty"><p>Ещё никто не записался. Команда собирается кнопкой в Discord.</p></div>'}`;
   }
 
-  const columns: string[] = [];
+  const firstRoundCount = view.matches.filter((match) => match.round === 1).length;
+  const totalH = PITCH * Math.max(firstRoundCount, 1);
+  const pitchOf = (round: number): number => PITCH * 2 ** (round - 1);
+  const centerOf = (round: number, slot: number): number => pitchOf(round) * (slot + 0.5);
+
+  const parts: string[] = [];
+  let step = 0;
+
   for (let round = 1; round <= rounds; round += 1) {
     const cells = view.matches
       .filter((match) => match.round === round)
+      .sort((a, b) => a.slot - b.slot)
       .map((match) => {
+        const top = centerOf(round, match.slot) - MATCH_H / 2;
+        const delay = `${(step += 1) * 45}ms`;
+
         const side = (id: number | null): string => {
-          if (id === null) return `<div class="side empty"><span>—</span></div>`;
+          if (id === null) return `<div class="s tbd"><span class="nm">—</span></div>`;
+          const entrant = names.get(id);
           const won = match.winnerEntrantId === id;
-          return `<div class="side${won ? ' won' : ''}"><span>${escape(names.get(id) ?? `#${id}`)}</span><span>${won ? '✓' : ''}</span></div>`;
+          const seed = entrant?.seed === null || entrant?.seed === undefined ? '' : `<span class="seed">${entrant.seed}</span>`;
+          const note = won ? (match.state === 'walkover' ? 'без игры' : 'победа') : '';
+          return `<div class="s${won ? ' won' : ''}"><span class="nm">${seed}${escape(entrant?.name ?? `#${id}`)}</span><span class="sd">${escape(note)}</span></div>`;
         };
-        const note = MATCH_STATE_LABELS[match.state] ?? '';
-        return `<div class="match">${side(match.entrantAId)}${side(match.entrantBId)}${note ? `<div class="state">${escape(note)}</div>` : ''}</div>`;
+
+        const attention = match.state === 'reported' || match.state === 'disputed';
+        const note = MATCH_NOTE[match.state];
+        const title = note ? ` title="${escape(note)}"` : '';
+        return `<div class="m${attention ? ' live-m' : ''}" style="top:${top}px;--delay:${delay}"${title}>${side(match.entrantAId)}${side(match.entrantBId)}</div>`;
       })
       .join('\n');
-    columns.push(`<div class="round"><h3>${escape(roundTitle(round, rounds))}</h3>${cells}</div>`);
+
+    parts.push(`<div class="col" style="height:${totalH}px"><span class="rlabel">${escape(roundTitle(round, rounds))}</span>${cells}</div>`);
+
+    // Связи в следующий круг: из центров двух матчей пары — в центр их общего родителя.
+    if (round < rounds) {
+      const childCount = view.matches.filter((match) => match.round === round + 1).length;
+      const paths: string[] = [];
+      for (let child = 0; child < childCount; child += 1) {
+        const yA = centerOf(round, child * 2);
+        const yB = centerOf(round, child * 2 + 1);
+        const mid = LINK_W / 2;
+        // Центр родителя ровно равен середине между центрами двух его детей: шаг круга
+        // удваивается, поэтому отдельный отрезок к нему считать не нужно.
+        const len = Math.round(LINK_W + Math.abs(yB - yA));
+        const delay = `${child * 60 + round * 120}ms`;
+        paths.push(
+          `<path d="M0 ${yA} H${mid} V${yB} M${mid} ${(yA + yB) / 2} H${LINK_W}" style="--len:${len};--delay:${delay}"/>`,
+        );
+      }
+      parts.push(
+        `<div class="links" style="height:${totalH}px"><svg viewBox="0 0 ${LINK_W} ${totalH}" preserveAspectRatio="none" aria-hidden="true">${paths.join('')}</svg></div>`,
+      );
+    }
   }
 
-  return `${header}
-<h2>Сетка</h2>
-<div class="bracket">${columns.join('\n')}</div>`;
+  return `${head}<h2>Сетка</h2>
+<div class="bracket"><div class="grid" style="min-height:${totalH}px">${parts.join('\n')}</div></div>`;
 }
 
 export interface LeaderboardEntry {
@@ -170,37 +368,43 @@ export interface LeaderboardEntry {
 }
 
 /**
- * Лидерборд показывает **игровой ник и ранг**, но не идентификатор Discord и не имя на
- * сервере. Ранг и ник игрок и так публикует в самой игре, а вот связка «этот Discord —
- * этот игровой аккаунт» приватна: публичная страница не должна становиться способом
- * пробить человека. Поэтому здесь таблица игровых аккаунтов, а не таблица людей.
+ * Лидерборд показывает игровой ник и ранг, но не идентификатор Discord и не имя на
+ * сервере. Ранг и ник игрок и так публикует в самой игре, а связка «этот Discord — этот
+ * игровой аккаунт» приватна: публичная страница не должна становиться способом пробить
+ * человека. Поэтому это таблица игровых аккаунтов, а не таблица людей.
  */
 export function renderLeaderboard(game: TournamentGame, entries: LeaderboardEntry[]): string {
   const label = TOURNAMENT_GAME_LABELS[game] ?? game;
 
   if (entries.length === 0) {
     return `<h1>${escape(label)}</h1>
-<p class="dim">Пока никто не привязал аккаунт этой игры, либо ранги ещё не подтянулись.
-Привязка делается командой <code>/link</code> в Discord.</p>`;
+<p class="lede">Таблица собирается из подтверждённых привязок.</p>
+<div class="empty"><p>Пока ни одной привязки этой игры — или ранги ещё не подтянулись.</p>
+<p>Привязка делается командой <code>/link</code> в Discord, дальше ранг обновляется сам.</p></div>`;
   }
 
   const rows = entries
     .map((entry, index) => {
       const rank = [entry.tier, entry.division].filter(Boolean).join(' ') || 'без ранга';
       const points = entry.points === null ? '' : String(entry.points);
-      return `<tr><td class="num">${index + 1}</td><td>${escape(entry.displayName)}</td><td class="dim">${escape(entry.mode)}</td><td>${escape(rank)}</td><td class="num">${escape(points)}</td></tr>`;
+      return `<tr style="--delay:${index * 18}ms">
+<td class="pos">${index + 1}</td>
+<td class="acct">${escape(entry.displayName)}</td>
+<td><span class="medal" style="--tc:${tierColor(entry.tier)}">${escape(rank)}</span></td>
+<td class="num">${escape(points)}</td>
+</tr>`;
     })
     .join('\n');
 
   return `<h1>${escape(label)}</h1>
-<p class="dim">Только подтверждённые привязки. Обновляется автоматически каждые полчаса.</p>
+<p class="lede">Только подтверждённые привязки. Обновляется автоматически каждые полчаса.</p>
 <table>
-<thead><tr><th>#</th><th>Аккаунт</th><th>Режим</th><th>Ранг</th><th>Очки</th></tr></thead>
+<thead><tr><th class="pos">#</th><th>Аккаунт</th><th>Ранг</th><th class="num">Очки</th></tr></thead>
 <tbody>${rows}</tbody>
 </table>`;
 }
 
 export function renderNotFound(what: string): string {
   return `<h1>Не найдено</h1>
-<p class="dim">${escape(what)}</p>`;
+<div class="empty"><p>${escape(what)}</p></div>`;
 }

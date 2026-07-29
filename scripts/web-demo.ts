@@ -22,8 +22,8 @@ const GUILD = '900000000000000001';
 const config = {
   DATABASE_URL: process.env['DATABASE_URL'] ?? 'postgres://bot:bot@localhost:55432/disbot_test',
   REDIS_URL: process.env['REDIS_URL'] ?? 'redis://localhost:56379',
-  LOG_LEVEL: 'fatal',
-  NODE_ENV: 'test',
+  LOG_LEVEL: 'info',
+  NODE_ENV: 'development',
 } as unknown as Config;
 
 const TEAMS = ['Медведи', 'Соколы', 'Волки', 'Лисы', 'Барсуки', 'Кабаны', 'Рыси', 'Зубры'];
@@ -141,10 +141,14 @@ async function main(): Promise<void> {
   const tournamentId = await seed(db);
   await server.listen({ port: PORT, host: '0.0.0.0' });
 
-  console.log(`\nВитрина поднята: http://localhost:${PORT}/`);
-  console.log(`  сетка турнира:  http://localhost:${PORT}/t/${tournamentId}`);
-  console.log(`  лидерборд Dota: http://localhost:${PORT}/leaderboard/dota2`);
-  console.log('\nCtrl+C чтобы остановить (демонстрационные данные удалятся).\n');
+  logger.info(
+    {
+      главная: `http://localhost:${PORT}/`,
+      сетка: `http://localhost:${PORT}/t/${tournamentId}`,
+      лидерборд: `http://localhost:${PORT}/leaderboard/dota2`,
+    },
+    'витрина поднята, Ctrl+C останавливает и убирает демонстрационные данные',
+  );
 
   const stop = async (): Promise<void> => {
     await db.delete(tournaments).where(eq(tournaments.id, tournamentId));
@@ -158,6 +162,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error('ДЕМОНСТРАЦИЯ НЕ ПОДНЯЛАСЬ:', error);
+  createLogger(config).error({ err: error }, 'витрина не поднялась');
   process.exit(1);
 });
