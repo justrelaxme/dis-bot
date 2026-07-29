@@ -17,5 +17,13 @@ import { createTournamentsModule } from './modules/tournaments/index.js';
  * scripts/deploy-commands.ts) избыточно.
  */
 export function buildModules(identityDeps: IdentityModuleDeps): BotModule[] {
-  return [pingModule, createIdentityModule(identityDeps), createTournamentsModule({ db: identityDeps.db })];
+  return [
+    pingModule,
+    createIdentityModule(identityDeps),
+    createTournamentsModule({
+      db: identityDeps.db,
+      logger: identityDeps.logger,
+      publicBaseUrl: identityDeps.config.PUBLIC_BASE_URL,
+    }),
+  ];
 }

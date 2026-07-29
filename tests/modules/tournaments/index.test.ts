@@ -1,31 +1,50 @@
 import { Cron } from 'croner';
 import { describe, expect, it } from 'vitest';
+import type { Config } from '../../../src/core/config.js';
 import type { Database } from '../../../src/core/db/client.js';
+import { createLogger } from '../../../src/core/logger.js';
 import { createTournamentsModule } from '../../../src/modules/tournaments/index.js';
 
+const logger = createLogger({ LOG_LEVEL: 'fatal', NODE_ENV: 'test' } as Config);
+
+function moduleWith() {
+  // {} as Database — тот же приём, что и в scripts/deploy-commands.ts: конструирование
+  // модуля не должно вызывать ни одного метода БД, иначе регистрация команд (у которой
+  // БД — пустая заглушка) упала бы ещё до первого HTTP-запроса к Discord.
+  const db = {} as unknown as Database;
+  return createTournamentsModule({ db, logger, publicBaseUrl: 'https://bot.example.com' });
+}
+
 describe('модуль tournaments', () => {
-  it('регистрирует /tournament и джобу финализации, не трогая БД при сборке модуля', () => {
-    // {} as Database — тот же приём, что и в scripts/deploy-commands.ts: конструирование
-    // модуля не должно вызывать ни одного метода БД, иначе регистрация команд (у которой
-    // БД — пустая заглушка) упала бы ещё до первого HTTP-запроса к Discord.
-    const db = {} as unknown as Database;
-    const botModule = createTournamentsModule({ db });
+  it('регистрирует команды турниров и джобы, не трогая БД при сборке модуля', () => {
+    const botModule = moduleWith();
 
     expect(botModule.name).toBe('tournaments');
-    expect(botModule.commands?.map((c) => c.builder.name)).toEqual(['tournament']);
-    expect(botModule.jobs?.map((j) => j.name)).toEqual(['tournaments:poll-finalize']);
+    expect(botModule.commands?.map((c) => c.builder.name).sort()).toEqual([
+      'checkin',
+      'match',
+      'team',
+      'tournament',
+    ]);
+    expect(botModule.jobs?.map((j) => j.name).sort()).toEqual([
+      'tournaments:auto-confirm',
+      'tournaments:poll-finalize',
+    ]);
+    // Кнопки состава и подтверждения результата обслуживает сам модуль: роутер ядра
+    // занимается только slash-командами.
+    expect(botModule.events?.map((e) => e.event)).toEqual(['interactionCreate']);
   });
 
-  it('объявляет корректное cron-выражение для джобы финализации', () => {
-    const db = {} as unknown as Database;
-    const botModule = createTournamentsModule({ db });
-    const job = botModule.jobs?.[0];
-    expect(job).toBeDefined();
+  it('объявляет корректные cron-выражения для своих джоб', () => {
+    const jobs = moduleWith().jobs ?? [];
+    expect(jobs.length).toBeGreaterThan(0);
 
-    // Croner бросает на некорректном выражении — тем же способом планировщик
-    // (src/core/scheduler.ts) проверяет джобы модулей при старте.
-    const cron = new Cron(job?.cron ?? '', { protect: true, paused: true, name: 'test-tournaments-poll-finalize' });
-    expect(cron.getPattern()).toBeTruthy();
-    cron.stop();
+    for (const job of jobs) {
+      // Croner бросает на некорректном выражении — тем же способом планировщик
+      // (src/core/scheduler.ts) проверяет джобы модулей при старте.
+      const cron = new Cron(job.cron, { protect: true, paused: true, name: `test-${job.name}` });
+      expect(cron.getPattern()).toBeTruthy();
+      cron.stop();
+    }
   });
 });
