@@ -4,34 +4,90 @@ Discord-бот игрового сообщества. Модульный мон�
 
 Дизайн: [docs/superpowers/specs/2026-07-27-discord-gaming-bot-design.md](docs/superpowers/specs/2026-07-27-discord-gaming-bot-design.md)
 
-## Запуск локально
+## Что умеет бот
 
-Нужно приложение Discord: [Developer Portal](https://discord.com/developers/applications) →
-**New Application** → вкладка **Bot** → **Reset Token** и скопировать значение. На той же
-вкладке включить привилегированный интент **Server Members Intent** — без него бот не
-увидит участников и не сможет выдавать роли. Пригласить бота на сервер: вкладка
-**OAuth2** → **URL Generator** → scopes `bot` и `applications.commands`, права
-`Manage Roles` и `Send Messages` → открыть получившуюся ссылку.
+| Команда | Кому | Что делает |
+|---|---|---|
+| `/ping` | всем | задержка шлюза, проверка что бот жив |
+| `/link steam\|riot\|valorant` | игроку | привязать игровой аккаунт с подтверждением владения |
+| `/unlink` | игроку | убрать привязку и снять выданные за неё роли |
+| `/profile` | игроку | карточка: привязки, ранги, изменения за месяц |
+| `/ranksync` | игроку | обновить свои ранги сейчас, не дожидаясь получаса |
+| `/rolemap` | администратору | «Diamond в LoL — вот эта роль» и просмотр настроенного |
 
-ID сервера копируется правым кликом по серверу (нужен режим разработчика:
-Настройки → Расширенные → Режим разработчика).
+Ранги обновляются сами каждые полчаса. При смене тира или дивизиона роли перевыдаются
+автоматически. Неподтверждённая привязка авто-роль не даёт.
+
+## Запуск на сервере
+
+### 1. Приложение Discord
+
+[Developer Portal](https://discord.com/developers/applications) → **New Application**.
+
+- вкладка **Bot** → **Reset Token**, скопировать — это `DISCORD_TOKEN`;
+- там же включить привилегированный интент **Server Members Intent**. Без него Discord
+  отклонит подключение: бот запрашивает этот интент в коде, потому что без списка
+  участников роли выдавать некому;
+- вкладка **General Information** → **Application ID** — это `DISCORD_APP_ID`;
+- вкладка **OAuth2** → **URL Generator** → scopes `bot` и `applications.commands`, права
+  `Manage Roles` и `Send Messages` → открыть ссылку и добавить бота на сервер.
+
+ID сервера — правый клик по серверу → «Копировать ID» (нужен режим разработчика:
+Настройки → Расширенные → Режим разработчика). Это `DISCORD_GUILD_ID`.
+
+### 2. Иерархия ролей — то, обо что спотыкаются все
+
+В настройках сервера роль бота должна стоять **выше** всех ролей, которые он будет
+выдавать за ранг. Discord не позволяет управлять ролью, которая выше твоей собственной,
+и `/rolemap` предупредит об этом при настройке — но лучше поднять роль бота сразу.
+
+### 3. Заполнить `.env`
+
+```bash
+cp .env.example .env
+```
+
+Обязательные: `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`, `DATABASE_URL`,
+`REDIS_URL`, `PUBLIC_BASE_URL`. Без любой из них бот не стартует — так задумано, лучше
+упасть на старте с понятным текстом, чем посреди работы.
+
+Необязательные, и вот что без них:
+
+- **`STEAM_API_KEY`** ([получить](https://steamcommunity.com/dev/apikey)) — без него `/link steam`
+  доходит до входа через Steam, но падает на получении имени профиля. Ранг Dota при этом
+  обновляется и без ключа: он приходит из OpenDota, которой ключ не нужен.
+- **`RIOT_API_KEY`** ([получить](https://developer.riotgames.com)) — без него не работают
+  `/link riot` и обновление рангов LoL и TFT. `/link valorant` работает независимо: там ранг
+  вводится руками. Продакшн-ключ выдаётся по заявке с ревью, ключ разработчика живёт 24 часа.
+
+**`PUBLIC_BASE_URL` — не декларация.** `/link steam` строит ссылку на
+`{PUBLIC_BASE_URL}/steam/callback` и ждёт, что Steam вернёт туда браузер игрока. На
+`localhost` привязка Steam до конца не пройдёт: сама ссылка сформируется, но с интернета
+до вашей машины Steam не дойдёт. Для прода это `https://{BOT_DOMAIN}`, куда Caddy сам
+получит сертификат — для этого `BOT_DOMAIN` должен быть настоящим доменом, указывающим
+на сервер.
+
+### 4. Поднять и зарегистрировать команды
 
 ```bash
 npm install
-cp .env.example .env                      # заполнить DISCORD_TOKEN, DISCORD_APP_ID, DISCORD_GUILD_ID
-npm run test:services:up                  # Postgres на 55432, Redis на 56379
-podman exec disbot-test-pg createdb -U bot disbot_dev   # один раз: отдельная база для разработки
-npm run db:migrate
-npm run deploy-commands                   # регистрирует slash-команды на сервере из DISCORD_GUILD_ID
-npm run dev
+npm run db:migrate          # применить миграции
+npm run deploy-commands     # зарегистрировать 6 команд на сервере из DISCORD_GUILD_ID
+npm run dev                 # или podman compose up -d --build на проде
 ```
 
-База для разработки отделена от `disbot_test` намеренно: `npm run test:int` чистит
-таблицы в тестовой базе перед каждым файлом и снёс бы данные разработки.
+Готово, если `curl localhost:3000/healthz` отдаёт
+`{"status":"ok","database":"ok","cache":"ok"}`, а `/ping` в Discord отвечает.
 
-Готовность проверяется так: `curl localhost:3000/healthz` отдаёт
-`{"status":"ok","database":"ok","cache":"ok"}`, а `/ping` в Discord отвечает
-задержкой шлюза. На этом этапе других команд у бота нет.
+### Локальная разработка
+
+```bash
+npm run test:services:up                                 # Postgres на 55432, Redis на 56379
+podman exec disbot-test-pg createdb -U bot disbot_dev     # один раз: отдельная база разработки
+```
+
+База разработки отделена от `disbot_test` намеренно: `npm run test:int` чистит таблицы
+тестовой базы перед каждым файлом и снёс бы данные разработки.
 
 ## Проверки
 
