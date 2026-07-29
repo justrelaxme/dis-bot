@@ -84,6 +84,9 @@ export function createLinkCommand(deps: IdentityDeps): CommandDefinition {
 
     async execute(interaction, ctx) {
       const userId = interaction.user.id;
+      // Счёт прогрессии ведётся по серверам, поэтому события привязки несут guildId.
+      // Пустая строка вне сервера недостижима: привязка идёт из slash-команды гильдии.
+      const guildId = interaction.guildId ?? '';
       await deps.linking.ensureUser(userId);
 
       const subcommand = interaction.options.getSubcommand();
@@ -120,6 +123,7 @@ export function createLinkCommand(deps: IdentityDeps): CommandDefinition {
         );
         await deps.linking.saveRank(accountId, rank);
         await deps.bus.emit('account.linked', {
+          guildId,
           userId,
           provider: 'riot-valorant',
           externalId: profile.externalId,
@@ -197,6 +201,7 @@ export function createLinkCommand(deps: IdentityDeps): CommandDefinition {
           linkedIds.push(await deps.linking.linkAccount(userId, providerId, verified, true));
           linkedProviders.push(providerId);
           await deps.bus.emit('account.linked', {
+            guildId,
             userId,
             provider: providerId,
             externalId: verified.externalId,

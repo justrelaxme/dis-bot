@@ -62,6 +62,7 @@ export function createUnlinkCommand(deps: IdentityDeps): CommandDefinition {
       ),
 
     async execute(interaction, ctx) {
+      const guildId = interaction.guildId ?? '';
       const requested = interaction.options.getString('provider', true) as ProviderId;
       const userId = interaction.user.id;
 
@@ -115,7 +116,7 @@ export function createUnlinkCommand(deps: IdentityDeps): CommandDefinition {
       }
 
       for (const provider of removed) {
-        await deps.bus.emit('account.unlinked', { userId, provider });
+        await deps.bus.emit('account.unlinked', { guildId, userId, provider });
       }
 
       // Честно про частичность: если часть пары не была привязана (riot-tft

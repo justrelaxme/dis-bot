@@ -1,6 +1,7 @@
 import type { BotModule } from './core/module.js';
 import { createIdentityModule, type IdentityModuleDeps } from './modules/identity/index.js';
 import { pingModule } from './modules/ping/index.js';
+import { createProgressionModule } from './modules/progression/index.js';
 import { createTournamentsModule } from './modules/tournaments/index.js';
 
 /**
@@ -23,7 +24,9 @@ export function buildModules(identityDeps: IdentityModuleDeps): BotModule[] {
     createTournamentsModule({
       db: identityDeps.db,
       logger: identityDeps.logger,
+      bus: identityDeps.bus,
       publicBaseUrl: identityDeps.config.PUBLIC_BASE_URL,
     }),
+    createProgressionModule({ db: identityDeps.db, cache: identityDeps.cache }),
   ];
 }

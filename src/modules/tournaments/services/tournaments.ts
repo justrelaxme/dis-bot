@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
 import { UserError } from '../../../core/errors.js';
+import type { EventBus } from '../../../core/events/bus.js';
 import { advanceTarget, assignSeeds, bracketSize, buildBracket, totalRounds } from '../bracket.js';
 import {
   tournamentEntrantMembers,
@@ -46,8 +47,31 @@ function required<T>(row: T | undefined, what: string): T {
   return row;
 }
 
-export function createTournamentsService(deps: { db: Database }) {
+export function createTournamentsService(deps: { db: Database; bus?: EventBus }) {
   const { db } = deps;
+
+  /**
+   * Публикация в шину. Шина необязательна намеренно: сервис используется и там, где её нет
+   * (регистрация команд с заглушками), и падать из-за отсутствия подписчиков он не должен.
+   *
+   * Состав победителя уходит списком идентификаторов, а не ссылкой на участника: подписчику
+   * (прогрессии) нужны люди, которым начислять, а лезть в таблицы турниров он не может —
+   * модули друг друга не импортируют.
+   */
+  async function publishFinished(tournament: TournamentRow, winnerEntrantId: number): Promise<void> {
+    if (!deps.bus) return;
+    const winners = await db
+      .select({ userId: tournamentEntrantMembers.userId })
+      .from(tournamentEntrantMembers)
+      .where(eq(tournamentEntrantMembers.entrantId, winnerEntrantId));
+
+    await deps.bus.emit('tournament.finished', {
+      guildId: tournament.guildId,
+      tournamentId: tournament.id,
+      winnerEntrantId,
+      winnerUserIds: winners.map((row) => row.userId),
+    });
+  }
 
   async function byId(tournamentId: number): Promise<TournamentRow> {
     const [row] = await db.select().from(tournaments).where(eq(tournaments.id, tournamentId));
@@ -109,10 +133,16 @@ export function createTournamentsService(deps: { db: Database }) {
     const rounds = totalRounds(bracketSize(entrantCount));
 
     if (match.round >= rounds) {
-      await db
+      const [closed] = await db
         .update(tournaments)
         .set({ state: 'finished', finishedAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(tournaments.id, match.tournamentId), eq(tournaments.state, 'running')));
+        .where(and(eq(tournaments.id, match.tournamentId), eq(tournaments.state, 'running')))
+        .returning();
+
+      // Событие публикуется только тем вызовом, который действительно закрыл турнир:
+      // условие на state = 'running' в WHERE делает это гарантией, поэтому повторная
+      // доставка не начислит награду победителю дважды.
+      if (closed) await publishFinished(closed, winnerEntrantId);
       return { finished: true };
     }
 

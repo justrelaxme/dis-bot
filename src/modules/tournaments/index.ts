@@ -1,4 +1,5 @@
 import type { Database } from '../../core/db/client.js';
+import type { EventBus } from '../../core/events/bus.js';
 import type { Logger } from '../../core/logger.js';
 import type { BotModule } from '../../core/module.js';
 import { createManageCommand } from './commands/manage.js';
@@ -36,6 +37,8 @@ const CYCLE_CRON = '* * * * *';
 export interface TournamentsModuleDeps {
   db: Database;
   logger: Logger;
+  /** Шина: по завершении турнира публикуется победитель, чтобы прогрессия начислила награду. */
+  bus: EventBus;
   /** Публичный адрес витрины: в объявлениях даём ссылку на сетку. */
   publicBaseUrl: string;
 }
@@ -54,7 +57,7 @@ export interface TournamentsModuleDeps {
  */
 export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule {
   const polls = createPollsService({ db: deps.db });
-  const tournaments = createTournamentsService({ db: deps.db });
+  const tournaments = createTournamentsService({ db: deps.db, bus: deps.bus });
   const cycles = createCycleService({ db: deps.db, logger: deps.logger });
   const channels = createChannelsGateway(deps.logger);
   const play = { tournaments, channels, publicBaseUrl: deps.publicBaseUrl };

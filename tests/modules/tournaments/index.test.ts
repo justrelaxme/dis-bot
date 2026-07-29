@@ -2,6 +2,7 @@ import { Cron } from 'croner';
 import { describe, expect, it } from 'vitest';
 import type { Config } from '../../../src/core/config.js';
 import type { Database } from '../../../src/core/db/client.js';
+import { EventBus } from '../../../src/core/events/bus.js';
 import { createLogger } from '../../../src/core/logger.js';
 import { createTournamentsModule } from '../../../src/modules/tournaments/index.js';
 
@@ -12,7 +13,12 @@ function moduleWith() {
   // модуля не должно вызывать ни одного метода БД, иначе регистрация команд (у которой
   // БД — пустая заглушка) упала бы ещё до первого HTTP-запроса к Discord.
   const db = {} as unknown as Database;
-  return createTournamentsModule({ db, logger, publicBaseUrl: 'https://bot.example.com' });
+  return createTournamentsModule({
+    db,
+    logger,
+    bus: new EventBus(logger),
+    publicBaseUrl: 'https://bot.example.com',
+  });
 }
 
 describe('модуль tournaments', () => {

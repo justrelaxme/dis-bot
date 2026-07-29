@@ -173,7 +173,9 @@ describe('/unlink', () => {
 
     await command.execute(interaction, ctx);
 
-    expect(handler).toHaveBeenCalledWith({ userId: '222222222222222222', provider: 'steam' });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: '222222222222222222', provider: 'steam' }),
+    );
   });
 
   it('riot-lol и riot-tft привязывались одним подтверждением — отвязываются одной командой', async () => {
@@ -196,8 +198,12 @@ describe('/unlink', () => {
     expect(linking.unlinkAccount).toHaveBeenCalledWith('222222222222222222', 'riot-tft');
     expect(roles.applyRoles).toHaveBeenCalledWith(fakeMember, '111111111111111111', 'riot-lol', []);
     expect(roles.applyRoles).toHaveBeenCalledWith(fakeMember, '111111111111111111', 'riot-tft', []);
-    expect(handler).toHaveBeenCalledWith({ userId: '222222222222222222', provider: 'riot-lol' });
-    expect(handler).toHaveBeenCalledWith({ userId: '222222222222222222', provider: 'riot-tft' });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: '222222222222222222', provider: 'riot-lol' }),
+    );
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: '222222222222222222', provider: 'riot-tft' }),
+    );
     expect(calls.followUp.mock.calls[0]?.[0]?.content).not.toContain('и так не было привязано');
   });
 
