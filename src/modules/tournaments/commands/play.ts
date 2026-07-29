@@ -277,6 +277,31 @@ export async function ensureMatchThreads(deps: PlayDeps, guild: Guild, tournamen
   }
 }
 
+/**
+ * Все комнаты турнира: голосовые командам и ветки матчам. Одна функция на оба пути старта
+ * — по команде организатора и по расписанию, — иначе автоматический турнир однажды
+ * окажется без комнат, потому что их создание дописали только в одном месте.
+ */
+export async function createTournamentRooms(deps: PlayDeps, guild: Guild, tournamentId: number): Promise<void> {
+  const tournament = await deps.tournaments.byId(tournamentId);
+  const entrants = await deps.tournaments.activeEntrants(tournamentId);
+
+  for (const entrant of entrants.filter((row) => row.seed !== null && row.voiceChannelId === null)) {
+    const members = await deps.tournaments.membersOf(entrant.id);
+    const channelId = await deps.channels.createTeamVoice({
+      guild,
+      categoryId: tournament.teamCategoryId,
+      tournamentName: tournament.name,
+      entrantId: entrant.id,
+      teamName: entrant.displayName,
+      memberIds: members,
+    });
+    if (channelId) await deps.tournaments.attachVoice(entrant.id, channelId);
+  }
+
+  await ensureMatchThreads(deps, guild, tournamentId);
+}
+
 /** Уборка комнат после турнира: без неё сервер за месяц ежедневных турниров забьётся. */
 async function cleanup(deps: PlayDeps, guild: Guild, tournamentId: number, ctx: ModuleContext): Promise<void> {
   const entrants = await deps.tournaments.activeEntrants(tournamentId);

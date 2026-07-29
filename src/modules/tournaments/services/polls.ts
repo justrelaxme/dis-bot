@@ -15,6 +15,8 @@ export interface CreatePollInput {
 
 export interface PollsService {
   createPoll(input: CreatePollInput): Promise<TournamentPollRow>;
+  /** Нужен суточному циклу: он ждёт, пока джоба финализации не запишет итог. */
+  byId(pollId: number): Promise<TournamentPollRow | null>;
   /** Голосования с истёкшим сроком, итог которых ещё не зафиксирован. */
   findDue(now: Date, limit: number): Promise<TournamentPollRow[]>;
   /**
@@ -56,6 +58,11 @@ export function createPollsService(deps: { db: Database }): PollsService {
         })
         .returning();
       return required(row);
+    },
+
+    async byId(pollId): Promise<TournamentPollRow | null> {
+      const [row] = await db.select().from(tournamentPolls).where(eq(tournamentPolls.id, pollId));
+      return row ?? null;
     },
 
     async findDue(now, limit): Promise<TournamentPollRow[]> {

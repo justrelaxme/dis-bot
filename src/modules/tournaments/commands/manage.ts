@@ -2,10 +2,11 @@ import { PermissionFlagsBits, SlashCommandBuilder, type Guild } from 'discord.js
 import { UserError } from '../../../core/errors.js';
 import type { CommandDefinition, ModuleContext } from '../../../core/module.js';
 import { EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
-import { ensureMatchThreads } from './play.js';
+import { createTournamentRooms } from './play.js';
 import type { ChannelsGateway } from '../discord/channels.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentGame } from '../schema.js';
+import { parseClock, type CycleService } from '../services/cycle.js';
 import { entrantStrengths } from '../services/strength.js';
 import type { TournamentsService } from '../services/tournaments.js';
 
@@ -14,6 +15,7 @@ const REGISTRATION_HOURS_DEFAULT = 4;
 export interface ManageDeps {
   tournaments: TournamentsService;
   channels: ChannelsGateway;
+  cycles: CycleService;
   /** Публичный адрес витрины: в объявлениях даём ссылку на сетку. */
   publicBaseUrl: string;
 }
@@ -84,7 +86,36 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
         sub.setName('start').setDescription('Закрыть регистрацию, разложить сетку и объявить первый круг'),
       )
       .addSubcommand((sub) => sub.setName('cancel').setDescription('Отменить текущий турнир и убрать его комнаты'))
-      .addSubcommand((sub) => sub.setName('info').setDescription('Что сейчас происходит с турниром')),
+      .addSubcommand((sub) => sub.setName('info').setDescription('Что сейчас происходит с турниром'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('schedule')
+          .setDescription('Ежедневный автомат: голосование, регистрация и старт без организатора')
+          .addBooleanOption((option) =>
+            option.setName('enabled').setDescription('Включить или выключить автомат'),
+          )
+          .addStringOption((option) =>
+            option.setName('poll_at').setDescription('Когда вывешивать голосование, например 14:00'),
+          )
+          .addStringOption((option) =>
+            option.setName('start_at').setDescription('Когда стартовать, например 20:00'),
+          )
+          .addIntegerOption((option) =>
+            option.setName('poll_hours').setDescription('Сколько часов идёт голосование').setMinValue(1).setMaxValue(12),
+          )
+          .addStringOption((option) =>
+            option
+              .setName('mode')
+              .setDescription('Составы или одиночки')
+              .addChoices({ name: 'Команды', value: 'team' }, { name: 'Одиночки', value: 'solo' }),
+          )
+          .addIntegerOption((option) =>
+            option.setName('team_size').setDescription('Игроков в команде').setMinValue(1).setMaxValue(10),
+          )
+          .addStringOption((option) =>
+            option.setName('timezone').setDescription('Часовой пояс, по умолчанию Europe/Berlin'),
+          ),
+      ),
 
     async execute(interaction, ctx): Promise<void> {
       const subcommand = interaction.options.getSubcommand();
@@ -109,6 +140,10 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
       }
       if (subcommand === 'info') {
         await info(interaction, guild, deps);
+        return;
+      }
+      if (subcommand === 'schedule') {
+        await schedule(interaction, guild, deps);
         return;
       }
       throw new UserError('Неизвестная подкоманда.');
@@ -189,23 +224,8 @@ async function start(interaction: Interaction, guild: Guild, deps: ManageDeps, c
   const size = eventSize(active.length);
 
   // Комнаты создаём после того, как сетка уже в базе: отказ Discord не должен отменять
-  // построенную сетку.
-  for (const entrant of active) {
-    const members = await deps.tournaments.membersOf(entrant.id);
-    const channelId = await deps.channels.createTeamVoice({
-      guild,
-      categoryId: tournament.teamCategoryId,
-      tournamentName: tournament.name,
-      entrantId: entrant.id,
-      teamName: entrant.displayName,
-      memberIds: members,
-    });
-    if (channelId) await deps.tournaments.attachVoice(entrant.id, channelId);
-  }
-
-  // Комнаты матчей первого круга: соперникам надо договориться о лобби, а каналы команд
-  // приватные и друг друга не видят.
-  await ensureMatchThreads(deps, guild, tournament.id);
+  // построенную сетку. Та же функция вызывается при старте по расписанию.
+  await createTournamentRooms(deps, guild, tournament.id);
 
   const pairs = view.matches
     .filter((match) => match.round === 1 && match.entrantAId !== null && match.entrantBId !== null)
@@ -250,6 +270,69 @@ async function cancel(interaction: Interaction, guild: Guild, deps: ManageDeps):
   }
 
   await interaction.editReply({ content: `Турнир «${tournament.name}» отменён, комнаты убраны.` });
+}
+
+/**
+ * Настройка ежедневного автомата. Канал объявлений, категория комнат и канал для веток
+ * берутся из того места, где вызвали команду: так администратор не подбирает три id
+ * руками, а просто пишет команду там, где хочет видеть турниры.
+ */
+async function schedule(interaction: Interaction, guild: Guild, deps: ManageDeps): Promise<void> {
+  const patch: Record<string, unknown> = {};
+
+  const enabled = interaction.options.getBoolean('enabled');
+  if (enabled !== null) {
+    patch['enabled'] = enabled;
+    // Счётчик пустых дней сбрасываем при ручном включении: администратор видит, что
+    // никто не приходил, и всё равно включает — значит причина ему известна.
+    if (enabled) patch['emptyDays'] = 0;
+  }
+
+  for (const [option, field] of [
+    ['poll_at', 'pollAt'],
+    ['start_at', 'startAt'],
+    ['timezone', 'timezone'],
+  ] as const) {
+    const value = interaction.options.getString(option);
+    if (value !== null) patch[field] = value.trim();
+  }
+
+  const mode = interaction.options.getString('mode');
+  if (mode !== null) patch['entryMode'] = mode === 'solo' ? 'solo' : 'team';
+
+  for (const [option, field] of [
+    ['poll_hours', 'pollHours'],
+    ['team_size', 'teamSize'],
+  ] as const) {
+    const value = interaction.options.getInteger(option);
+    if (value !== null) patch[field] = value;
+  }
+
+  if (interaction.channelId) {
+    patch['announceChannelId'] = interaction.channelId;
+    patch['matchParentId'] = interaction.channelId;
+  }
+
+  const saved = await deps.cycles.upsertSchedule(guild.id, patch);
+
+  // Некорректное время ловим здесь, а не в четыре часа ночи в логе джобы.
+  const badClock = [saved.pollAt, saved.startAt].filter((value) => parseClock(value) === null);
+  if (badClock.length > 0) {
+    throw new UserError(`Время должно быть в виде ЧЧ:ММ. Не разобрал: ${badClock.join(', ')}.`);
+  }
+
+  await interaction.editReply({
+    content: [
+      `## Ежедневный автомат — ${saved.enabled ? 'включён' : 'выключен'}`,
+      `Голосование в **${saved.pollAt}** на ${saved.pollHours} ч, старт в **${saved.startAt}** (${saved.timezone}).`,
+      `${saved.entryMode === 'team' ? `Команды по ${saved.teamSize}` : 'Одиночки'}, до ${saved.maxEntrants} участников.`,
+      `Объявления и ветки матчей — в этом канале.`,
+      '',
+      saved.enabled
+        ? 'Дальше бот ведёт день сам: голосование, условия, регистрация, жеребьёвка, комнаты.'
+        : 'Включить: `/tournament schedule enabled:true`.',
+    ].join('\n'),
+  });
 }
 
 async function info(interaction: Interaction, guild: Guild, deps: ManageDeps): Promise<void> {

@@ -28,6 +28,7 @@ describe('модуль tournaments', () => {
     ]);
     expect(botModule.jobs?.map((j) => j.name).sort()).toEqual([
       'tournaments:auto-confirm',
+      'tournaments:cycle',
       'tournaments:poll-finalize',
     ]);
     // Кнопки состава и подтверждения результата обслуживает сам модуль: роутер ядра

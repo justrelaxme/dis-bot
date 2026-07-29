@@ -32,6 +32,11 @@ function fakePolls(fields: {
     createPoll: vi.fn<PollsService['createPoll']>(async () => {
       throw new Error('createPoll не ожидался в этих тестах');
     }),
+    // byId нужен суточному циклу, а не финализатору: если он здесь дёрнется — значит
+    // финализатор полез не туда, и падение об этом скажет прямо.
+    byId: vi.fn<PollsService['byId']>(async () => {
+      throw new Error('byId не ожидался в этих тестах');
+    }),
     findDue: vi.fn<PollsService['findDue']>(fields.findDue ?? (async () => [])),
     claimOutcome: vi.fn<PollsService['claimOutcome']>(fields.claimOutcome ?? (async () => null)),
     revertClaim: vi.fn<PollsService['revertClaim']>(fields.revertClaim ?? (async () => {})),
