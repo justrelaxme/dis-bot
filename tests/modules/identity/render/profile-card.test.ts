@@ -23,6 +23,10 @@ function rank(tier: string, division: string | null, points: number | null, sour
   return { mode: 'solo-duo', scale: 'riot-tier', tier, division, points, source, raw: {} };
 }
 
+function dotaRank(points: number | null): RankInfo {
+  return { mode: 'dota-mmr', scale: 'dota-mmr', tier: 'IMMORTAL', division: null, points, source: 'api', raw: {} };
+}
+
 describe('formatRank', () => {
   it('собирает тир, дивизион и очки', () => {
     expect(formatRank(rank('PLATINUM', 'II', 47))).toBe('Platinum II · 47 LP');
@@ -38,6 +42,17 @@ describe('formatRank', () => {
 
   it('помечает ручной ранг как заявленный игроком', () => {
     expect(formatRank(rank('IMMORTAL', 'II', null, 'manual'))).toContain('со слов игрока');
+  });
+
+  // Находка 2: normalizeDotaRank кладёт место в лидерборде (меньше — лучше) в то же
+  // поле points, что и LP у остальных шкал, но это другое измерение — rankScore это
+  // уже учитывает (ranks/compare.ts), а formatRank до этой правки — нет.
+  it('показывает место в лидерборде Dota, а не LP', () => {
+    expect(formatRank(dotaRank(412))).toBe('Immortal · 412-е место в лидерборде');
+  });
+
+  it('не показывает LP и не показывает место, когда его нет', () => {
+    expect(formatRank(dotaRank(null))).toBe('Immortal');
   });
 });
 
@@ -112,6 +127,36 @@ describe('buildProfileCard', () => {
     });
 
     expect(JSON.stringify(card.toJSON())).toContain('14:32');
+  });
+
+  // Находка 1: staleSince обязана появляться только когда данные реально устарели.
+  // Без записи ниже пробел в покрытии не заметил бы регресс вида «отметка всегда
+  // показывается» или «показывается, даже когда staleSince не задан».
+  it('не показывает отметку устаревания, когда данные свежие', () => {
+    const card = buildProfileCard({
+      displayName: 'Саня',
+      entries: [{ account: account(), ranks: [rank('GOLD', 'II', 20)], previous: new Map() }],
+    });
+
+    expect(JSON.stringify(card.toJSON())).not.toContain('сервис игры не ответил');
+  });
+
+  it('не показывает отметку устаревания у ручного ранга', () => {
+    const card = buildProfileCard({
+      displayName: 'Саня',
+      entries: [
+        {
+          account: account({ provider: 'riot-valorant', verifiedAt: null, verificationMethod: 'manual' }),
+          ranks: [rank('IMMORTAL', 'II', null, 'manual')],
+          previous: new Map(),
+          // profile.ts никогда не заполняет staleSince для ручного ранга (нет
+          // rankFreshness у provider без fetchRank) — здесь фиксируется то же самое
+          // поведение на уровне карточки: раз staleSince не задан, отметки не будет.
+        },
+      ],
+    });
+
+    expect(JSON.stringify(card.toJSON())).not.toContain('сервис игры не ответил');
   });
 
   it('не превышает предел контейнера в 10 компонентов', () => {

@@ -1,12 +1,32 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import type { CommandDefinition } from '../../../core/module.js';
 import type { RankInfo } from '../providers/provider.js';
+import type { CachedGameProvider } from '../providers/with-cache.js';
 import { buildProfileCard, type ProfileEntry } from '../render/profile-card.js';
+import type { GameAccountRow } from '../services/linking.js';
 import type { IdentityDeps } from './link.js';
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
-/** Двойной интервал cron-синхронизации: за это время аккаунт обязан был обновиться. */
-const STALE_AFTER_MS = 60 * 60 * 1_000;
+
+/**
+ * Настоящая свежесть ранга — из кэша, а не из gameAccounts.updatedAt. Эту метку
+ * двигает rank-sync на каждой попытке синхронизации, включая провальную (иначе
+ * сбойный аккаунт навсегда занял бы голову очереди syncBatch, отсортированной по
+ * updatedAt) — она отвечает «когда пытались», а не «когда получили», и поэтому не
+ * может служить признаком устаревания: при затяжном сбое провайдера updatedAt всё
+ * равно остаётся свежим, а при большой очереди — устаревшим у аккаунта, до
+ * которого просто не дошла очередь, хотя сервис в порядке.
+ *
+ * Провайдеры реестра всегда обёрнуты withCache (см. providers/index.ts), поэтому
+ * приведение типа ниже безопасно: rankFreshness либо есть (провайдер с авто-рангом),
+ * либо undefined — точно как fetchRank у исходного провайдера. Если инвариант вдруг
+ * нарушится, optional chaining просто не даст отметки, а не бросит исключение.
+ */
+async function rankStaleSince(deps: IdentityDeps, account: GameAccountRow): Promise<Date | undefined> {
+  const provider = deps.providers.get(account.provider) as CachedGameProvider | undefined;
+  const freshness = await provider?.rankFreshness?.(account.externalId, account.region ?? undefined);
+  return freshness?.stale ? freshness.storedAt : undefined;
+}
 
 export function createProfileCommand(deps: IdentityDeps): CommandDefinition {
   return {
@@ -31,17 +51,11 @@ export function createProfileCommand(deps: IdentityDeps): CommandDefinition {
         for (const rank of ranks) {
           previous.set(rank.mode, await deps.linking.rankAt(account.id, rank.mode, since));
         }
-        const isStale = Date.now() - account.updatedAt.getTime() > STALE_AFTER_MS;
-        entries.push({ account, ranks, previous, ...(isStale ? { staleSince: account.updatedAt } : {}) });
+        const staleSince = await rankStaleSince(deps, account);
+        entries.push({ account, ranks, previous, ...(staleSince ? { staleSince } : {}) });
       }
 
-      const card = buildProfileCard({
-        displayName: target.displayName,
-        // avatarUrl нельзя присваивать явным undefined (exactOptionalPropertyTypes) —
-        // тот же приём условного спреда, что и в providers/steam.ts.
-        ...(target.displayAvatarURL() ? { avatarUrl: target.displayAvatarURL() } : {}),
-        entries,
-      });
+      const card = buildProfileCard({ displayName: target.displayName, entries });
 
       // С IsComponentsV2 нельзя передавать content, embeds, stickers или poll
       // в том же сообщении — только компоненты.

@@ -1,9 +1,10 @@
+import type { Redis } from 'ioredis';
 import { describe, expect, it, vi } from 'vitest';
 import { Cache } from '../../../src/core/cache.js';
 import type { Config } from '../../../src/core/config.js';
 import { createLogger } from '../../../src/core/logger.js';
 import type { GameProvider, RankInfo } from '../../../src/modules/identity/providers/provider.js';
-import { withCache } from '../../../src/modules/identity/providers/with-cache.js';
+import { CACHE_TTL, withCache } from '../../../src/modules/identity/providers/with-cache.js';
 import { withRedis } from '../../helpers/redis.js';
 
 const redis = withRedis();
@@ -35,12 +36,14 @@ function providerSpy(overrides: Partial<GameProvider> = {}) {
 }
 
 describe('withCache', () => {
-  it('сохраняет id и capabilities исходного провайдера', () => {
+  it('сохраняет id и capabilities исходного провайдера', async () => {
     const { provider } = providerSpy();
-    const wrapped = withCache(provider, makeCache());
+    const cache = makeCache();
+    const wrapped = withCache(provider, cache);
 
     expect(wrapped.id).toBe('riot-lol');
     expect(wrapped.capabilities).toEqual(provider.capabilities);
+    await cache.close();
   });
 
   it('обращается к провайдеру один раз на два запроса профиля', async () => {
@@ -122,21 +125,97 @@ describe('withCache', () => {
     await cache.close();
   });
 
-  it('не оборачивает провайдера без fetchRank', () => {
+  it('не оборачивает провайдера без fetchRank', async () => {
     const manual: GameProvider = {
       id: 'riot-valorant',
       capabilities: { verification: 'none', rank: 'manual' },
       fetchProfile: async () => ({ externalId: 'a#b', displayName: 'a#b' }),
     };
+    const cache = makeCache();
+    const wrapped = withCache(manual, cache);
 
-    expect(withCache(manual, makeCache()).fetchRank).toBeUndefined();
+    expect(wrapped.fetchRank).toBeUndefined();
+    // Находка 1: rankFreshness — та же условная пристройка, что и fetchRank (см.
+    // withCache), поэтому у провайдера с ручным рангом её тоже не должно быть —
+    // иначе карточка получила бы отметку устаревания там, где взяться ей неоткуда
+    // (нет никакого «сервиса игры», который мог бы «не ответить»).
+    expect(wrapped.rankFreshness).toBeUndefined();
+    await cache.close();
   });
 
-  it('пробрасывает методы верификации без изменений', () => {
+  it('пробрасывает методы верификации без изменений', async () => {
     const startVerification = vi.fn();
     const { provider } = providerSpy({ startVerification: startVerification as never });
-    const wrapped = withCache(provider, makeCache());
+    const cache = makeCache();
+    const wrapped = withCache(provider, cache);
 
     expect(wrapped.startVerification).toBe(startVerification);
+    await cache.close();
+  });
+
+  // Находка 1 (главная): staleSince в карточке обязана приходить от настоящей
+  // свежести кэша, а не от gameAccounts.updatedAt (её синхронизация двигает даже
+  // на провальной попытке — поэтому она лжёт в обе стороны, см. profile.ts).
+  describe('rankFreshness', () => {
+    it('сообщает о просроченном значении, когда провайдер сейчас недоступен', async () => {
+      const cache = makeCache();
+      const provider: GameProvider = {
+        id: 'riot-lol',
+        capabilities: { verification: 'riot-third-party-code', rank: 'api' },
+        fetchProfile: async () => ({ externalId: 'X9', displayName: 'a#b' }),
+        fetchRank: async () => {
+          throw new Error('Riot лёг');
+        },
+      };
+      const wrapped = withCache(provider, cache);
+
+      // withCache использует фиксированный CACHE_TTL.rank (20 минут / 24 часа —
+      // спека этапа), поэтому единственный способ проверить возраст «просрочено, но
+      // ещё отдаём» без реального ожидания 20+ минут — записать в Redis уже
+      // «состаренную» запись напрямую, в обход Cache.write (тот же приём приведения
+      // приватного поля к типу, что и в tests/integration/cache.test.ts).
+      const storedAt = Date.now() - 21 * 60 * 1_000;
+      const internal = cache as unknown as { redis: Redis };
+      await internal.redis.set(
+        'cache:provider:riot-lol:rank:X9:euw1',
+        JSON.stringify({ value: [rank('GOLD')], storedAt }),
+        'PX',
+        CACHE_TTL.rank.staleMs,
+      );
+
+      const freshness = await wrapped.rankFreshness!('X9', 'euw1');
+
+      expect(freshness?.stale).toBe(true);
+      expect(freshness?.storedAt).toEqual(new Date(storedAt));
+      await cache.close();
+    });
+
+    it('не считает значение просроченным, пока провайдер отвечает', async () => {
+      const cache = makeCache();
+      const { provider } = providerSpy();
+      const wrapped = withCache(provider, cache);
+
+      await wrapped.fetchRank!('X10', 'euw1');
+      const freshness = await wrapped.rankFreshness!('X10', 'euw1');
+
+      expect(freshness?.stale).toBe(false);
+      await cache.close();
+    });
+
+    it('не падает и возвращает undefined, когда в кэше нет вообще ничего и провайдер лёг', async () => {
+      const cache = makeCache();
+      const provider: GameProvider = {
+        id: 'riot-lol',
+        capabilities: { verification: 'riot-third-party-code', rank: 'api' },
+        fetchProfile: async () => ({ externalId: 'X11', displayName: 'a#b' }),
+        fetchRank: async () => {
+          throw new Error('Riot лёг');
+        },
+      };
+      const wrapped = withCache(provider, cache);
+
+      await expect(wrapped.rankFreshness!('X11', 'euw1')).resolves.toBeUndefined();
+      await cache.close();
+    });
   });
 });

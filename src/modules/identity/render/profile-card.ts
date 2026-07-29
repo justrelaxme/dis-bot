@@ -18,7 +18,11 @@ export interface ProfileEntry {
   ranks: RankInfo[];
   /** Ранг 30 дней назад по каждому режиму — для показа динамики. */
   previous: Map<string, RankInfo | null>;
-  /** Задано, когда данные отданы из просроченного кэша. */
+  /**
+   * Время, когда ранг был на самом деле получен от сервиса игры (не когда его в
+   * последний раз пытались обновить). Задано только тогда, когда сервис сейчас
+   * недоступен и показана не текущая, а последняя известная копия из кэша.
+   */
   staleSince?: Date;
 }
 
@@ -33,7 +37,12 @@ export function formatRank(rank: RankInfo): string {
   if (rank.division) parts.push(rank.division);
 
   let text = parts.join(' ');
-  if (rank.points !== null) text += ` · ${rank.points} LP`;
+  if (rank.points !== null) {
+    // У Dota очки — это место в лидерборде (меньше — лучше), отдельное измерение
+    // от LP остальных шкал (см. rankScore в ranks/compare.ts): подписывать его
+    // как LP неверно — это не очки, а позиция.
+    text += rank.scale === 'dota-mmr' ? ` · ${rank.points}-е место в лидерборде` : ` · ${rank.points} LP`;
+  }
   if (rank.source === 'manual') text += ' _(со слов игрока)_';
 
   return text;
@@ -82,11 +91,7 @@ function entryLines(entry: ProfileEntry): string {
   return `${header}\n${ranks}${stale}`;
 }
 
-export function buildProfileCard(input: {
-  displayName: string;
-  avatarUrl?: string;
-  entries: ProfileEntry[];
-}): ContainerBuilder {
+export function buildProfileCard(input: { displayName: string; entries: ProfileEntry[] }): ContainerBuilder {
   const container = new ContainerBuilder();
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Профиль ${input.displayName}`));
 
