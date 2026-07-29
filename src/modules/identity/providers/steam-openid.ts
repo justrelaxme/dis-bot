@@ -42,6 +42,16 @@ export async function verifySteamAssertion(
     throw new ProviderError(`claimed_id не принадлежит Steam: ${claimedId}`, 'steam');
   }
 
+  // Стандартная защита OpenID 2.0: check_authentication подтверждает лишь то, что подпись
+  // валидна для перечисленных в openid.signed полей. Если claimed_id туда не входит, Steam
+  // мог подписать совсем другой набор параметров, а claimed_id — подменить уже после подписи.
+  // Без этой проверки is_valid:true от Steam ничего не говорит о том, что claimed_id вообще
+  // относится к этой подписи.
+  const signed = (params.get('openid.signed') ?? '').split(',');
+  if (!signed.includes('claimed_id')) {
+    throw new ProviderError('openid.signed не включает claimed_id — assertion не защищает идентификатор', 'steam');
+  }
+
   const verification = new URLSearchParams(params);
   verification.set('openid.mode', 'check_authentication');
 
@@ -53,7 +63,9 @@ export async function verifySteamAssertion(
   });
 
   const text = await response.text();
-  if (!/^is_valid:true$/m.test(text.trim())) {
+  // \r? перед концом строки — ответ разбирается независимо от того, какой перевод строки
+  // использован (\n или \r\n): формат key:value по спеке OpenID 2.0 явно не фиксирует один вариант.
+  if (!/^is_valid:true\r?$/m.test(text.trim())) {
     throw new ProviderError('Steam не подтвердил подпись возврата', 'steam');
   }
 

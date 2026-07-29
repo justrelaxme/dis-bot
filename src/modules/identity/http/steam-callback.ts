@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
+import { describeForUser, UserError } from '../../../core/errors.js';
 import type { Logger } from '../../../core/logger.js';
-import type { GameProvider } from '../providers/provider.js';
+import type { GameProvider, VerifiedAccount } from '../providers/provider.js';
 import { verifySteamAssertion } from '../providers/steam-openid.js';
 import type { ProviderId } from '../schema.js';
 import type { LinkingService } from '../services/linking.js';
@@ -56,6 +57,14 @@ export function registerSteamCallback(server: FastifyInstance, deps: SteamCallba
     let owner: { userId: string; provider: ProviderId };
     try {
       owner = await deps.linking.takeChallenge(state);
+      if (owner.provider !== 'steam') {
+        // Испытание существует и не истекло, но выдано другому провайдеру: challenge
+        // уникален глобально (account_verifications_challenge_uq не разделяет провайдеров),
+        // поэтому чужой код верификации (например, третьесторонний код Riot) синтаксически
+        // пройдёт takeChallenge и здесь. Погасить его на Steam-роуте — значит привязать
+        // свой Steam-аккаунт к чужому Discord-профилю по чужому секрету.
+        throw new Error(`испытание принадлежит провайдеру ${owner.provider}, а не steam`);
+      }
     } catch (error) {
       deps.logger.warn({ err: error }, 'неизвестная или просроченная метка запроса Steam');
       return reply
@@ -69,17 +78,52 @@ export function registerSteamCallback(server: FastifyInstance, deps: SteamCallba
       return reply.code(500).type('text/html').send(page('Бот настроен неверно', 'Провайдер Steam не подключён.'));
     }
 
-    const verified = await provider.completeVerification(
-      { challenge: state, expiresAt: new Date(Date.now() + 60_000), payload: {} },
-      steamId,
-    );
-    await deps.linking.linkAccount(owner.userId, 'steam', verified, true);
+    // Отказ до и включая linkAccount — это неудача привязки: нет STEAM_API_KEY (UserError
+    // из fetchProfile), аккаунт уже привязан к другому Discord-профилю (UserError из
+    // linkAccount) или Steam недоступен/открыт circuit breaker (ProviderError) — всё это
+    // реальные, достижимые исходы, а не гипотетические. Без этого try/catch Fastify
+    // отдаёт игроку сырой JSON-500 с текстом внутренней ошибки вместо страницы на русском.
+    let verified: VerifiedAccount;
+    try {
+      verified = await provider.completeVerification(
+        { challenge: state, expiresAt: new Date(Date.now() + 60_000), payload: {} },
+        steamId,
+      );
+      await deps.linking.linkAccount(owner.userId, 'steam', verified, true);
+    } catch (error) {
+      const described = describeForUser(error);
+      if (described.incidentId) {
+        deps.logger.error({ err: error, incidentId: described.incidentId }, 'привязка Steam упала на завершающем шаге');
+      } else {
+        deps.logger.warn({ err: error }, 'привязка Steam не завершилась: ожидаемый отказ');
+      }
+      // UserError — ожидаемый, предназначенный игроку текст (например, «аккаунт уже
+      // привязан» или «нет STEAM_API_KEY» — админская подсказка, а не наша внутренняя
+      // деталь). Всё остальное — обобщённая формулировка без деталей исключения.
+      const status = error instanceof UserError ? 400 : 500;
+      return reply.code(status).type('text/html').send(page('Не удалось завершить привязку', described.text));
+    }
 
-    await deps.notify(owner.userId, `Steam привязан: **${verified.displayName}**. Ранг Dota подтянется автоматически.`);
+    // Аккаунт уже записан в базе — дальше только уведомление в Discord, и его сбой не
+    // должен превращать состоявшуюся привязку в страницу с ошибкой. Закрытые личные
+    // сообщения от участников сервера — штатная настройка приватности части игроков, а
+    // не признак неудачи. Результат игрок и так видит на этой странице колбэка, сообщение
+    // в Discord — приятное дополнение, а не носитель результата, поэтому его отказ только
+    // логируется и не влияет на ответ.
+    try {
+      await deps.notify(
+        owner.userId,
+        `Steam привязан: **${verified.displayName}**. Ранг Dota подтянется автоматически.`,
+      );
+    } catch (error) {
+      deps.logger.warn({ err: error }, 'не удалось отправить уведомление о привязке Steam в Discord');
+    }
 
     return reply
       .code(200)
       .type('text/html')
-      .send(page('Готово', `Аккаунт <b>${verified.displayName}</b> привязан. Можно закрыть страницу и вернуться в Discord.`));
+      .send(
+        page('Готово', `Аккаунт <b>${verified.displayName}</b> привязан. Можно закрыть страницу и вернуться в Discord.`),
+      );
   });
 }

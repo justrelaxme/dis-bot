@@ -1,5 +1,6 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import type { Config } from '../config.js';
+import { describeForUser } from '../errors.js';
 import type { Logger } from '../logger.js';
 import type { Metrics } from '../metrics.js';
 
@@ -66,6 +67,28 @@ export function createHttpServer(deps: HttpServerDeps): FastifyInstance {
   server.get('/metrics', async (_request, reply) => {
     const body = await deps.metrics.render();
     return reply.header('content-type', deps.metrics.registry.contentType).send(body);
+  });
+
+  // Страховка на будущее: без явного обработчика Fastify отдаёт необработанный отказ
+  // асинхронного роута как сырой JSON с текстом исключения (в т.ч. внутренние детали —
+  // имена переменных окружения, сообщения провайдеров и т.п.). Роуты этого файла и
+  // Steam-колбэк уже разбирают свои ошибки сами, но любой будущий роут (веб-дашборд
+  // этапа 6) по умолчанию не должен утекать наружу текстом внутренней ошибки.
+  server.setErrorHandler<FastifyError>((error, request, reply) => {
+    const described = describeForUser(error);
+
+    if (described.incidentId) {
+      deps.logger.error({ err: error, incidentId: described.incidentId, url: request.url }, 'необработанная ошибка HTTP-роута');
+    } else {
+      deps.logger.warn({ err: error, url: request.url }, 'HTTP-роут отклонил запрос ожидаемой ошибкой');
+    }
+
+    const statusCode =
+      typeof error.statusCode === 'number' && error.statusCode >= 400 && error.statusCode < 600
+        ? error.statusCode
+        : 500;
+
+    return reply.code(statusCode).send({ error: described.text });
   });
 
   return server;

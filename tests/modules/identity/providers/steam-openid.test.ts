@@ -107,4 +107,39 @@ describe('verifySteamAssertion', () => {
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('отвергает assertion, если claimed_id не входит в openid.signed, не обращаясь к сети', async () => {
+    const params = validParams();
+    // signed объявляет только op_endpoint — Steam мог подписать этот набор полей, а
+    // claimed_id подставить уже после подписи. is_valid:true в этом случае ничего не
+    // доказывает о заявленном идентификаторе.
+    params.set('openid.signed', 'signed,op_endpoint');
+    const fetchMock = vi.fn();
+
+    await expect(verifySteamAssertion(params, { fetch: fetchMock as unknown as typeof fetch })).rejects.toThrow(
+      ProviderError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('отвергает assertion вовсе без openid.signed, не обращаясь к сети', async () => {
+    const params = validParams();
+    params.delete('openid.signed');
+    const fetchMock = vi.fn();
+
+    await expect(verifySteamAssertion(params, { fetch: fetchMock as unknown as typeof fetch })).rejects.toThrow(
+      ProviderError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('принимает is_valid:true с CRLF-переводом строки в ответе Steam', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response('ns:http://specs.openid.net/auth/2.0\r\nis_valid:true\r\n'),
+    );
+
+    await expect(verifySteamAssertion(validParams(), { fetch: fetchMock as unknown as typeof fetch })).resolves.toBe(
+      '76561198000000001',
+    );
+  });
 });

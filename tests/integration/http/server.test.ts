@@ -62,4 +62,40 @@ describe('HTTP-сервер', () => {
     expect(response.json()).toMatchObject({ database: 'timeout' });
     await server.close();
   });
+
+  describe('setErrorHandler — страховка от утечки внутренних деталей', () => {
+    // Регрессия на Critical-находку финального ревью: без явного обработчика Fastify
+    // отдаёт необработанный отказ асинхронного роута как сырой JSON вида
+    // {"statusCode":500,"error":"Internal Server Error","message":"<текст исключения>"}.
+    // Роуты этого файла и Steam-колбэк уже разбирают свои ошибки сами — здесь проверяется
+    // именно страховка по умолчанию, на ещё не написанном (любом будущем) роуте.
+    it('прячет текст необработанной ошибки произвольного роута', async () => {
+      const server = serverWith({ database: ok, cache: ok });
+      server.get('/boom', async () => {
+        throw new Error('пароль от базы: hunter2');
+      });
+
+      const response = await server.inject({ method: 'GET', url: '/boom' });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.body).not.toContain('hunter2');
+      expect(response.body).not.toContain('statusCode');
+      expect(response.body).not.toContain('Internal Server Error');
+      await server.close();
+    });
+
+    it('сохраняет валидный statusCode самой ошибки, но не её текст', async () => {
+      const server = serverWith({ database: ok, cache: ok });
+      server.get('/not-found-ish', async () => {
+        throw Object.assign(new Error('внутренний путь /admin/secret-panel не существует'), { statusCode: 404 });
+      });
+
+      const response = await server.inject({ method: 'GET', url: '/not-found-ish' });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.body).not.toContain('/admin/secret-panel');
+      expect(response.body).not.toContain('Internal Server Error');
+      await server.close();
+    });
+  });
 });
