@@ -413,6 +413,18 @@ export function createTournamentsService(deps: { db: Database }) {
       return this.bracket(tournamentId);
     },
 
+    /**
+     * Запоминает голосовой канал участника. Уборка потом ищет канал по этому
+     * идентификатору, а не по имени: имя администратор может переименовать, и тогда
+     * уборка либо не найдёт нужное, либо снесёт чужое.
+     */
+    async attachVoice(entrantId: number, channelId: string): Promise<void> {
+      await db
+        .update(tournamentEntrants)
+        .set({ voiceChannelId: channelId })
+        .where(eq(tournamentEntrants.id, entrantId));
+    },
+
     async bracket(tournamentId: number): Promise<BracketView> {
       const tournament = await byId(tournamentId);
       const [entrants, matches] = await Promise.all([
