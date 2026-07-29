@@ -1276,7 +1276,7 @@ export function createRateLimiter(deps: { redisUrl: string; logger: Logger }): R
 - [ ] **Step 4: Прогнать тесты**
 
 Run: `npm run test:int -- tests/integration/rate-limit.test.ts && npm run typecheck`
-Expected: 4 теста PASS.
+Expected: 5 тестов PASS (включая проверку слушателя error у клиента Redis).
 
 - [ ] **Step 5: Коммит**
 
@@ -4651,7 +4651,7 @@ export function createRoleMapCommand(deps: { roles: RoleMappingService }): Comma
 - [ ] **Step 7: Прогнать тесты**
 
 Run: `npm run test:int -- tests/integration/cooldown.test.ts && npx vitest run tests/modules/identity/commands/ && npm run typecheck`
-Expected: 4 теста кулдауна и 8 тестов rolemap PASS.
+Expected: 5 тестов кулдауна и 8 тестов rolemap PASS.
 
 - [ ] **Step 8: Коммит**
 
@@ -4980,7 +4980,7 @@ export function createProfileCommand(deps: IdentityDeps): CommandDefinition {
 - [ ] **Step 5: Прогнать тесты**
 
 Run: `npx vitest run tests/modules/identity/render/profile-card.test.ts && npm run typecheck`
-Expected: 11 тестов PASS.
+Expected: 14 тестов PASS.
 
 - [ ] **Step 6: Коммит**
 
