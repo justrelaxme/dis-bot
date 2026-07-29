@@ -68,6 +68,44 @@ export function createRankSyncService(deps: RankSyncDeps): RankSyncService {
       });
     }
 
+    // Находка 3 итогового ревью: если мы дошли сюда, fresh — это честный ответ
+    // провайдера (сбой пробрасывается выше и сюда не доходит, см. комментарий выше).
+    // Отсутствие в fresh режима, который раньше отслеживался (previous), означает,
+    // что ранга для этого режима больше нет — сброс сезона, деранк ниже отслеживаемого
+    // порога или игрок закрыл профиль приватностью. Без явного снимка с tier: null
+    // latestRanks вечно возвращал бы последний ненулевой снимок, и applyRoles никогда
+    // не увидел бы повода снять роль — она осталась бы навсегда, даже пережив сброс
+    // сезона у всех игроков разом. Схема рангов уже допускает tier: null (это штатное
+    // «ранга нет»), а resolveDesiredRoles ранги без тира и так пропускает — новый
+    // механизм снятия ролей изобретать не нужно, только доставить правду до него.
+    const freshModes = new Set(fresh.map((r) => r.mode));
+    for (const prev of previous) {
+      if (freshModes.has(prev.mode)) continue;
+
+      const lost: RankInfo = {
+        mode: prev.mode,
+        scale: prev.scale,
+        tier: null,
+        division: null,
+        points: null,
+        source: 'api',
+        raw: {},
+      };
+      // Идемпотентность: если для режима и так уже был null (прошлый прогон уже его
+      // зафиксировал), новый снимок не пишем — иначе rank_snapshots распухала бы на
+      // каждый прогон синхронизации, пока у игрока нет рангов.
+      if (!hasRankChanged(prev, lost)) continue;
+
+      await linking.saveRank(account.id, lost);
+      await bus.emit('rank.changed', {
+        userId: account.userId,
+        provider: account.provider,
+        mode: prev.mode,
+        previous: { tier: prev.tier, division: prev.division },
+        current: { tier: null, division: null },
+      });
+    }
+
     // Даже когда ранг не изменился, отметка времени обновляется: иначе один и тот же
     // аккаунт навсегда останется первым в очереди пачки (сортировка по updatedAt).
     await touch(account.id);

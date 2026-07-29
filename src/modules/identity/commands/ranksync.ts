@@ -1,6 +1,6 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import type { Cooldown } from '../../../core/cooldown.js';
-import { UserError } from '../../../core/errors.js';
+import { describeForUser, UserError } from '../../../core/errors.js';
 import type { CommandDefinition } from '../../../core/module.js';
 import type { IdentityDeps } from './link.js';
 
@@ -12,7 +12,7 @@ export function createRankSyncCommand(deps: IdentityDeps & { cooldown: Cooldown 
     defer: { ephemeral: true },
     builder: new SlashCommandBuilder().setName('ranksync').setDescription('Обновить свои ранги сейчас'),
 
-    async execute(interaction) {
+    async execute(interaction, ctx) {
       const userId = interaction.user.id;
 
       // Сначала проверяем, есть ли вообще что синхронизировать, и только потом тратим
@@ -42,13 +42,28 @@ export function createRankSyncCommand(deps: IdentityDeps & { cooldown: Cooldown 
         try {
           const ranks = await deps.rankSync.syncAccount(account);
           if (ranks.length > 0) updated += 1;
-        } catch {
-          // Сбой одного провайдера не должен лишать пользователя ответа по остальным.
-          problems.push(account.provider);
+        } catch (error) {
+          // Сбой одного провайдера не должен лишать пользователя ответа по остальным —
+          // но сам сбой и «рангов действительно нет» (пустой список от syncAccount,
+          // rank-sync.ts) обязаны выглядеть по-разному. Пустой список — легитимный
+          // результат, на котором дальше по цепочке событий (rank.changed → applyRoles)
+          // снимаются роли за ранг; сбой провайдера — просто «мы не смогли узнать
+          // ранг сейчас», и путать одно с другим для игрока нельзя. describeForUser —
+          // та же классификация, что у роутера: ProviderError → «сервис недоступен»,
+          // остальное — код инцидента, который логируем сами (до роутера этот сбой
+          // отдельного аккаунта не долетает, execute не бросает).
+          const described = describeForUser(error);
+          if (described.incidentId) {
+            ctx.logger.error(
+              { err: error, incidentId: described.incidentId, provider: account.provider },
+              'не удалось синхронизировать ранг аккаунта по запросу /ranksync',
+            );
+          }
+          problems.push(`${account.provider} — ${described.text}`);
         }
       }
 
-      const tail = problems.length > 0 ? `\nНе ответили: ${problems.join(', ')}.` : '';
+      const tail = problems.length > 0 ? `\nНе ответили:\n${problems.join('\n')}` : '';
       await interaction.followUp({
         content: `Проверено аккаунтов: ${accounts.length}, с рангом: ${updated}.${tail}`,
         flags: MessageFlags.Ephemeral,

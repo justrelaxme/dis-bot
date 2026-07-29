@@ -1,10 +1,12 @@
 import { eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import type { GuildMember } from 'discord.js';
-import type { Cache } from '../../../src/core/cache.js';
+import type { ChatInputCommandInteraction, GuildMember } from 'discord.js';
+import { Cache } from '../../../src/core/cache.js';
 import type { Config } from '../../../src/core/config.js';
 import { guilds } from '../../../src/core/db/schema/core.js';
 import { EventBus } from '../../../src/core/events/bus.js';
+import { ProviderError } from '../../../src/core/errors.js';
+import type { FetchClient } from '../../../src/core/http/fetch-client.js';
 import { createLogger } from '../../../src/core/logger.js';
 import type { ModuleContext } from '../../../src/core/module.js';
 import { buildRegistry } from '../../../src/core/registry.js';
@@ -13,8 +15,10 @@ import { gameAccounts } from '../../../src/modules/identity/schema.js';
 import { createLinkingService } from '../../../src/modules/identity/services/linking.js';
 import { createRoleMappingService } from '../../../src/modules/identity/services/role-mapping.js';
 import { withPostgres } from '../../helpers/postgres.js';
+import { withRedis } from '../../helpers/redis.js';
 
 const pg = withPostgres();
+const redis = withRedis();
 const logger = createLogger({ LOG_LEVEL: 'fatal', NODE_ENV: 'test' } as Config);
 
 function moduleWith() {
@@ -206,5 +210,228 @@ describe('обработчик rank.changed уважает verified_at (закр
     await emitRankChanged(bus);
 
     expect(stub.add).toHaveBeenCalledWith(RANK_ROLE, expect.any(String));
+  });
+});
+
+/**
+ * Находка 3 итогового ревью: утрата ранга должна снимать роль, а не оставлять её
+ * навсегда (сброс сезона — самый заметный случай). rank-sync.test.ts уже проверяет,
+ * что syncAccount записывает снимок с tier: null и публикует rank.changed на честном
+ * пустом ответе провайдера — здесь же сквозная проверка на реальном createIdentityModule:
+ * от вызова /ranksync до факта снятия роли через тот же обработчик rank.changed,
+ * что уже проверен на verified_at выше. Без парного теста «сбой не снимает роль»
+ * первый тест прошёл бы и на коде, который путает сбой с честной пустотой (это и
+ * есть находка 1 — починена отдельно в rank-sync.ts).
+ */
+describe('находка 3 итогового ревью: утраченный ранг снимает роль через реальный /ranksync', () => {
+  const LOSS_GUILD = '555555555555555590';
+  const LOSS_ROLE = '700000000000000090';
+
+  type RiotMode = 'diamond' | 'empty' | 'fail';
+
+  /** Управляемая заглушка HTTP-клиента Riot: настоящий RiotProvider поверх неё делает
+   * настоящий разбор ответа (normalizeRiotEntry), поэтому «Diamond» и «пусто» — это
+   * честные исходы синхронизации, а не подмена на уровне провайдера. */
+  function riotRankStub() {
+    let mode: RiotMode = 'diamond';
+    const json = vi.fn(async (_url: string, init?: { schema?: { parse(input: unknown): unknown } }) => {
+      if (mode === 'fail') throw new ProviderError('Riot API недоступен', 'riot-lol');
+      const raw: unknown =
+        mode === 'empty' ? [] : [{ queueType: 'RANKED_SOLO_5x5', tier: 'DIAMOND', rank: 'II', leaguePoints: 50 }];
+      return init?.schema ? init.schema.parse(raw) : raw;
+    });
+    return { json, setMode: (next: RiotMode) => (mode = next) };
+  }
+
+  /** В отличие от fakeMember() выше, add/remove здесь реально меняют roles.cache —
+   * иначе второй вызов applyRoles не увидел бы, что роль уже выдана, и не снял бы её. */
+  function fakeMemberWithRoleState(userId: string) {
+    const roleCache = new Map<string, unknown>();
+    const add = vi.fn(async (roleId: string) => {
+      roleCache.set(roleId, true);
+    });
+    const remove = vi.fn(async (roleId: string) => {
+      roleCache.delete(roleId);
+    });
+    const member = { id: userId, roles: { cache: roleCache, add, remove } } as unknown as GuildMember;
+    return { member, add, remove, roleCache };
+  }
+
+  function ranksyncInteraction(userId: string) {
+    const followUp = vi.fn(async () => {});
+    const interaction = { user: { id: userId }, followUp } as unknown as ChatInputCommandInteraction;
+    return { interaction, followUp };
+  }
+
+  async function setupVerifiedAccount(userId: string, externalId: string): Promise<void> {
+    const linking = createLinkingService({ db: pg.db });
+    await linking.ensureUser(userId);
+    await linking.linkAccount(
+      userId,
+      'riot-lol',
+      { externalId, displayName: 'долг#EUW', region: 'euw1', verificationMethod: 'riot-third-party-code' },
+      true, // verified — иначе авто-роль не выдастся даже на честный Diamond
+    );
+  }
+
+  function moduleWithRiotStub(stub: ReturnType<typeof riotRankStub>, member: GuildMember) {
+    const bus = new EventBus(logger);
+    const module = createIdentityModule({
+      db: pg.db,
+      bus,
+      logger,
+      config: {
+        PUBLIC_BASE_URL: 'https://bot.example.com',
+        REDIS_URL: 'redis://localhost:6379',
+        RIOT_API_KEY: 'test-riot-key',
+      } as Config,
+      cooldown: { hit: vi.fn(async () => ({ allowed: true, retryAfterMs: 0 })), close: vi.fn(async () => {}) },
+      rateLimiter: { acquire: vi.fn(async () => {}), close: vi.fn(async () => {}) },
+      // WRAPPED-реестр (для /link, /profile) в этом тесте не задействуется вовсе —
+      // /ranksync работает через RAW-реестр синхронизации, поэтому пустая заглушка
+      // кэша безопасна (см. общий комментарий moduleWith() выше).
+      cache: {} as unknown as Cache,
+      fetchClientFor: (provider: string) =>
+        provider === 'riot' ? (stub as unknown as FetchClient) : ({ json: vi.fn() } as unknown as FetchClient),
+      fetchMember: vi.fn(async () => member),
+    });
+    const ctx = {
+      client: { guilds: { cache: new Map([[LOSS_GUILD, {}]]) } },
+      logger,
+    } as unknown as ModuleContext;
+    return { module, bus, ctx };
+  }
+
+  beforeAll(async () => {
+    await pg.db.insert(guilds).values({ id: LOSS_GUILD }).onConflictDoNothing();
+    const roles = createRoleMappingService({ db: pg.db, logger });
+    await roles.setMapping(LOSS_GUILD, 'riot-lol', 'solo-duo', 'DIAMOND', LOSS_ROLE);
+  });
+
+  it('провайдер сначала выдал Diamond (роль выдана), потом честно ответил пусто → снимок tier: null, rank.changed, роль снята', async () => {
+    const userId = '666666666666666690';
+    await setupVerifiedAccount(userId, 'PUUID-LOSS-A');
+    const stub = riotRankStub();
+    const { member, add, remove, roleCache } = fakeMemberWithRoleState(userId);
+    const { module, ctx } = moduleWithRiotStub(stub, member);
+    await module.setup?.(ctx);
+
+    const ranksync = module.commands?.find((c) => c.builder.name === 'ranksync');
+    if (!ranksync) throw new Error('команда ranksync не найдена в module.commands');
+
+    // Первый прогон: Diamond → авто-роль выдана.
+    await ranksync.execute(ranksyncInteraction(userId).interaction, ctx);
+    expect(add).toHaveBeenCalledWith(LOSS_ROLE, expect.any(String));
+    expect(roleCache.has(LOSS_ROLE)).toBe(true);
+
+    // Второй прогон: провайдер отвечает успешно, но пусто → роль обязана сняться.
+    stub.setMode('empty');
+    await ranksync.execute(ranksyncInteraction(userId).interaction, ctx);
+
+    expect(remove).toHaveBeenCalledWith(LOSS_ROLE, expect.any(String));
+    expect(roleCache.has(LOSS_ROLE)).toBe(false);
+  });
+
+  it('парная проверка: сбой провайдера роль не снимает', async () => {
+    const userId = '666666666666666691';
+    await setupVerifiedAccount(userId, 'PUUID-LOSS-B');
+    const stub = riotRankStub();
+    const { member, add, remove, roleCache } = fakeMemberWithRoleState(userId);
+    const { module, ctx } = moduleWithRiotStub(stub, member);
+    await module.setup?.(ctx);
+
+    const ranksync = module.commands?.find((c) => c.builder.name === 'ranksync');
+    if (!ranksync) throw new Error('команда ranksync не найдена в module.commands');
+
+    await ranksync.execute(ranksyncInteraction(userId).interaction, ctx);
+    expect(add).toHaveBeenCalledWith(LOSS_ROLE, expect.any(String));
+    expect(roleCache.has(LOSS_ROLE)).toBe(true);
+
+    stub.setMode('fail');
+    await ranksync.execute(ranksyncInteraction(userId).interaction, ctx);
+
+    expect(remove).not.toHaveBeenCalled();
+    expect(roleCache.has(LOSS_ROLE)).toBe(true);
+  });
+});
+
+/**
+ * Находки 1 и 2 итогового ревью: createIdentityModule обязан передавать синхронизации
+ * (job'у и /ranksync) провайдеров БЕЗ обёртки withCache, а командам — с обёрткой.
+ * rank-sync.test.ts проверяет это на уровне RankSyncService (провайдер того же id уже
+ * обёрнут кэшем в Redis, а RAW-провайдер синхронизации всё равно видит сбой). Здесь —
+ * тест на саму сборку зависимостей в identity/index.ts, чтобы регресс («кто-нибудь
+ * снова обернёт») ловился именно там, где он может случиться.
+ *
+ * Вместо мок-HTTP-слоя используется естественный, детерминированный сбой: конфиг без
+ * RIOT_API_KEY — настоящий RiotProvider бросает UserError изнутри headers() при любом
+ * реальном обращении, до какого-либо сетевого вызова. Redis при этом настоящий и
+ * заранее «горячий» — если бы синхронизация получила тот же кэширующий реестр, что
+ * и команды, она бы тихо взяла успешную запись из кэша и не дошла бы до RiotProvider
+ * вовсе, никакого UserError не увидев.
+ */
+describe('находки 1 и 2 итогового ревью: синхронизация не пользуется кэшем команд', () => {
+  it('/ranksync реально идёт к провайдеру, даже когда в Redis уже лежит горячая запись для того же провайдера и аккаунта', async () => {
+    const userId = '666666666666666680';
+    const externalId = 'PUUID-CACHE-INVARIANT';
+    const cache = new Cache({ REDIS_URL: redis.url, LOG_LEVEL: 'fatal', NODE_ENV: 'test' } as Config, logger);
+
+    // Симулирует, что кто-то до этого воспользовался /link или /profile: командный,
+    // кэширующий путь для этого же provider+externalId+region уже успешно отвечал,
+    // и Redis хранит совсем свежую запись.
+    await cache.swr(`provider:riot-lol:rank:${externalId}:euw1`, {
+      ttlMs: 20 * 60 * 1_000,
+      staleMs: 24 * 60 * 60 * 1_000,
+      load: async () => [
+        { mode: 'solo-duo', scale: 'riot-tier', tier: 'DIAMOND', division: 'II', points: 50, source: 'api', raw: {} },
+      ],
+    });
+
+    const linking = createLinkingService({ db: pg.db });
+    await linking.ensureUser(userId);
+    await linking.linkAccount(
+      userId,
+      'riot-lol',
+      { externalId, displayName: 'a#b', region: 'euw1', verificationMethod: 'riot-third-party-code' },
+      true,
+    );
+
+    const bus = new EventBus(logger);
+    const module = createIdentityModule({
+      db: pg.db,
+      bus,
+      logger,
+      // Намеренно без RIOT_API_KEY — см. комментарий над describe.
+      config: { PUBLIC_BASE_URL: 'https://bot.example.com', REDIS_URL: redis.url } as Config,
+      cooldown: { hit: vi.fn(async () => ({ allowed: true, retryAfterMs: 0 })), close: vi.fn(async () => {}) },
+      rateLimiter: { acquire: vi.fn(async () => {}), close: vi.fn(async () => {}) },
+      cache,
+      fetchClientFor: () => ({ json: vi.fn() }) as unknown as FetchClient,
+      fetchMember: vi.fn(async () => null),
+    });
+
+    const ranksync = module.commands?.find((c) => c.builder.name === 'ranksync');
+    if (!ranksync) throw new Error('команда ranksync не найдена в module.commands');
+
+    // Типовой параметр обязателен: у vi.fn без него Parameters<T> — пустой кортеж, и
+    // mock.calls.at(0)?.at(0) выводится как never, поэтому обращение к .content не
+    // компилируется при noUncheckedIndexedAccess.
+    const followUp = vi.fn<(payload: { content: string }) => Promise<void>>(async () => {});
+    const interaction = { user: { id: userId }, followUp } as unknown as ChatInputCommandInteraction;
+    await ranksync.execute(interaction, {} as ModuleContext);
+
+    // Главный признак инварианта — «с рангом: 0»: в Redis лежит горячая запись с DIAMOND,
+    // и если бы синхронизация ходила через кэширующий реестр, она бы её взяла и отчиталась
+    // единицей. Ноль означает, что запрос ушёл к провайдеру и честно упал без ключа Riot.
+    // Формат перечня отказов проверяем отдельными подстроками, а не одной склеенной:
+    // текст ответа собирается многострочным списком, и жёсткая склейка ломалась бы от
+    // любой правки вёрстки, не имеющей отношения к проверяемому поведению.
+    const content = followUp.mock.calls.at(0)?.at(0)?.content as string | undefined;
+    expect(content).toBeDefined();
+    expect(content).toContain('с рангом: 0');
+    expect(content).toContain('Не ответили');
+    expect(content).toContain('riot-lol');
+
+    await cache.close();
   });
 });

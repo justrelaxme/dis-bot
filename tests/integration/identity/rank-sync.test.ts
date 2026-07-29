@@ -1,18 +1,29 @@
 import { eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { Cache } from '../../../src/core/cache.js';
 import type { Config } from '../../../src/core/config.js';
 import { guilds } from '../../../src/core/db/schema/core.js';
 import { EventBus } from '../../../src/core/events/bus.js';
 import { ProviderError } from '../../../src/core/errors.js';
 import { createLogger } from '../../../src/core/logger.js';
 import type { GameProvider, RankInfo } from '../../../src/modules/identity/providers/provider.js';
+import { withCache } from '../../../src/modules/identity/providers/with-cache.js';
 import { gameAccounts, type ProviderId } from '../../../src/modules/identity/schema.js';
 import { createLinkingService } from '../../../src/modules/identity/services/linking.js';
 import { createRankSyncService } from '../../../src/modules/identity/services/rank-sync.js';
 import { withPostgres } from '../../helpers/postgres.js';
+import { withRedis } from '../../helpers/redis.js';
 
 const pg = withPostgres();
+const redis = withRedis();
 const logger = createLogger({ LOG_LEVEL: 'fatal', NODE_ENV: 'test' } as Config);
+
+/** Настоящий Cache на живом тестовом Redis — нужен, чтобы тест на проброс сбоя мог
+ * взять провайдера, обёрнутого настоящим withCache, а не сымитировать SWR вручную. */
+function makeRealCache(): Cache {
+  const config = { REDIS_URL: redis.url, LOG_LEVEL: 'fatal', NODE_ENV: 'test' } as Config;
+  return new Cache(config, createLogger(config));
+}
 
 function rank(tier: string, division: string | null, mode = 'solo-duo'): RankInfo {
   return { mode, scale: 'riot-tier', tier, division, points: 10, source: 'api', raw: {} };
@@ -256,5 +267,146 @@ describe('RankSyncService', () => {
     const result = await sync.syncBatch(2);
 
     expect(result.synced + result.failed).toBe(2);
+  });
+
+  // Находка 3 итогового ревью: пустой список от провайдера — это штатное «ранга
+  // больше нет» (сброс сезона, деранк ниже отслеживаемого порога, приватный профиль),
+  // а не повод молчать. Без явного снимка tier: null latestRanks вечно возвращал бы
+  // последний ненулевой ранг, и applyRoles никогда не увидел бы повода снять роль.
+  describe('утрата ранга: успешный пустой ответ записывает снимок с tier: null', () => {
+    it('провайдер успешно вернул пустой список для мода, где раньше был ранг → записывает снимок с tier: null и публикует rank.changed', async () => {
+      const responses: RankInfo[][] = [[rank('DIAMOND', 'II')], []];
+      let call = 0;
+      const provider: GameProvider = {
+        id: 'riot-lol',
+        capabilities: { verification: 'riot-third-party-code', rank: 'api' },
+        fetchProfile: async () => ({ externalId: 'x', displayName: 'x' }),
+        fetchRank: async () => responses[call++] ?? [],
+      };
+      const { linking, bus, sync } = servicesWith(provider);
+      const account = await linkedAccount(linking, '600000000000000040');
+
+      await sync.syncAccount(account); // первый прогон: Diamond записан
+
+      const handler = vi.fn();
+      bus.on('rank.changed', handler);
+      const result = await sync.syncAccount(account); // второй прогон: успех, но пусто
+
+      expect(result).toEqual([]);
+      const latest = await linking.latestRanks(account.id);
+      expect(latest).toHaveLength(1);
+      expect(latest[0]).toMatchObject({ mode: 'solo-duo', tier: null, division: null });
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: 'riot-lol',
+          mode: 'solo-duo',
+          previous: { tier: 'DIAMOND', division: 'II' },
+          current: { tier: null, division: null },
+        }),
+      );
+    });
+
+    it('не пишет повторный снимок и не публикует событие, если ранга и так уже не было (идемпотентность)', async () => {
+      const responses: RankInfo[][] = [[rank('DIAMOND', 'II')], [], []];
+      let call = 0;
+      const provider: GameProvider = {
+        id: 'riot-lol',
+        capabilities: { verification: 'riot-third-party-code', rank: 'api' },
+        fetchProfile: async () => ({ externalId: 'x', displayName: 'x' }),
+        fetchRank: async () => responses[call++] ?? [],
+      };
+      const { linking, bus, sync } = servicesWith(provider);
+      const account = await linkedAccount(linking, '600000000000000041');
+
+      await sync.syncAccount(account); // Diamond
+      await sync.syncAccount(account); // -> tier: null, снимок записан, событие опубликовано
+      const afterFirstLoss = await linking.latestRanks(account.id);
+
+      const handler = vi.fn();
+      bus.on('rank.changed', handler);
+      await sync.syncAccount(account); // снова пусто: снимок и так уже tier: null
+
+      expect(handler).not.toHaveBeenCalled();
+      const afterSecondLoss = await linking.latestRanks(account.id);
+      expect(afterSecondLoss).toEqual(afterFirstLoss);
+    });
+
+    // Парная проверка к находке 1: сбой отличается от честного пустого ответа и не
+    // должен запускать эту ветку вовсе — иначе временный сбой Riot снимал бы роли
+    // ровно так же, как описано в находке 1 (её и чинит этот файл отдельно).
+    it('сбой провайдера НЕ создаёт снимок с пустым тиром и не трогает предыдущий ранг', async () => {
+      let mode: 'ok' | 'fail' = 'ok';
+      const provider: GameProvider = {
+        id: 'riot-lol',
+        capabilities: { verification: 'riot-third-party-code', rank: 'api' },
+        fetchProfile: async () => ({ externalId: 'x', displayName: 'x' }),
+        fetchRank: async () => {
+          if (mode === 'fail') throw new ProviderError('Riot API недоступен', 'riot-lol');
+          return [rank('DIAMOND', 'II')];
+        },
+      };
+      const { linking, bus, sync } = servicesWith(provider);
+      const account = await linkedAccount(linking, '600000000000000042');
+
+      await sync.syncAccount(account); // Diamond записан
+
+      mode = 'fail';
+      const handler = vi.fn();
+      bus.on('rank.changed', handler);
+      await expect(sync.syncAccount(account)).rejects.toThrow('Riot API недоступен');
+
+      expect(handler).not.toHaveBeenCalled();
+      const latest = await linking.latestRanks(account.id);
+      expect(latest).toHaveLength(1);
+      expect(latest[0]).toMatchObject({ tier: 'DIAMOND', division: 'II' });
+    });
+  });
+
+  // Находки 1 и 2 итогового ревью, и их ключевой тест: раньше инвариант «syncAccount
+  // при сбое провайдера пробрасывает ошибку» проверялся на голом объекте-провайдере,
+  // а в проде createIdentityModule всегда оборачивал провайдеры withCache — Cache.swr
+  // при сбое загрузчика отдаёт просроченное значение вместо ошибки, если в кэше уже
+  // есть непросроченная копия. Тест на голой заглушке этот класс дефекта в принципе
+  // не мог заметить: обмануть его больше нельзя — ниже настоящий withCache и настоящий
+  // Cache на живом Redis, а не голая заглушка.
+  //
+  // Сценарий воспроизводит ровно то, что описано в находке 1: где-то (в проде — это
+  // командный, кэширующий реестр providers, который читает /link) провайдер уже был
+  // успешно опрошен и Redis хранит свежий ответ. Синхронизация обязана получать RAW
+  // (необёрнутый) провайдер — и тогда сбой виден ей всегда, независимо от того, что
+  // лежит в кэше по соседству. Если бы синхронизации по ошибке отдали ТОТ ЖЕ обёрнутый
+  // провайдер, второй вызов получил бы просроченное (а на самом деле — ещё свежее,
+  // «горячее») значение из Redis вместо ошибки, и не заметил бы сбоя вовсе.
+  it('пробрасывает сбой даже когда провайдер того же id уже обёрнут кэшем в Redis (инвариант держится не только на голой заглушке)', async () => {
+    const cache = makeRealCache();
+    let mode: 'ok' | 'fail' = 'ok';
+    const rawProvider: GameProvider = {
+      id: 'riot-lol',
+      capabilities: { verification: 'riot-third-party-code', rank: 'api' },
+      fetchProfile: async () => ({ externalId: 'X-CACHE-INVARIANT', displayName: 'a#b' }),
+      fetchRank: async () => {
+        if (mode === 'fail') throw new ProviderError('Riot API недоступен', 'riot-lol');
+        return [rank('DIAMOND', 'II')];
+      },
+    };
+    // Обёрнутая версия ТОГО ЖЕ провайдера (тот же id → тот же ключ кэша) — симулирует
+    // командный реестр, который в проде читает через withCache. Дёргаем её один раз
+    // успешно, чтобы в Redis реально появилась «горячая» запись — совсем как если бы
+    // игрок перед этим воспользовался /link или /profile.
+    const wrapped = withCache(rawProvider, cache);
+    await wrapped.fetchRank!('X-CACHE-INVARIANT', 'euw1');
+
+    mode = 'fail';
+
+    // Синхронизация получает RAW-провайдер напрямую (как и требуют находки 1/2) —
+    // соседняя «горячая» запись в Redis для того же id её не касается вовсе.
+    const { linking, sync } = servicesWith(rawProvider);
+    const account = await linkedAccount(linking, '600000000000000050');
+
+    await expect(sync.syncAccount(account)).rejects.toThrow('Riot API недоступен');
+    // И «пустого» снимка сбой тоже не оставляет — см. находку 3 выше.
+    expect(await linking.latestRanks(account.id)).toEqual([]);
+
+    await cache.close();
   });
 });

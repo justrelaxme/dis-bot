@@ -7,7 +7,7 @@ import { loadConfig } from './core/config.js';
 import { createCooldown } from './core/cooldown.js';
 import { createDatabase } from './core/db/client.js';
 import { EventBus } from './core/events/bus.js';
-import { createFetchClient } from './core/http/fetch-client.js';
+import { createFetchClient, type FetchClient } from './core/http/fetch-client.js';
 import { createHttpServer } from './core/http/server.js';
 import { createLogger } from './core/logger.js';
 import { createMetrics } from './core/metrics.js';
@@ -47,7 +47,22 @@ const client = createDiscordClient();
 
 const cooldown = createCooldown({ redisUrl: config.REDIS_URL, logger });
 const rateLimiter = createRateLimiter({ redisUrl: config.REDIS_URL, logger });
-const fetchClientFor = (provider: string) => createFetchClient({ provider, logger, metrics });
+
+// Мемоизация по провайдеру (находка 4 итогового ревью): без неё модуль (через
+// buildModules ниже) и HTTP-колбэк Steam получили бы РАЗНЫЕ экземпляры FetchClient
+// для одного и того же провайдера — а состояние circuit breaker живёт в замыкании
+// конкретного экземпляра (см. createFetchClient). Открытая цепь у slash-команд не
+// останавливала бы колбэк и наоборот. Квота (rate limiter) и кэш уже общие — их
+// состояние в Redis, а не в памяти процесса, поэтому только клиент нуждался в
+// переиспользовании.
+const fetchClients = new Map<string, FetchClient>();
+const fetchClientFor = (provider: string): FetchClient => {
+  const existing = fetchClients.get(provider);
+  if (existing) return existing;
+  const client = createFetchClient({ provider, logger, metrics });
+  fetchClients.set(provider, client);
+  return client;
+};
 
 const modules = buildModules({
   db,
