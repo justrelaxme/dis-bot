@@ -22,6 +22,13 @@
       "when": 1785328771114,
       "tag": "0002_fresh_wonder_man",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785330050792,
+      "tag": "0003_numerous_warstar",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,15 @@
-import { index, jsonb, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  date,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+  unique,
+} from 'drizzle-orm/pg-core';
 
 /**
  * Игра турнира — самостоятельный тип модуля, а не ProviderId из identity: турнир
@@ -51,3 +62,232 @@ export const tournamentPolls = pgTable(
     unique('tournament_polls_message_uq').on(table.messageId),
   ],
 );
+
+/** Колонка, а не enum: double elimination и Swiss добавятся значением, без миграции типа. */
+export type TournamentFormat = 'single-elim';
+
+export type EntryMode = 'solo' | 'team';
+
+export type TournamentState = 'draft' | 'registration' | 'running' | 'finished' | 'cancelled';
+
+export type SeedingMode = 'random' | 'rank';
+
+/**
+ * `pending` — соперники ещё не известны, предыдущий круг не сыгран. `ready` — оба
+ * известны, можно играть. `reported` — кто-то заявил результат. `confirmed` — соперник
+ * подтвердил либо сработало автоподтверждение. `disputed` — оспорено, решает организатор.
+ * `walkover` — неявка, победа присуждена без игры.
+ */
+export type MatchState = 'pending' | 'ready' | 'reported' | 'confirmed' | 'disputed' | 'walkover';
+
+/** Стадия суточного цикла. `skipped` — день пропущен, причина в `skipReason`. */
+export type CycleStage = 'poll' | 'registration' | 'running' | 'finished' | 'skipped';
+
+export const tournaments = pgTable(
+  'tournaments',
+  {
+    id: serial('id').primaryKey(),
+    // Как и у голосований: без FK на guilds.id, потому что строку в guilds никто
+    // гарантированно не создаёт при появлении бота на сервере.
+    guildId: text('guild_id').notNull(),
+    name: text('name').notNull(),
+    game: text('game').$type<TournamentGame>().notNull(),
+    format: text('format').$type<TournamentFormat>().notNull().default('single-elim'),
+    entryMode: text('entry_mode').$type<EntryMode>().notNull(),
+    /** Сколько игроков в составе. Для solo всегда 1. */
+    teamSize: integer('team_size').notNull().default(1),
+    maxEntrants: integer('max_entrants').notNull().default(16),
+    seeding: text('seeding').$type<SeedingMode>().notNull().default('rank'),
+    state: text('state').$type<TournamentState>().notNull().default('draft'),
+    /** Число карт в матче: 1, 3 или 5. Одинаково для всех матчей турнира. */
+    bestOf: integer('best_of').notNull().default(1),
+    /** Требовать подтверждённую привязку по игре у каждого игрока состава. */
+    requireVerified: boolean('require_verified').notNull().default(true),
+    announceChannelId: text('announce_channel_id'),
+    /** Категория, в которой создаются голосовые каналы команд. */
+    teamCategoryId: text('team_category_id'),
+    /** Канал, в котором создаются ветки под матчи. */
+    matchParentId: text('match_parent_id'),
+    createdBy: text('created_by').notNull(),
+    registrationClosesAt: timestamp('registration_closes_at', { withTimezone: true }),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('tournaments_guild_state_idx').on(table.guildId, table.state)],
+);
+
+/**
+ * Единое понятие для одиночек и команд — ключевое решение всей модели. Сетка сводит
+ * участников, а участник это либо один игрок, либо команда. Развилка «соло или команда»
+ * живёт только в регистрации; движок сетки, продвижение победителя и репорт результатов
+ * о ней не знают вовсе, поэтому один турнир на 16 команд и один на 16 одиночек идут по
+ * совершенно одинаковому коду.
+ */
+export const tournamentEntrants = pgTable(
+  'tournament_entrants',
+  {
+    id: serial('id').primaryKey(),
+    tournamentId: integer('tournament_id')
+      .notNull()
+      .references(() => tournaments.id, { onDelete: 'cascade' }),
+    /** Ник игрока или название команды. */
+    displayName: text('display_name').notNull(),
+    captainUserId: text('captain_user_id').notNull(),
+    /** Место в жеребьёвке, 1 — сильнейший. Заполняется при старте. */
+    seed: integer('seed'),
+    /** Сила состава на момент жеребьёвки (из rankScore этапа 1) — хранится для витрины. */
+    seedScore: integer('seed_score'),
+    checkedInAt: timestamp('checked_in_at', { withTimezone: true }),
+    /** Снятие не удаляет строку: сетка уже могла быть построена по этому участнику. */
+    withdrawnAt: timestamp('withdrawn_at', { withTimezone: true }),
+    /** Голосовой канал команды. Уборка идёт по этому id, а не по имени: имя переименуют. */
+    voiceChannelId: text('voice_channel_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('tournament_entrants_name_uq').on(table.tournamentId, table.displayName),
+    unique('tournament_entrants_captain_uq').on(table.tournamentId, table.captainUserId),
+    index('tournament_entrants_tournament_idx').on(table.tournamentId),
+  ],
+);
+
+/**
+ * `tournamentId` здесь денормализован намеренно: без него ограничение «один человек не
+ * играет за две команды одного турнира» пришлось бы проверять запросом, а проверка
+ * запросом — это гонка между двумя одновременными вступлениями. Пусть гарантирует база.
+ */
+export const tournamentEntrantMembers = pgTable(
+  'tournament_entrant_members',
+  {
+    id: serial('id').primaryKey(),
+    entrantId: integer('entrant_id')
+      .notNull()
+      .references(() => tournamentEntrants.id, { onDelete: 'cascade' }),
+    tournamentId: integer('tournament_id')
+      .notNull()
+      .references(() => tournaments.id, { onDelete: 'cascade' }),
+    userId: text('user_id').notNull(),
+    role: text('role').$type<'captain' | 'player' | 'sub'>().notNull().default('player'),
+    joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('tournament_members_entrant_user_uq').on(table.entrantId, table.userId),
+    unique('tournament_members_tournament_user_uq').on(table.tournamentId, table.userId),
+  ],
+);
+
+export const tournamentMatches = pgTable(
+  'tournament_matches',
+  {
+    id: serial('id').primaryKey(),
+    tournamentId: integer('tournament_id')
+      .notNull()
+      .references(() => tournaments.id, { onDelete: 'cascade' }),
+    /** 1 — первый круг. */
+    round: integer('round').notNull(),
+    /** Позиция в круге, с нуля. */
+    slot: integer('slot').notNull(),
+    entrantAId: integer('entrant_a_id'),
+    entrantBId: integer('entrant_b_id'),
+    winnerEntrantId: integer('winner_entrant_id'),
+    state: text('state').$type<MatchState>().notNull().default('pending'),
+    /** Кто заявил результат: нужен, чтобы тот же человек не мог его же и подтвердить. */
+    reportedBy: text('reported_by'),
+    reportedWinnerId: integer('reported_winner_id'),
+    reportedAt: timestamp('reported_at', { withTimezone: true }),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    disputedAt: timestamp('disputed_at', { withTimezone: true }),
+    /** Ветка матча: пускает обе команды пары, иначе соперники не договорятся о лобби. */
+    threadId: text('thread_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('tournament_matches_position_uq').on(table.tournamentId, table.round, table.slot),
+    // Джоба автоподтверждения выбирает заявленные и давно — без индекса это скан.
+    index('tournament_matches_reported_idx').on(table.state, table.reportedAt),
+  ],
+);
+
+/** Каждый репорт и каждое решение отдельной строкой — для разбора споров, не для показа. */
+export const tournamentMatchReports = pgTable('tournament_match_reports', {
+  id: serial('id').primaryKey(),
+  matchId: integer('match_id')
+    .notNull()
+    .references(() => tournamentMatches.id, { onDelete: 'cascade' }),
+  actorId: text('actor_id').notNull(),
+  claimedWinnerId: integer('claimed_winner_id'),
+  action: text('action')
+    .$type<'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm'>()
+    .notNull(),
+  /** true — решение принял организатор, а не участник. */
+  byOrganizer: boolean('by_organizer').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Суточный цикл. Уникальность `(guildId, cycleDate)` — и есть защита от того, что
+ * перезапуск процесса, наложение прогонов или повторная доставка дадут два голосования
+ * за один день. Проверка запросом означала бы гонку между двумя прогонами.
+ *
+ * Таблица ещё и отвечает на вопрос «что вообще было вчера»: без неё разбирать, почему
+ * турнира не случилось, пришлось бы по логам.
+ */
+export const tournamentCycles = pgTable(
+  'tournament_cycles',
+  {
+    id: serial('id').primaryKey(),
+    guildId: text('guild_id').notNull(),
+    cycleDate: date('cycle_date').notNull(),
+    stage: text('stage').$type<CycleStage>().notNull().default('poll'),
+    pollId: integer('poll_id'),
+    tournamentId: integer('tournament_id'),
+    /** Почему день пропущен: играть некому, прошлый турнир не закрыт, расписание выключено. */
+    skipReason: text('skip_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique('tournament_cycles_day_uq').on(table.guildId, table.cycleDate)],
+);
+
+/**
+ * Времена суточного цикла — строки в таблице, а не константы в коде: ежедневный автомат,
+ * время которого нельзя поменять без правки кода и перезапуска, придётся править в первый
+ * же день, когда окажется, что в 20:00 на сервере никого.
+ *
+ * `enabled` по умолчанию false: автомат, включающийся сам сразу после миграции, устроил бы
+ * турнир на сервере, который к нему не готов.
+ */
+export const tournamentSchedules = pgTable('tournament_schedules', {
+  guildId: text('guild_id').primaryKey(),
+  enabled: boolean('enabled').notNull().default(false),
+  /** Часовой пояс, в котором понимаются времена ниже: сервер может стоять в UTC. */
+  timezone: text('timezone').notNull().default('Europe/Berlin'),
+  /** «14:00» — когда вывешивать голосование. */
+  pollAt: text('poll_at').notNull().default('14:00'),
+  pollHours: integer('poll_hours').notNull().default(2),
+  /** «20:00» — когда закрывать регистрацию и строить сетку. */
+  startAt: text('start_at').notNull().default('20:00'),
+  entryMode: text('entry_mode').$type<EntryMode>().notNull().default('team'),
+  teamSize: integer('team_size').notNull().default(5),
+  maxEntrants: integer('max_entrants').notNull().default(16),
+  bestOf: integer('best_of').notNull().default(1),
+  requireVerified: boolean('require_verified').notNull().default(true),
+  games: jsonb('games').$type<TournamentGame[]>().notNull(),
+  announceChannelId: text('announce_channel_id'),
+  teamCategoryId: text('team_category_id'),
+  matchParentId: text('match_parent_id'),
+  /** Сколько дней подряд никто не приходил: на пороге автомат встаёт сам. */
+  emptyDays: integer('empty_days').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type TournamentRow = typeof tournaments.$inferSelect;
+export type EntrantRow = typeof tournamentEntrants.$inferSelect;
+export type EntrantMemberRow = typeof tournamentEntrantMembers.$inferSelect;
+export type MatchRow = typeof tournamentMatches.$inferSelect;
+export type PollRow = typeof tournamentPolls.$inferSelect;
+export type CycleRow = typeof tournamentCycles.$inferSelect;
+export type ScheduleRow = typeof tournamentSchedules.$inferSelect;
