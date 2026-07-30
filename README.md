@@ -166,9 +166,11 @@ npx tsx scripts/web-demo.ts     # поднимает витрину с напо�
 [Developer Portal](https://discord.com/developers/applications) → **New Application**.
 
 - вкладка **Bot** → **Reset Token**, скопировать — это `DISCORD_TOKEN`;
-- там же включить привилегированный интент **Server Members Intent**. Без него Discord
-  отклонит подключение: бот запрашивает этот интент в коде, потому что без списка
-  участников роли выдавать некому;
+- там же включить **оба** привилегированных интента: **Server Members Intent** и
+  **Message Content Intent**. Без них Discord отклонит подключение с «Used disallowed
+  intents» — бот запрашивает их в коде. Members нужен для выдачи ролей и встречи
+  новичков, Message Content — для антиспама и опыта за сообщения: без текста сообщения
+  повторы и упоминания считать нечем;
 - вкладка **General Information** → **Application ID** — это `DISCORD_APP_ID`;
 - вкладка **OAuth2** → **URL Generator** → scopes `bot` и `applications.commands`, права
   `Manage Roles` и `Send Messages` → открыть ссылку и добавить бота на сервер.
