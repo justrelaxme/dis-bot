@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { Events } from 'discord.js';
 import { createCache } from './core/cache.js';
 import { createDiscordClient } from './core/client.js';
@@ -41,6 +42,32 @@ process.on('uncaughtException', (error) => {
 const shutdown = createShutdown({ logger });
 
 const { db, close: closeDatabase } = createDatabase(config, logger);
+
+/**
+ * Миграции перед всем остальным — и в этом же процессе, а не отдельным файлом.
+ *
+ * На платформах с одним контейнером отдельного шага миграций нет: код и база обновляются
+ * одним деплоем, и бот, запущенный раньше миграций, упадёт на первом обращении к новой
+ * колонке. Раньше это делал отдельный скомпилированный entrypoint, но он оказался лишней
+ * точкой отказа: платформа запускала контейнер и не находила этот файл, хотя `dist/src`
+ * был на месте. Одна точка входа надёжнее двух — тем более что именно `dist/src/index.js`
+ * ищут все автоопределители.
+ *
+ * В docker-compose миграции выполняет отдельный одноразовый сервис, и повторный прогон
+ * здесь ничего не делает: drizzle применяет только то, чего ещё нет в своей таблице.
+ */
+if (config.MIGRATE_ON_START) {
+  try {
+    await migrate(db, { migrationsFolder: 'src/core/db/migrations' });
+    logger.info('миграции применены');
+  } catch (error) {
+    // Стартовать после неудачной миграции нельзя: бот будет падать на каждом запросе к
+    // изменённой таблице, и разбирать придётся уже по этим падениям, а не по одной строке.
+    logger.fatal({ err: error }, 'миграции не применились — бот не стартует');
+    await closeDatabase();
+    process.exit(1);
+  }
+}
 const cache = createCache(config, logger);
 const bus = new EventBus(logger);
 const metrics = createMetrics();
