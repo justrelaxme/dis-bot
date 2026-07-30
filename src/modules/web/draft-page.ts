@@ -60,6 +60,9 @@ export const DRAFT_STYLE = `
 .filter:focus { outline:none; border-color:var(--gold); }
 
 .note { color:var(--dim); font-size:.85rem; margin:.5rem 0 0; }
+/* Подсказка «что дальше»: латунная риска слева, чтобы её замечали, но не спутали с ходом. */
+.next { color:var(--bone); font-size:.92rem; margin:0 0 .2rem; padding-left:.8rem;
+  border-left:2px solid var(--gold); min-height:1.3em; }
 .err { color:var(--ember); font-family:var(--mono); font-size:.8rem; min-height:1.2em; margin:.6rem 0 0; }
 .skip { background:none; border:1px solid var(--rule); color:var(--dim); font-family:var(--mono);
   font-size:.76rem; border-radius:3px; padding:.4rem .7rem; cursor:pointer; }
@@ -94,6 +97,7 @@ ${
 </div>
 
 <div class="bar"><i id="bar" style="width:0%"></i></div>
+<p class="next" id="next"></p>
 <p class="err" id="err"></p>
 
 <h2 id="poolTitle">Доступно</h2>
@@ -136,6 +140,34 @@ ${isHeroes ? '<input class="filter" id="filter" placeholder="Поиск геро
     return !state.done && state.you && state.current && state.current.side === state.you;
   }
 
+  /**
+   * Подсказка «что дальше». Одна строка про текущее положение, а не инструкция целиком:
+   * человек на этой странице занят ходом, а не чтением. Меняется с каждым состоянием,
+   * потому что «что дальше» у ждущего и у ходящего — разные вещи.
+   */
+  function nextHint() {
+    if (state.done) {
+      return subject === 'maps'
+        ? 'Драфт закончен. Создавайте лобби на выбранной карте, играйте, и победитель пишет /match report в ветке матча.'
+        : 'Драфт закончен. Собирайтесь в лобби на All Pick, берите своих героев, забаненных не берёт никто. После игры победитель пишет /match report.';
+    }
+    if (!state.you) {
+      return 'Ты смотришь: ходят капитаны по своим ссылкам. Страница обновляется сама, перезагружать не надо.';
+    }
+    if (!state.current) return 'Ждём начала.';
+    if (state.current.side !== state.you) {
+      return 'Ход соперника. Как только он выберет, здесь появится твоя очередь — страница обновится сама.';
+    }
+    if (state.current.kind === 'ban') {
+      return subject === 'maps'
+        ? 'Твой бан: убери карту, на которой играть не хочешь. Можно и пропустить — тогда бан просто не случится.'
+        : 'Твой бан: убери героя, которого не хочешь видеть у соперника. Можно и пропустить.';
+    }
+    return subject === 'maps'
+      ? 'Твой выбор: возьми карту, на которой хочешь играть.'
+      : 'Твой пик: возьми героя себе. Соперник его уже не возьмёт.';
+  }
+
   function render() {
     el('nameA').textContent = state.teams.a;
     el('nameB').textContent = state.teams.b;
@@ -158,6 +190,7 @@ ${isHeroes ? '<input class="filter" id="filter" placeholder="Поиск геро
     }
 
     el('bar').style.width = state.total ? Math.round((state.step / state.total) * 100) + '%' : '0%';
+    el('next').textContent = nextHint();
 
     var skip = el('skip');
     var canSkip = myTurn() && state.current.kind === 'ban';

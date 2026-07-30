@@ -92,11 +92,23 @@ a { color:inherit; text-decoration:none; }
 .top nav a { padding-bottom:2px; border-bottom:1px solid transparent; transition:color .18s, border-color .18s; }
 .top nav a:hover, .top nav a:focus-visible { color:var(--bone); border-color:var(--gold); }
 
+/* Вход элементов на страницу. Одно движение, короткое и в одну сторону: страница должна
+   собираться на глазах, а не устраивать представление. Главный движок здесь — линии сетки,
+   и всё остальное обязано ему уступать. */
+@keyframes enter { from { opacity:0; transform:translateY(9px); } to { opacity:1; transform:none; } }
+
 h1 { font-size:clamp(1.85rem,5.5vw,2.9rem); line-height:1.02; margin:0 0 .5rem;
-  font-weight:800; letter-spacing:-.03em; text-transform:uppercase; }
+  font-weight:800; letter-spacing:-.03em; text-transform:uppercase;
+  animation:enter .5s cubic-bezier(.2,.7,.3,1) both; }
 h2 { font-family:var(--mono); font-size:.76rem; letter-spacing:.22em; text-transform:uppercase;
-  color:var(--dim); font-weight:500; margin:2.5rem 0 .9rem; }
-.lede { color:var(--dim); font-size:.95rem; margin:0 0 1.5rem; }
+  color:var(--dim); font-weight:500; margin:2.5rem 0 .9rem;
+  animation:enter .45s cubic-bezier(.2,.7,.3,1) both; }
+/* Латунная риска у заголовка раздела уезжает вправо: раздел начинается, а не просто есть. */
+h2::after { content:''; display:block; width:2.2rem; height:1px; background:var(--gold); margin-top:.5rem;
+  transform-origin:left; animation:swipe .55s cubic-bezier(.2,.7,.3,1) both; animation-delay:.1s; }
+@keyframes swipe { from { transform:scaleX(0); } to { transform:scaleX(1); } }
+.lede { color:var(--dim); font-size:.95rem; margin:0 0 1.5rem;
+  animation:enter .5s cubic-bezier(.2,.7,.3,1) .06s both; }
 .mono { font-family:var(--mono); }
 
 /* Точка «идёт сейчас» пульсирует — единственный постоянный движок на странице. */
@@ -113,7 +125,8 @@ h2 { font-family:var(--mono); font-size:.76rem; letter-spacing:.22em; text-trans
 /* Карточка турнира: латунная риска слева уезжает вправо при наведении. */
 .card { position:relative; display:block; background:var(--sheet); border:1px solid var(--rule);
   border-radius:3px; padding:1rem 1.15rem 1rem 1.35rem; margin-bottom:.7rem; overflow:hidden;
-  transition:border-color .2s, transform .2s; }
+  transition:border-color .2s, transform .2s;
+  animation:enter .42s cubic-bezier(.2,.7,.3,1) both; animation-delay:var(--delay,0ms); }
 .card::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
   background:var(--gold); transform:scaleY(.28); transform-origin:top; transition:transform .28s ease; }
 .card:hover, .card:focus-visible { border-color:var(--gold); transform:translateX(2px); }
@@ -188,7 +201,10 @@ footer { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--rule);
 @media (max-width:640px) { :root { --col-w:170px; --link-w:30px; } .wrap { padding:1.15rem .85rem 3rem; } }
 @media (prefers-reduced-motion:reduce) {
   .links path { animation:none; stroke-dashoffset:0; }
-  .m, tbody tr { animation:none; opacity:1; transform:none; }
+  /* Всё, что появляется движением, обязано просто быть — иначе анимация станет условием
+     видимости, и человек с выключенным движением увидит пустую страницу. */
+  .m, tbody tr, h1, h2, .lede, .card, .fmt, .slot { animation:none; opacity:1; transform:none; }
+  h2::after { animation:none; transform:none; }
   .live::before { animation:none; }
   * { transition:none !important; }
 }
@@ -210,6 +226,7 @@ ${extraHead}
   <header class="top">
     <a href="/" class="mark">Турниры сервера</a>
     <nav>
+      <a href="/rules">Правила</a>
       <a href="/hall">Зал славы</a>
       <a href="/leaderboard/dota2">Dota 2</a>
       <a href="/leaderboard/lol">LoL</a>
@@ -241,7 +258,7 @@ export function renderTournamentList(rows: (TournamentRow & { entrantCount: numb
   }
 
   const cards = rows
-    .map((row) => {
+    .map((row, index) => {
       const size = eventSize(row.entrantCount);
       const kind = row.state === 'running' || row.state === 'finished' ? EVENT_SIZE_LABELS[size] : 'турнир';
       const status =
@@ -249,7 +266,8 @@ export function renderTournamentList(rows: (TournamentRow & { entrantCount: numb
           ? '<span class="live">идёт</span>'
           : `<span class="chip">${escape(STATE_LABELS[row.state] ?? row.state)}</span>`;
       const roster = row.entryMode === 'team' ? `по ${row.teamSize} в команде` : 'одиночки';
-      return `<a class="card" href="/t/${row.id}">
+      // Лестница задержек: карточки появляются сверху вниз, как будто список наливается.
+      return `<a class="card" href="/t/${row.id}" style="--delay:${index * 45}ms">
   <div class="name">${escape(row.name)}</div>
   <div class="meta">${escape(TOURNAMENT_GAME_LABELS[row.game] ?? row.game)} · ${escape(kind)} · ${row.entrantCount} уч. · ${escape(roster)}</div>
   <div style="margin-top:.55rem">${status}</div>

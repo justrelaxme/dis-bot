@@ -16,7 +16,9 @@ import { createLogger } from '../src/core/logger.js';
 import { gameAccounts, rankSnapshots } from '../src/modules/identity/schema.js';
 import { tournaments } from '../src/modules/tournaments/schema.js';
 import { createTournamentsService } from '../src/modules/tournaments/services/tournaments.js';
+import { registerDraftRoutes } from '../src/modules/web/draft.js';
 import { registerWebRoutes } from '../src/modules/web/routes.js';
+import { createDraftsService } from '../src/modules/tournaments/services/drafts.js';
 
 const PORT = Number.parseInt(process.env['PORT'] ?? '3000', 10);
 const GUILD = '900000000000000001';
@@ -121,7 +123,9 @@ async function runTournament(
   return tournament.id;
 }
 
-async function seed(db: Awaited<ReturnType<typeof createDatabase>>['db']): Promise<number> {
+async function seed(
+  db: Awaited<ReturnType<typeof createDatabase>>['db'],
+): Promise<{ tournamentId: number; vetoId: number }> {
   await db.insert(guilds).values({ id: GUILD }).onConflictDoNothing();
 
   // Два доигранных турнира — чтобы зал славы был не пустой страницей с объяснением,
@@ -150,6 +154,17 @@ async function seed(db: Awaited<ReturnType<typeof createDatabase>>['db']): Promi
     teams: TEAMS,
     matchesToPlay: 9,
     captainOffset: 300,
+  });
+
+  // Отдельный турнир по Valorant — ради драфта: вето карт не требует внешнего справочника,
+  // в отличие от списка героев Dota, и его можно посмотреть без сети.
+  const vetoId = await runTournament(db, {
+    name: 'Кубок по Valorant',
+    game: 'valorant',
+    format: 'single-elim',
+    teams: ['Ястребы', 'Пантеры', 'Кобры', 'Осы'],
+    matchesToPlay: 0,
+    captainOffset: 400,
   });
 
   // Лидерборд: подтверждённые привязки Steam с рангами Dota.
@@ -185,7 +200,7 @@ async function seed(db: Awaited<ReturnType<typeof createDatabase>>['db']): Promi
     });
   }
 
-  return tournamentId;
+  return { tournamentId, vetoId };
 }
 
 async function main(): Promise<void> {
@@ -199,15 +214,36 @@ async function main(): Promise<void> {
   await migrate(db, { migrationsFolder: 'src/core/db/migrations' });
 
   registerWebRoutes(server, { db, cache, logger, guildId: GUILD });
+  registerDraftRoutes(server, { db, cache, logger });
 
-  const tournamentId = await seed(db);
+  const { tournamentId, vetoId } = await seed(db);
+
+  // Драфт для первого готового матча Valorant: смотреть его надо по ссылке с токеном,
+  // иначе страница откроется только для просмотра — как у зрителя.
+  const drafts = createDraftsService({ db, cache, logger });
+  const bracketService = createTournamentsService({ db });
+  const veto = await bracketService.bracket(vetoId);
+  const first = veto.matches.find((match) => match.state === 'ready');
+  const draft = first
+    ? await drafts.ensureForMatch(veto.tournament, first)
+    : null;
+
   await server.listen({ port: PORT, host: '0.0.0.0' });
 
   logger.info(
     {
       главная: `http://localhost:${PORT}/`,
+      правила: `http://localhost:${PORT}/rules`,
       сетка: `http://localhost:${PORT}/t/${tournamentId}`,
+      зал_славы: `http://localhost:${PORT}/hall`,
       лидерборд: `http://localhost:${PORT}/leaderboard/dota2`,
+      ...(draft && first
+        ? {
+            драфт_капитан_1: `http://localhost:${PORT}/draft/${first.id}?as=${draft.draft.tokenA}`,
+            драфт_капитан_2: `http://localhost:${PORT}/draft/${first.id}?as=${draft.draft.tokenB}`,
+            драфт_зритель: `http://localhost:${PORT}/draft/${first.id}`,
+          }
+        : {}),
     },
     'витрина поднята, Ctrl+C останавливает и убирает демонстрационные данные',
   );

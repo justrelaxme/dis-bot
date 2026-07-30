@@ -23,6 +23,7 @@ import {
   renderTournamentList,
   type LeaderboardEntry,
 } from './render.js';
+import { RULES_STYLE, renderRules } from './rules.js';
 
 /**
  * Игра турнира и провайдер данных — разные оси. Здесь единственное место, где они
@@ -132,6 +133,17 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
       );
     });
 
+    return reply.type('text/html; charset=utf-8').send(html);
+  });
+
+  /**
+   * Правила: единственная страница, которая не зависит от данных, — поэтому кэшируется
+   * надолго и собирается один раз. Меняется она вместе с кодом, а не с турниром.
+   */
+  server.get('/rules', async (_request, reply) => {
+    const html = await cached('web:rules', async () =>
+      page('Правила', renderRules(), `<style>${RULES_STYLE}</style>`),
+    );
     return reply.type('text/html; charset=utf-8').send(html);
   });
 
