@@ -11,6 +11,7 @@ import {
   createTournamentRooms,
 } from './commands/play.js';
 import { createTournamentPollCommand } from './commands/poll.js';
+import { createStatsCommand } from './commands/stats.js';
 import { createChannelsGateway } from './discord/channels.js';
 import { createDiscordPollGateway } from './discord/poll-gateway.js';
 import { createCycleService } from './services/cycle.js';
@@ -72,6 +73,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
       createTeamCommand(play),
       createMatchCommand(play),
       createCheckinCommand(play),
+      createStatsCommand({ db: deps.db, publicBaseUrl: deps.publicBaseUrl }),
     ],
 
     events: [createButtonHandler(play)],

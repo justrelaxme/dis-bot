@@ -57,6 +57,13 @@
       "when": 1785403237143,
       "tag": "0007_dusty_wrecking_crew",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785404027865,
+      "tag": "0008_light_changeling",
+      "breakpoints": true
     }
   ]
 }

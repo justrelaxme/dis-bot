@@ -104,7 +104,7 @@ const http = createHttpServer({
 
 // Витрина: сетки турниров и лидерборды по рангам. Только чтение, без входа —
 // управление остаётся в Discord, поэтому ни авторизации, ни сессий здесь нет.
-registerWebRoutes(http, { db, cache, logger });
+registerWebRoutes(http, { db, cache, logger, guildId: config.DISCORD_GUILD_ID });
 
 registerSteamCallback(http, {
   logger,

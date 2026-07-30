@@ -1,0 +1,1 @@
+ALTER TABLE "tournaments" ADD COLUMN "winner_entrant_id" integer;

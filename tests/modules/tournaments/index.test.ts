@@ -29,6 +29,7 @@ describe('модуль tournaments', () => {
     expect(botModule.commands?.map((c) => c.builder.name).sort()).toEqual([
       'checkin',
       'match',
+      'stats',
       'team',
       'tournament',
     ]);

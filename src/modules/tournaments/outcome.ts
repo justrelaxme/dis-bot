@@ -1,3 +1,4 @@
+import { plural } from '../../core/russian.js';
 import { TOURNAMENT_GAME_LABELS } from './games.js';
 import type { TournamentGame } from './schema.js';
 
@@ -46,13 +47,7 @@ export function determineOutcome(tally: readonly GameTally[]): PollOutcome {
 
 /** Согласование слова «голос» с числом по правилам русского языка. */
 export function pluralizeVotes(count: number): string {
-  const hundredRemainder = count % 100;
-  if (hundredRemainder >= 11 && hundredRemainder <= 14) return 'голосов';
-
-  const tenRemainder = count % 10;
-  if (tenRemainder === 1) return 'голос';
-  if (tenRemainder >= 2 && tenRemainder <= 4) return 'голоса';
-  return 'голосов';
+  return plural(count, 'голос', 'голоса', 'голосов');
 }
 
 function totalOf(tally: readonly GameTally[]): number {

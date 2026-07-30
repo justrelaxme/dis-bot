@@ -116,6 +116,12 @@ export const tournaments = pgTable(
     bestOf: integer('best_of').notNull().default(1),
     /** Требовать подтверждённую привязку по игре у каждого игрока состава. */
     requireVerified: boolean('require_verified').notNull().default(true),
+    /**
+     * Чемпион. Хранится, а не выводится из последнего матча: «кто победил» — это факт о
+     * турнире, который спрашивают чаще всего, и зал славы не должен для каждой строки
+     * разбирать форму сетки. Заполняется тем же обновлением, что закрывает турнир.
+     */
+    winnerEntrantId: integer('winner_entrant_id'),
     announceChannelId: text('announce_channel_id'),
     /** Категория, в которой создаются голосовые каналы команд. */
     teamCategoryId: text('team_category_id'),

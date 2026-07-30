@@ -12,9 +12,11 @@ import {
   tournaments,
   type TournamentGame,
 } from '../tournaments/schema.js';
+import { finishedTournaments, titlesByTeam } from '../tournaments/services/records.js';
 import {
   page,
   renderBracket,
+  renderHall,
   renderLeaderboard,
   renderNotFound,
   renderTournamentList,
@@ -38,6 +40,8 @@ const PAGE_TTL_MS = 60 * 1_000;
 const PAGE_STALE_MS = 10 * 60 * 1_000;
 
 const LEADERBOARD_LIMIT = 100;
+const HALL_LIMIT = 50;
+const TITLES_LIMIT = 10;
 
 /** `db.execute` требует, чтобы форма строки была совместима с Record<string, unknown>. */
 interface LeaderboardRow extends Record<string, unknown> {
@@ -54,6 +58,12 @@ export interface WebRoutesDeps {
   db: Database;
   cache: Cache;
   logger: Logger;
+  /**
+   * Сервер, чью летопись показываем. Бот живёт на одном сервере (DISCORD_GUILD_ID), но
+   * база на это не рассчитана: страницы без фильтра однажды смешали бы два сервера в
+   * одну таблицу, и объяснять это пришлось бы уже пользователям.
+   */
+  guildId: string;
 }
 
 function isGame(value: string): value is TournamentGame {
@@ -81,6 +91,7 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
           tournamentEntrants,
           and(eq(tournamentEntrants.tournamentId, tournaments.id), sql`${tournamentEntrants.withdrawnAt} is null`),
         )
+        .where(eq(tournaments.guildId, deps.guildId))
         .groupBy(tournaments.id)
         .orderBy(desc(tournaments.id))
         .limit(25);
@@ -89,6 +100,18 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
         'Турниры',
         renderTournamentList(rows.map((row) => ({ ...row.tournament, entrantCount: row.entrantCount }))),
       );
+    });
+
+    return reply.type('text/html; charset=utf-8').send(html);
+  });
+
+  server.get('/hall', async (_request, reply) => {
+    const html = await cached('web:hall', async () => {
+      const [finished, titles] = await Promise.all([
+        finishedTournaments(db, deps.guildId, HALL_LIMIT),
+        titlesByTeam(db, deps.guildId, TITLES_LIMIT),
+      ]);
+      return page('Зал славы', renderHall(finished, titles));
     });
 
     return reply.type('text/html; charset=utf-8').send(html);

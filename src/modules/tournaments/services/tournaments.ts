@@ -282,7 +282,12 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
     if (!target || !targetRow) {
       const [closed] = await db
         .update(tournaments)
-        .set({ state: 'finished', finishedAt: new Date(), updatedAt: new Date() })
+        .set({
+          state: 'finished',
+          winnerEntrantId,
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
         .where(and(eq(tournaments.id, match.tournamentId), eq(tournaments.state, 'running')))
         .returning();
 

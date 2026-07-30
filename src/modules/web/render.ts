@@ -167,6 +167,11 @@ td.acct { font-family:var(--sans); font-weight:600; }
 .medal::before { content:''; width:9px; height:9px; border-radius:2px; transform:rotate(45deg);
   background:var(--tc); box-shadow:0 0 8px -1px var(--tc); flex:0 0 auto; }
 td.num { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
+td.acct a { border-bottom:1px solid transparent; transition:color .18s, border-color .18s; }
+td.acct a:hover, td.acct a:focus-visible { color:var(--gold); border-color:var(--gold); }
+/* Чемпион — единственная строка таблицы, которой позволено быть латунной. */
+td.champ { color:var(--gold); font-weight:600; }
+.dim { color:var(--dim); }
 
 .empty { border:1px dashed var(--rule); border-radius:3px; padding:2rem 1.25rem; text-align:center; }
 .empty p { margin:.35rem 0; color:var(--dim); }
@@ -200,6 +205,7 @@ export function page(title: string, body: string): string {
   <header class="top">
     <a href="/" class="mark">Турниры сервера</a>
     <nav>
+      <a href="/hall">Зал славы</a>
       <a href="/leaderboard/dota2">Dota 2</a>
       <a href="/leaderboard/lol">LoL</a>
       <a href="/leaderboard/tft">TFT</a>
@@ -465,6 +471,77 @@ export function renderLeaderboard(game: TournamentGame, entries: LeaderboardEntr
 <thead><tr><th class="pos">#</th><th>Аккаунт</th><th>Ранг</th><th class="num">Очки</th></tr></thead>
 <tbody>${rows}</tbody>
 </table>`;
+}
+
+/**
+ * Зал славы: летопись сервера. Только командные результаты — они и есть публичное
+ * событие. Кто стоял в составе, здесь не показывается: связка «этот человек — эта
+ * команда» приватна ровно так же, как связка с игровым аккаунтом, а личные цифры
+ * отдаёт `/stats` в Discord, где спрашивающий уже участник сервера.
+ */
+export function renderHall(
+  finished: {
+    id: number;
+    name: string;
+    game: TournamentGame;
+    finishedAt: Date | null;
+    champion: string | null;
+    entrants: number;
+    matches: number;
+  }[],
+  titles: { name: string; titles: number }[],
+): string {
+  if (finished.length === 0) {
+    return `<h1>Зал славы</h1>
+<p class="lede">Здесь остаётся то, что уже сыграно: чемпионы, даты, число участников.</p>
+<div class="empty"><p>Ни один турнир пока не доигран до конца.</p>
+<p>После первого финала эта страница перестанет быть пустой — и дальше будет только расти.</p></div>`;
+  }
+
+  const rows = finished
+    .map((row, index) => {
+      const when =
+        row.finishedAt === null
+          ? '—'
+          : row.finishedAt.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
+      const champion = row.champion === null ? '<span class="dim">не определён</span>' : escape(row.champion);
+      return `<tr style="--delay:${index * 18}ms">
+<td class="acct"><a href="/t/${row.id}">${escape(row.name)}</a></td>
+<td>${escape(TOURNAMENT_GAME_LABELS[row.game] ?? row.game)}</td>
+<td class="champ">🏆 ${champion}</td>
+<td class="num">${row.entrants}</td>
+<td class="num">${row.matches}</td>
+<td class="num">${escape(when)}</td>
+</tr>`;
+    })
+    .join('\n');
+
+  const board = titles
+    .map(
+      (team, index) => `<tr style="--delay:${index * 18}ms">
+<td class="pos">${index + 1}</td>
+<td class="acct">${escape(team.name)}</td>
+<td class="num">${team.titles}</td>
+</tr>`,
+    )
+    .join('\n');
+
+  return `<h1>Зал славы</h1>
+<p class="lede">Что уже сыграно. Личные цифры — команда <code>/stats</code> в Discord.</p>
+<table>
+<thead><tr><th>Турнир</th><th>Игра</th><th>Чемпион</th><th class="num">Уч.</th><th class="num">Матчей</th><th class="num">Когда</th></tr></thead>
+<tbody>${rows}</tbody>
+</table>
+${
+  board
+    ? `<h2>Больше всех титулов</h2>
+<p class="lede">По названию команды: состав собирается заново каждый раз, а название люди переносят из недели в неделю.</p>
+<table>
+<thead><tr><th class="pos">#</th><th>Команда</th><th class="num">Титулов</th></tr></thead>
+<tbody>${board}</tbody>
+</table>`
+    : ''
+}`;
 }
 
 export function renderNotFound(what: string): string {
