@@ -58,7 +58,7 @@ const { db, close: closeDatabase } = createDatabase(config, logger);
  */
 if (config.MIGRATE_ON_START) {
   try {
-    await migrate(db, { migrationsFolder: 'src/core/db/migrations' });
+    await migrate(db, { migrationsFolder: config.MIGRATIONS_DIR });
     logger.info('миграции применены');
   } catch (error) {
     // Стартовать после неудачной миграции нельзя: бот будет падать на каждом запросе к

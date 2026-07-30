@@ -8,7 +8,7 @@ const logger = createLogger(config);
 const { db, close } = createDatabase(config, logger);
 
 try {
-  await migrate(db, { migrationsFolder: 'src/core/db/migrations' });
+  await migrate(db, { migrationsFolder: config.MIGRATIONS_DIR });
   logger.info('миграции применены');
 } catch (error) {
   logger.error({ err: error }, 'миграции не применились');
