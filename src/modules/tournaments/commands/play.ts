@@ -82,9 +82,25 @@ export function createTeamCommand(deps: PlayDeps): CommandDefinition {
           ),
       )
       .addSubcommand((sub) => sub.setName('leave').setDescription('Выйти из команды'))
-      .addSubcommand((sub) => sub.setName('roster').setDescription('Кто в составе')),
+      .addSubcommand((sub) => sub.setName('roster').setDescription('Кто в составе'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('add')
+          .setDescription('Капитану: добавить игрока в состав — в том числе замену во время турнира')
+          .addUserOption((option) =>
+            option.setName('user').setDescription('Кого добавить').setRequired(true),
+          ),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('kick')
+          .setDescription('Капитану: убрать игрока из состава')
+          .addUserOption((option) =>
+            option.setName('user').setDescription('Кого убрать').setRequired(true),
+          ),
+      ),
 
-    async execute(interaction): Promise<void> {
+    async execute(interaction, ctx): Promise<void> {
       const guild = requireGuild(interaction.guild);
       const tournament = await currentTournament(deps, guild);
       const subcommand = interaction.options.getSubcommand();
@@ -127,6 +143,51 @@ export function createTeamCommand(deps: PlayDeps): CommandDefinition {
         return;
       }
 
+      if (subcommand === 'add' || subcommand === 'kick') {
+        const target = interaction.options.getUser('user', true);
+        if (target.bot) throw new UserError('Бота в состав не записать.');
+
+        const change =
+          subcommand === 'add'
+            ? await deps.tournaments.addMember(tournament.id, interaction.user.id, target.id)
+            : await deps.tournaments.removeMember(tournament.id, interaction.user.id, target.id);
+
+        // Комната команды закрывалась по списку, который был на старте. Пришедшего надо
+        // пустить, ушедшего — вывести, иначе замена работает только в базе.
+        if (change.entrant.voiceChannelId) {
+          await deps.channels.setTeamVoiceAccess({
+            guild,
+            channelId: change.entrant.voiceChannelId,
+            userId: target.id,
+            allowed: subcommand === 'add',
+          });
+        }
+
+        const tail = change.duringTournament
+          ? ' Турнир идёт — замена уже в силе, комната команды переоткрыта.'
+          : change.rosterSize >= tournament.teamSize
+            ? ' Состав полный, можно отмечаться: `/checkin`.'
+            : ` Осталось добрать ${tournament.teamSize - change.rosterSize}.`;
+
+        // Про отсутствующую привязку говорим сразу, а не молчим до жеребьёвки: без неё
+        // игрок считается нулевой силой, и состав окажется сеян ниже, чем есть на самом деле.
+        const unlinked =
+          subcommand === 'add' &&
+          tournament.requireVerified &&
+          !(await hasVerifiedLink(ctx.db, target.id, tournament.game))
+            ? `\n\nУ <@${target.id}> нет подтверждённой привязки к ${TOURNAMENT_GAME_LABELS[tournament.game]} — играть это не мешает, но в жеребьёвке он считается без ранга. Привязать: \`${linkCommandFor(tournament.game)}\`.`
+            : '';
+
+        await interaction.editReply({
+          content:
+            (subcommand === 'add'
+              ? `<@${target.id}> в составе **${change.entrant.displayName}** — ${change.rosterSize} из ${tournament.teamSize}.${tail}`
+              : `<@${target.id}> убран(а) из **${change.entrant.displayName}** — ${change.rosterSize} из ${tournament.teamSize}.${tail}`) +
+            unlinked,
+        });
+        return;
+      }
+
       throw new UserError('Неизвестная подкоманда.');
     },
   };
@@ -139,12 +200,40 @@ export function createCheckinCommand(deps: PlayDeps): CommandDefinition {
       .setName('checkin')
       .setDescription('Отметить состав перед стартом — без этого в сетку не попадёте'),
 
-    async execute(interaction): Promise<void> {
+    async execute(interaction, ctx): Promise<void> {
       const guild = requireGuild(interaction.guild);
       const tournament = await currentTournament(deps, guild);
       const entrant = await deps.tournaments.checkIn(tournament.id, interaction.user.id);
+      const members = await deps.tournaments.membersOf(entrant.id);
+
+      // Отметка не блокируется отсутствием привязок — иначе на сервере, где ещё никто не
+      // привязался, первый турнир не состоялся бы вообще. Но сказать об этом надо здесь:
+      // дальше жеребьёвка, и без ранга человек уйдёт в неё нулевой силой.
+      const unlinked = tournament.requireVerified
+        ? (
+            await Promise.all(
+              members.map(async (userId) =>
+                (await hasVerifiedLink(ctx.db, userId, tournament.game)) ? null : userId,
+              ),
+            )
+          ).filter((userId): userId is string => userId !== null)
+        : [];
+
+      const short = members.length < tournament.teamSize;
+
       await interaction.editReply({
-        content: `**${entrant.displayName}** отмечен(а). Сетка: ${deps.publicBaseUrl}/t/${tournament.id}`,
+        content: [
+          `**${entrant.displayName}** отмечен(а) — ${members.length} из ${tournament.teamSize} в составе.`,
+          short
+            ? 'Состав неполный — в сетку попадёте, но играть придётся меньшим числом. Добрать: кнопкой под объявлением или `/team add`.'
+            : null,
+          unlinked.length > 0
+            ? `Без подтверждённой привязки к ${TOURNAMENT_GAME_LABELS[tournament.game]}: ${unlinked.map((id) => `<@${id}>`).join(', ')}. В жеребьёвке они считаются без ранга — \`${linkCommandFor(tournament.game)}\`.`
+            : null,
+          `Сетка: ${deps.publicBaseUrl}/t/${tournament.id}`,
+        ]
+          .filter((line) => line !== null)
+          .join('\n'),
       });
     },
   };

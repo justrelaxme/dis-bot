@@ -44,6 +44,17 @@ export interface ChannelsGateway {
   }): Promise<string | null>;
   archiveThread(guild: Guild, threadId: string): Promise<void>;
   deleteChannel(guild: Guild, channelId: string): Promise<void>;
+  /**
+   * Открывает или закрывает человеку доступ в комнату команды. Нужно заменам: состав
+   * поменялся посреди турнира, а канал был закрыт по списку, который был на старте, —
+   * вышедший остался бы слушать, а пришедший не попал бы к своим.
+   */
+  setTeamVoiceAccess(input: {
+    guild: Guild;
+    channelId: string;
+    userId: string;
+    allowed: boolean;
+  }): Promise<void>;
 }
 
 /** Discord обрезает имена каналов; режем сами, чтобы имя оставалось узнаваемым. */
@@ -122,6 +133,37 @@ export function createChannelsGateway(logger: Logger): ChannelsGateway {
         if (thread?.isThread()) await thread.setArchived(true, 'Матч завершён');
       } catch (error) {
         logger.warn({ err: error, threadId }, 'не удалось заархивировать ветку матча');
+      }
+    },
+
+    async setTeamVoiceAccess(input): Promise<void> {
+      try {
+        const channel = await input.guild.channels.fetch(input.channelId);
+        if (!channel || channel.type !== ChannelType.GuildVoice) return;
+
+        if (input.allowed) {
+          await channel.permissionOverwrites.edit(
+            input.userId,
+            {
+              ViewChannel: true,
+              Connect: true,
+              Speak: true,
+              SendMessages: true,
+            },
+            { reason: 'Замена в составе: пустить в комнату команды' },
+          );
+          return;
+        }
+
+        // Удаляем персональное разрешение, а не запрещаем: запрет остался бы на человеке
+        // и после того, как он вступит в другую команду этого же турнира.
+        await channel.permissionOverwrites.delete(input.userId, 'Замена в составе: убрать из комнаты');
+      } catch (error) {
+        // Канал удалён руками, нет прав — состав в базе от этого не меняется.
+        logger.warn(
+          { err: error, channelId: input.channelId, userId: input.userId },
+          'не удалось изменить доступ в комнату команды',
+        );
       }
     },
 

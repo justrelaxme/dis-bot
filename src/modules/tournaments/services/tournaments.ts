@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
+import { auditLog } from '../../../core/db/schema/core.js';
 import { UserError } from '../../../core/errors.js';
 import type { EventBus } from '../../../core/events/bus.js';
 import {
@@ -54,6 +55,13 @@ export interface BracketView {
   tournament: TournamentRow;
   entrants: EntrantRow[];
   matches: MatchRow[];
+}
+
+/** Итог замены: команда, размер состава после и признак того, что турнир уже идёт. */
+export interface RosterChange {
+  entrant: EntrantRow;
+  rosterSize: number;
+  duringTournament: boolean;
 }
 
 function required<T>(row: T | undefined, what: string): T {
@@ -122,6 +130,49 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       .from(tournamentEntrantMembers)
       .where(eq(tournamentEntrantMembers.entrantId, entrantId));
     return rows.map((row) => row.userId);
+  }
+
+  /**
+   * Команда капитана и её состав — с проверкой, что зовущий действительно капитан и что
+   * турнир ещё живой. Одна функция вместо повторения четырёх проверок в каждой замене.
+   */
+  async function captainEntrant(
+    tournamentId: number,
+    captainUserId: string,
+  ): Promise<{ tournament: TournamentRow; entrant: EntrantRow }> {
+    const tournament = await byId(tournamentId);
+    if (tournament.state !== 'registration' && tournament.state !== 'running') {
+      throw new UserError('Этот турнир уже закрыт — состав менять не в чем.');
+    }
+
+    const entrant = await entrantOfUser(tournamentId, captainUserId);
+    if (!entrant) throw new UserError('Ты не участвуешь в этом турнире.');
+    if (entrant.captainUserId !== captainUserId) {
+      throw new UserError('Состав меняет только капитан.');
+    }
+    return { tournament, entrant };
+  }
+
+  /** След замены в общем журнале: «кто это сделал» спрашивают уже после турнира. */
+  async function audit(
+    tournament: TournamentRow,
+    actorId: string,
+    action: string,
+    targetId: string,
+    entrant: EntrantRow,
+  ): Promise<void> {
+    await db.insert(auditLog).values({
+      guildId: tournament.guildId,
+      actorId,
+      action,
+      targetId,
+      details: {
+        tournamentId: tournament.id,
+        entrantId: entrant.id,
+        team: entrant.displayName,
+        state: tournament.state,
+      },
+    });
   }
 
   async function logAction(
@@ -443,13 +494,16 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       if (!entrant) throw new UserError('Ты не участвуешь в этом турнире.');
 
       const tournament = await byId(tournamentId);
-      if (tournament.state !== 'registration') {
-        throw new UserError('Турнир уже начался — выйти из состава нельзя.');
-      }
 
       // Капитан уходит вместе с командой: команда без капитана не сможет ни добрать
-      // состав, ни отчитаться о результате, и застопорит вечер.
+      // состав, ни отчитаться о результате, и застопорит вечер. Поэтому во время турнира
+      // капитану выйти нельзя — это снятие всей команды из уже построенной сетки.
       if (entrant.captainUserId === userId) {
+        if (tournament.state !== 'registration') {
+          throw new UserError(
+            'Турнир идёт: капитан не может выйти, это снимет всю команду из сетки. Передать команду нельзя — доиграйте или попросите организатора присудить победу сопернику (`/match walkover`).',
+          );
+        }
         await db
           .update(tournamentEntrants)
           .set({ withdrawnAt: new Date() })
@@ -461,6 +515,89 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       await db
         .delete(tournamentEntrantMembers)
         .where(and(eq(tournamentEntrantMembers.entrantId, entrant.id), eq(tournamentEntrantMembers.userId, userId)));
+    },
+
+    /**
+     * Замена в составе: капитан убирает игрока. Работает и во время турнира — сетка сводит
+     * **участников**, а не людей, поэтому смена состава её не задевает вовсе.
+     *
+     * Без замен капитан ничего не мог сделать с неявившимся за пять минут до старта:
+     * команда либо снималась целиком, либо вопрос решался вручную через организатора. Это
+     * укусило бы на первом же турнире, потому что кто-то не приходит всегда.
+     */
+    async removeMember(
+      tournamentId: number,
+      captainUserId: string,
+      userId: string,
+    ): Promise<RosterChange> {
+      const { tournament, entrant } = await captainEntrant(tournamentId, captainUserId);
+      if (userId === captainUserId) {
+        throw new UserError('Капитан выходит вместе с командой — это `/team leave`, а не замена.');
+      }
+
+      const [removed] = await db
+        .delete(tournamentEntrantMembers)
+        .where(
+          and(
+            eq(tournamentEntrantMembers.entrantId, entrant.id),
+            eq(tournamentEntrantMembers.userId, userId),
+          ),
+        )
+        .returning();
+      if (!removed) throw new UserError('Этого игрока нет в твоём составе.');
+
+      await audit(tournament, captainUserId, 'tournament.roster.remove', userId, entrant);
+      return {
+        entrant,
+        rosterSize: (await membersOf(entrant.id)).length,
+        duringTournament: tournament.state === 'running',
+      };
+    },
+
+    /**
+     * Замена в составе: капитан добавляет игрока. Согласия кнопкой не спрашиваем — замена
+     * происходит за минуты до матча, когда заменяющий стоит рядом в голосовом канале и уже
+     * согласился словами. Если это не так, он выходит сам: `/team leave` во время турнира
+     * рядовому игроку разрешён.
+     */
+    async addMember(
+      tournamentId: number,
+      captainUserId: string,
+      userId: string,
+    ): Promise<RosterChange> {
+      const { tournament, entrant } = await captainEntrant(tournamentId, captainUserId);
+      if (tournament.entryMode === 'solo') {
+        throw new UserError('Это турнир одиночек — составов в нём нет.');
+      }
+
+      const members = await membersOf(entrant.id);
+      if (members.includes(userId)) throw new UserError('Он уже в твоём составе.');
+      if (members.length >= tournament.teamSize) {
+        throw new UserError(
+          `В составе уже ${tournament.teamSize} — сначала убери кого-то: \`/team kick\`.`,
+        );
+      }
+
+      const elsewhere = await entrantOfUser(tournamentId, userId);
+      if (elsewhere) {
+        throw new UserError(`Он уже играет за «${elsewhere.displayName}» — сначала пусть выйдет оттуда.`);
+      }
+
+      // Пришедший посреди турнира записывается заменой: в составе видно, кто играл
+      // изначально, а кто вышел вместо кого-то.
+      await db.insert(tournamentEntrantMembers).values({
+        entrantId: entrant.id,
+        tournamentId,
+        userId,
+        role: tournament.state === 'running' ? 'sub' : 'player',
+      });
+
+      await audit(tournament, captainUserId, 'tournament.roster.add', userId, entrant);
+      return {
+        entrant,
+        rosterSize: members.length + 1,
+        duringTournament: tournament.state === 'running',
+      };
     },
 
     /** Организатор снимает участника. До старта — иначе сетка уже построена. */
