@@ -1,4 +1,5 @@
 import type { Database } from '../../core/db/client.js';
+import type { Cache } from '../../core/cache.js';
 import type { EventBus } from '../../core/events/bus.js';
 import type { FetchClient } from '../../core/http/fetch-client.js';
 import type { Logger } from '../../core/logger.js';
@@ -18,6 +19,7 @@ import { createChannelsGateway } from './discord/channels.js';
 import { createDiscordPollGateway } from './discord/poll-gateway.js';
 import { createCycleService } from './services/cycle.js';
 import { createDotaVerifier } from './services/dota-verify.js';
+import { createDraftsService } from './services/drafts.js';
 import { createPollFinalizer } from './services/finalizer.js';
 import { createPollsService } from './services/polls.js';
 import { runCycleTick } from './services/runner.js';
@@ -46,6 +48,13 @@ const CYCLE_CRON = '* * * * *';
 const ABANDON_AFTER_MS = 6 * 60 * 60 * 1_000;
 const ABANDON_CRON = '*/30 * * * *';
 
+/**
+ * Таймауты драфта проверяются каждые двадцать секунд — шесть полей в выражении, а не пять:
+ * ход длится минуту, и минутная гранулярность растянула бы ожидание вдвое.
+ */
+const DRAFT_TIMEOUT_CRON = '*/20 * * * * *';
+const DRAFT_TIMEOUT_BATCH = 20;
+
 export interface TournamentsModuleDeps {
   db: Database;
   logger: Logger;
@@ -60,6 +69,8 @@ export interface TournamentsModuleDeps {
    */
   fetchClientFor?: (provider: string) => FetchClient;
   rateLimiter?: RateLimiter;
+  /** Кэш: в нём живёт справочник героев Dota для драфта. */
+  cache: Cache;
 }
 
 /**
@@ -89,9 +100,17 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
         })
       : undefined;
 
+  const drafts = createDraftsService({
+    db: deps.db,
+    cache: deps.cache,
+    logger: deps.logger,
+    ...(deps.fetchClientFor ? { heroClient: deps.fetchClientFor('opendota') } : {}),
+  });
+
   const play = {
     tournaments,
     channels,
+    drafts,
     publicBaseUrl: deps.publicBaseUrl,
     ...(dotaVerifier ? { dotaVerifier } : {}),
   };
@@ -156,6 +175,32 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
           const settled = await tournaments.autoConfirmDue(new Date(), AUTO_CONFIRM_BATCH_SIZE);
           if (settled.length > 0) {
             ctx.logger.info({ count: settled.length }, 'результаты приняты по молчанию соперника');
+          }
+        },
+      },
+      {
+        /**
+         * Просроченный ход драфта двигается сам. Без этого закрытый браузер одного капитана
+         * останавливал бы матч навсегда — та же болезнь, что у матча без заявленного
+         * результата, и лечится так же: решение принимает сервер, а не чьё-то присутствие.
+         *
+         * Каждые двадцать секунд: ход длится минуту, и ждать лишние полминуты после
+         * истечения — значит держать соперника в неизвестности дважды дольше нужного.
+         */
+        name: 'tournaments:draft-timeout',
+        cron: DRAFT_TIMEOUT_CRON,
+        async run(ctx): Promise<void> {
+          for (const draft of await drafts.overdue(new Date(), DRAFT_TIMEOUT_BATCH)) {
+            const state = await drafts.advanceOverdue(draft).catch((error: unknown) => {
+              ctx.logger.warn({ err: error, draftId: draft.id }, 'просроченный ход драфта не сдвинулся');
+              return null;
+            });
+            if (!state) continue;
+
+            ctx.logger.info(
+              { draftId: draft.id, matchId: draft.matchId, step: state.view.step, done: state.view.done },
+              'ход драфта сделан по истечении времени',
+            );
           }
         },
       },

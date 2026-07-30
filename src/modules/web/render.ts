@@ -23,7 +23,7 @@ const PITCH = MATCH_H + V_GAP;
 const COL_W = 208;
 const LINK_W = 44;
 
-function escape(value: string): string {
+export function escape(value: string): string {
   return value
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -194,7 +194,7 @@ footer { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--rule);
 }
 `;
 
-export function page(title: string, body: string): string {
+export function page(title: string, body: string, extraHead = ''): string {
   return `<!doctype html>
 <html lang="ru">
 <head>
@@ -203,6 +203,7 @@ export function page(title: string, body: string): string {
 <meta name="color-scheme" content="dark">
 <title>${escape(title)}</title>
 <style>${STYLE}</style>
+${extraHead}
 </head>
 <body>
 <div class="wrap">

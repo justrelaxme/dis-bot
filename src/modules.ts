@@ -26,6 +26,7 @@ export function buildModules(identityDeps: IdentityModuleDeps): BotModule[] {
     pingModule,
     createIdentityModule(identityDeps),
     createTournamentsModule({
+      cache: identityDeps.cache,
       db: identityDeps.db,
       logger: identityDeps.logger,
       bus: identityDeps.bus,

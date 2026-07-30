@@ -30,6 +30,7 @@ import {
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
 import { hasUsableLink, linkCommandFor } from '../services/strength.js';
 import type { DotaVerifier } from '../services/dota-verify.js';
+import type { DraftsService } from '../services/drafts.js';
 import type { TournamentsService } from '../services/tournaments.js';
 
 /**
@@ -49,6 +50,11 @@ export interface PlayDeps {
    * должен идти обычным путём, а не отказывать в приёме результата.
    */
   dotaVerifier?: DotaVerifier;
+  /**
+   * Драфт перед матчем. Необязателен: дисциплины без драфта (LoL, TFT) и недоступный
+   * справочник героев — штатные состояния, матч играется и без него.
+   */
+  drafts?: DraftsService;
 }
 
 function requireGuild(guild: Guild | null): Guild {
@@ -457,6 +463,72 @@ export async function ensureMatchThreads(deps: PlayDeps, guild: Guild, tournamen
 }
 
 /**
+ * Драфт каждому матчу, который уже можно играть: вето карт в Valorant, баны и пики героев
+ * в Dota. Ссылка на действие уходит капитанам **в личку** — на сайте нет входа, и токен в
+ * ссылке это единственный способ отличить капитана от зрителя. Публичная ссылка идёт в
+ * ветку матча: остальным драфт видно, но нажать они ничего не могут.
+ *
+ * Отказ Discord здесь ничего не отменяет: драфт уже создан, ссылку можно взять из ветки.
+ */
+async function ensureMatchDrafts(deps: PlayDeps, guild: Guild, tournamentId: number): Promise<void> {
+  if (!deps.drafts) return;
+  const drafts = deps.drafts;
+
+  const tournament = await deps.tournaments.byId(tournamentId);
+  const pending = await drafts.matchesNeedingDraft(tournamentId);
+  if (pending.length === 0) return;
+
+  const view = await deps.tournaments.bracket(tournamentId);
+  const entrantOf = (id: number | null) => view.entrants.find((entrant) => entrant.id === id);
+
+  for (const match of pending) {
+    const result = await drafts.ensureForMatch(tournament, match);
+    if (!result || !result.created) continue;
+
+    const base = `${deps.publicBaseUrl}/draft/${match.id}`;
+    const subject = result.draft.subject === 'maps' ? 'карты' : 'героев';
+
+    for (const [side, token] of [
+      ['a', result.draft.tokenA],
+      ['b', result.draft.tokenB],
+    ] as const) {
+      const entrant = entrantOf(side === 'a' ? match.entrantAId : match.entrantBId);
+      if (!entrant) continue;
+
+      const member = await guild.members.fetch(entrant.captainUserId).catch(() => null);
+      await member?.user
+        .send(
+          [
+            `## Драфт матча №${match.id}`,
+            `Выбираете ${subject}: **${entrantOf(match.entrantAId)?.displayName ?? '?'}** против **${entrantOf(match.entrantBId)?.displayName ?? '?'}**.`,
+            '',
+            `Твоя ссылка: ${base}?as=${token}`,
+            '',
+            '**Она личная — не пересылай её сопернику:** кто откроет ссылку, тот и ходит за твою команду.',
+            'На каждый ход минута. Не успел — бан пропускается, а пик берётся первым свободным, иначе драфт остановился бы навсегда.',
+          ].join('\n'),
+        )
+        .catch(() => {
+          // Личка закрыта — это настройка приватности, а не сбой. Ссылка есть в ветке матча.
+        });
+    }
+
+    if (!match.threadId) continue;
+    const thread = await guild.channels.fetch(match.threadId).catch(() => null);
+    if (!thread?.isTextBased()) continue;
+
+    await thread
+      .send({
+        content: [
+          `**Драфт:** ${base}`,
+          `Ходят капитаны — ссылки на действие ушли им в личку. Здесь видно всё то же, но только смотреть.`,
+        ].join('\n'),
+      })
+      .catch(() => undefined);
+  }
+}
+
+/**
  * Все комнаты турнира: голосовые командам и ветки матчам. Одна функция на оба пути старта
  * — по команде организатора и по расписанию, — иначе автоматический турнир однажды
  * окажется без комнат, потому что их создание дописали только в одном месте.
@@ -479,6 +551,7 @@ export async function createTournamentRooms(deps: PlayDeps, guild: Guild, tourna
   }
 
   await ensureMatchThreads(deps, guild, tournamentId);
+  await ensureMatchDrafts(deps, guild, tournamentId);
 }
 
 /** Уборка комнат после турнира: без неё сервер за месяц ежедневных турниров забьётся. */

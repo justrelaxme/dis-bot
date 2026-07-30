@@ -1,5 +1,6 @@
 import { Cron } from 'croner';
 import { describe, expect, it } from 'vitest';
+import type { Cache } from '../../../src/core/cache.js';
 import type { Config } from '../../../src/core/config.js';
 import type { Database } from '../../../src/core/db/client.js';
 import { EventBus } from '../../../src/core/events/bus.js';
@@ -17,6 +18,9 @@ function moduleWith() {
     db,
     logger,
     bus: new EventBus(logger),
+    // Кэш такой же заглушкой: справочник героев запрашивается при создании драфта, а не
+    // при сборке модуля, и ни один метод здесь не вызывается.
+    cache: {} as unknown as Cache,
     publicBaseUrl: 'https://bot.example.com',
   });
 }
@@ -37,6 +41,7 @@ describe('модуль tournaments', () => {
       'tournaments:abandon',
       'tournaments:auto-confirm',
       'tournaments:cycle',
+      'tournaments:draft-timeout',
       'tournaments:poll-finalize',
     ]);
     // Кнопки состава и подтверждения результата обслуживает сам модуль: роутер ядра

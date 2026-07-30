@@ -19,6 +19,7 @@ import { createScheduler } from './core/scheduler.js';
 import { createShutdown } from './core/shutdown.js';
 import { buildModules } from './modules.js';
 import { registerSteamCallback } from './modules/identity/http/steam-callback.js';
+import { registerDraftRoutes } from './modules/web/draft.js';
 import { registerWebRoutes } from './modules/web/routes.js';
 import { createProviderRegistry } from './modules/identity/providers/index.js';
 import { createLinkingService } from './modules/identity/services/linking.js';
@@ -189,6 +190,10 @@ const http = createHttpServer({
 // Витрина: сетки турниров и лидерборды по рангам. Только чтение, без входа —
 // управление остаётся в Discord, поэтому ни авторизации, ни сессий здесь нет.
 registerWebRoutes(http, { db, cache, logger, guildId: config.DISCORD_GUILD_ID });
+
+// Драфт — единственная страница витрины, где что-то нажимают. Право действовать даёт
+// ссылка с токеном, которую бот присылает капитану в личку: входа на сайт нет и не будет.
+registerDraftRoutes(http, { db, cache, logger });
 
 registerSteamCallback(http, {
   logger,

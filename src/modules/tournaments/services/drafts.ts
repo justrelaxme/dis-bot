@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { and, asc, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import type { Cache } from '../../../core/cache.js';
 import type { Database } from '../../../core/db/client.js';
 import { UserError } from '../../../core/errors.js';
@@ -24,6 +24,7 @@ import {
 import {
   draftChoices,
   matchDrafts,
+  tournamentMatches,
   type DraftChoiceRow,
   type MatchDraftRow,
   type MatchRow,
@@ -133,9 +134,12 @@ export function createDraftsService(deps: {
      * `null` означает «драфт этой дисциплине не нужен или справочник недоступен» — это
      * штатный исход, а не сбой.
      */
-    async ensureForMatch(tournament: TournamentRow, match: MatchRow): Promise<MatchDraftRow | null> {
+    async ensureForMatch(
+      tournament: TournamentRow,
+      match: MatchRow,
+    ): Promise<{ draft: MatchDraftRow; created: boolean } | null> {
       const [existing] = await db.select().from(matchDrafts).where(eq(matchDrafts.matchId, match.id));
-      if (existing) return existing;
+      if (existing) return { draft: existing, created: false };
 
       const subject = draftSubject(tournament.game);
       if (subject === null) return null;
@@ -162,11 +166,30 @@ export function createDraftsService(deps: {
         })
         .onConflictDoNothing()
         .returning();
-      if (created) return created;
+      if (created) return { draft: created, created: true };
 
-      // Вставку занял конкурентный вызов — перечитываем.
+      // Вставку занял конкурентный вызов — перечитываем. Признак «создан» при этом ложный:
+      // ссылки капитанам разошлёт тот вызов, который действительно вставил строку.
       const [again] = await db.select().from(matchDrafts).where(eq(matchDrafts.matchId, match.id));
-      return again ?? null;
+      return again ? { draft: again, created: false } : null;
+    },
+
+    /** Матчи, которые уже можно играть, но драфта у них ещё нет. */
+    async matchesNeedingDraft(tournamentId: number): Promise<MatchRow[]> {
+      const rows = await db
+        .select({ match: tournamentMatches, draftId: matchDrafts.id })
+        .from(tournamentMatches)
+        .leftJoin(matchDrafts, eq(matchDrafts.matchId, tournamentMatches.id))
+        .where(
+          and(
+            eq(tournamentMatches.tournamentId, tournamentId),
+            eq(tournamentMatches.state, 'ready'),
+            isNull(matchDrafts.id),
+            sql`${tournamentMatches.entrantAId} is not null`,
+            sql`${tournamentMatches.entrantBId} is not null`,
+          ),
+        );
+      return rows.map((row) => row.match);
     },
 
     async byMatch(matchId: number): Promise<MatchDraftRow | null> {
