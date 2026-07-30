@@ -1,5 +1,6 @@
 import { Redis } from 'ioredis';
 import type { Logger } from './logger.js';
+import { logRedisErrors } from './redis.js';
 
 export interface CooldownVerdict {
   allowed: boolean;
@@ -18,9 +19,8 @@ export function createCooldown(deps: { redisUrl: string; logger: Logger }): Cool
   // `ioredis` — EventEmitter, и событие `error` без слушателя становится
   // неперехваченным исключением, которое убивает процесс мимо аккуратного
   // завершения. Это был единственный Critical этапа 0 и он же вернулся в Task 5.
-  redis.on('error', (error) => {
-    deps.logger.error({ err: error }, 'ошибка соединения с Redis у кулдауна команд');
-  });
+  // Общий обработчик (src/core/redis.ts) называет адрес и глушит повторы.
+  logRedisErrors(redis, { logger: deps.logger, redisUrl: deps.redisUrl, label: 'кулдаун команд' });
 
   // `redis` не входит в публичный интерфейс Cooldown, но физически присутствует на
   // возвращаемом объекте — как у RateLimiter в src/core/rate-limit.ts — и тест

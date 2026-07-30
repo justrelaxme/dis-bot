@@ -1,5 +1,6 @@
 import { Redis } from 'ioredis';
 import type { Logger } from './logger.js';
+import { logRedisErrors } from './redis.js';
 
 export interface Limit {
   tokens: number;
@@ -21,9 +22,7 @@ export function createRateLimiter(deps: { redisUrl: string; logger: Logger }): R
   // Без слушателя необработанное 'error' от ioredis (обрыв связи, рестарт контейнера,
   // сработавший maxmemory) убивает процесс целиком — см. Cache в src/core/cache.ts,
   // где ровно этот дефект был Critical на этапе 0.
-  redis.on('error', (error) => {
-    deps.logger.error({ err: error }, 'ошибка соединения с Redis у лимитера запросов');
-  });
+  logRedisErrors(redis, { logger: deps.logger, redisUrl: deps.redisUrl, label: 'лимитер запросов' });
 
   async function tryTake(key: string, limit: Limit): Promise<boolean> {
     const bucketKey = `ratelimit:${key}:${limit.windowMs}`;

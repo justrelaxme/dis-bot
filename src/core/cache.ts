@@ -1,6 +1,7 @@
 import { Redis } from 'ioredis';
 import type { Config } from './config.js';
 import type { Logger } from './logger.js';
+import { logRedisErrors } from './redis.js';
 
 export interface CachedValue<T> {
   value: T;
@@ -44,9 +45,10 @@ export class Cache {
   ) {
     this.redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 3, lazyConnect: false });
 
-    this.redis.on('error', (error) => {
-      this.logger.error({ err: error }, 'ошибка соединения с Redis');
-    });
+    // Обработчик обязателен: ioredis — EventEmitter, и `error` без слушателя убивает
+    // процесс. Общий (src/core/redis.ts) ещё и называет адрес и глушит повторы — иначе
+    // три клиента втроём заваливают лог одинаковыми строками без единой полезной.
+    logRedisErrors(this.redis, { logger, redisUrl: config.REDIS_URL, label: 'кэш' });
   }
 
   /**
