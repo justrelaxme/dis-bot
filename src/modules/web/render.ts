@@ -141,6 +141,9 @@ h2 { font-family:var(--mono); font-size:.76rem; letter-spacing:.22em; text-trans
 @keyframes rise { to { opacity:1; transform:none; } }
 .m:hover { border-color:var(--gold); box-shadow:0 0 0 1px rgba(217,165,68,.25); }
 .m.live-m { border-color:rgba(226,84,58,.5); }
+/* Матч, который не состоится: место под проигравшего, которого не случилось. Оставлен
+   в сетке нарочно — без него в ней была бы дыра, а дыра читается как ошибка. */
+.m.dead-m { opacity:.32; border-style:dashed; }
 .m .s { display:flex; align-items:center; justify-content:space-between; gap:.5rem;
   height:calc(var(--match-h)/2 - 1px); padding:0 .6rem; font-family:var(--mono); font-size:.82rem; }
 .m .s + .s { border-top:1px solid var(--rule); }
@@ -260,7 +263,14 @@ const MATCH_NOTE: Record<string, string> = {
   reported: 'ждём подтверждения',
   disputed: 'разбирается',
   walkover: 'без игры',
+  void: 'не проводится — некому спуститься',
 };
+
+/** Круги нижней сетки не делятся на «1/2» и «1/4»: в них сходятся упавшие с разных этажей. */
+function lowerRoundTitle(round: number, rounds: number): string {
+  if (round === rounds) return 'Финал низа';
+  return `Круг ${round}`;
+}
 
 /**
  * Геометрия сетки считается здесь, а не в CSS: шаг круга удваивается с каждым кругом
@@ -277,7 +287,6 @@ export function renderBracket(view: {
 
   const active = view.entrants.filter((entrant) => entrant.withdrawnAt === null);
   const size = eventSize(active.length);
-  const rounds = view.matches.reduce((max, match) => Math.max(max, match.round), 0);
 
   const status =
     view.tournament.state === 'running'
@@ -298,64 +307,118 @@ export function renderBracket(view: {
 ${list || '<div class="empty"><p>Ещё никто не записался. Команда собирается кнопкой в Discord.</p></div>'}`;
   }
 
-  const firstRoundCount = view.matches.filter((match) => match.round === 1).length;
-  const totalH = PITCH * Math.max(firstRoundCount, 1);
-  const pitchOf = (round: number): number => PITCH * 2 ** (round - 1);
-  const centerOf = (round: number, slot: number): number => pitchOf(round) * (slot + 0.5);
-
-  const parts: string[] = [];
   let step = 0;
 
-  for (let round = 1; round <= rounds; round += 1) {
-    const cells = view.matches
-      .filter((match) => match.round === round)
-      .sort((a, b) => a.slot - b.slot)
-      .map((match) => {
-        const top = centerOf(round, match.slot) - MATCH_H / 2;
-        const delay = `${(step += 1) * 45}ms`;
+  /** Карточка матча: две стороны, победитель подсвечен, состояние — подсказкой. */
+  const card = (match: MatchRow, top: number): string => {
+    const delay = `${(step += 1) * 45}ms`;
 
-        const side = (id: number | null): string => {
-          if (id === null) return `<div class="s tbd"><span class="nm">—</span></div>`;
-          const entrant = names.get(id);
-          const won = match.winnerEntrantId === id;
-          const seed = entrant?.seed === null || entrant?.seed === undefined ? '' : `<span class="seed">${entrant.seed}</span>`;
-          const note = won ? (match.state === 'walkover' ? 'без игры' : 'победа') : '';
-          return `<div class="s${won ? ' won' : ''}"><span class="nm">${seed}${escape(entrant?.name ?? `#${id}`)}</span><span class="sd">${escape(note)}</span></div>`;
-        };
+    const side = (id: number | null): string => {
+      if (id === null) return `<div class="s tbd"><span class="nm">—</span></div>`;
+      const entrant = names.get(id);
+      const won = match.winnerEntrantId === id;
+      const seed = entrant?.seed === null || entrant?.seed === undefined ? '' : `<span class="seed">${entrant.seed}</span>`;
+      const note = won ? (match.state === 'walkover' ? 'без игры' : 'победа') : '';
+      return `<div class="s${won ? ' won' : ''}"><span class="nm">${seed}${escape(entrant?.name ?? `#${id}`)}</span><span class="sd">${escape(note)}</span></div>`;
+    };
 
-        const attention = match.state === 'reported' || match.state === 'disputed';
-        const note = MATCH_NOTE[match.state];
-        const title = note ? ` title="${escape(note)}"` : '';
-        return `<div class="m${attention ? ' live-m' : ''}" style="top:${top}px;--delay:${delay}"${title}>${side(match.entrantAId)}${side(match.entrantBId)}</div>`;
-      })
-      .join('\n');
+    const attention = match.state === 'reported' || match.state === 'disputed';
+    const note = MATCH_NOTE[match.state];
+    const title = note ? ` title="${escape(note)}"` : '';
+    const classes = ['m', attention ? 'live-m' : '', match.state === 'void' ? 'dead-m' : '']
+      .filter(Boolean)
+      .join(' ');
+    return `<div class="${classes}" style="top:${top}px;--delay:${delay}"${title}>${side(match.entrantAId)}${side(match.entrantBId)}</div>`;
+  };
 
-    parts.push(`<div class="col" style="height:${totalH}px"><span class="rlabel">${escape(roundTitle(round, rounds))}</span>${cells}</div>`);
+  /**
+   * Одна сетка целиком. Шаг круга считается от числа матчей в нём, а не удвоением: в
+   * нижней сетке круги идут парами одинаковой длины (4, 4, 2, 2, 1, 1), и формула
+   * удвоения там разъехалась бы с реальными позициями. Для верхней сетки обе формулы
+   * совпадают, потому что там число матчей и правда делится вдвое каждый круг.
+   */
+  const renderPart = (
+    matches: MatchRow[],
+    label: (round: number, rounds: number) => string,
+  ): string => {
+    const rounds = matches.reduce((max, match) => Math.max(max, match.round), 0);
+    const countOf = (round: number): number =>
+      Math.max(matches.filter((match) => match.round === round).length, 1);
+    const totalH = PITCH * countOf(1);
+    const centerOf = (round: number, slot: number): number =>
+      (totalH / countOf(round)) * (slot + 0.5);
 
-    // Связи в следующий круг: из центров двух матчей пары — в центр их общего родителя.
-    if (round < rounds) {
-      const childCount = view.matches.filter((match) => match.round === round + 1).length;
+    const parts: string[] = [];
+    for (let round = 1; round <= rounds; round += 1) {
+      const cells = matches
+        .filter((match) => match.round === round)
+        .sort((a, b) => a.slot - b.slot)
+        .map((match) => card(match, centerOf(round, match.slot) - MATCH_H / 2))
+        .join('\n');
+
+      parts.push(
+        `<div class="col" style="height:${totalH}px"><span class="rlabel">${escape(label(round, rounds))}</span>${cells}</div>`,
+      );
+
+      if (round >= rounds) continue;
+
+      const here = countOf(round);
+      const next = countOf(round + 1);
       const paths: string[] = [];
-      for (let child = 0; child < childCount; child += 1) {
-        const yA = centerOf(round, child * 2);
-        const yB = centerOf(round, child * 2 + 1);
-        const mid = LINK_W / 2;
-        // Центр родителя ровно равен середине между центрами двух его детей: шаг круга
-        // удваивается, поэтому отдельный отрезок к нему считать не нужно.
-        const len = Math.round(LINK_W + Math.abs(yB - yA));
-        const delay = `${child * 60 + round * 120}ms`;
-        paths.push(
-          `<path d="M0 ${yA} H${mid} V${yB} M${mid} ${(yA + yB) / 2} H${LINK_W}" style="--len:${len};--delay:${delay}"/>`,
-        );
+
+      if (next === here) {
+        // Круг не сужается: выживший едет прямо, а соперника ему привезут сверху.
+        for (let slot = 0; slot < here; slot += 1) {
+          const y = centerOf(round, slot);
+          paths.push(
+            `<path d="M0 ${y} H${LINK_W}" style="--len:${LINK_W};--delay:${slot * 60 + round * 120}ms"/>`,
+          );
+        }
+      } else {
+        // Пара схлопывается в одну: из центров двух матчей — в центр их общего родителя.
+        for (let child = 0; child < next; child += 1) {
+          const yA = centerOf(round, child * 2);
+          const yB = centerOf(round, child * 2 + 1);
+          const mid = LINK_W / 2;
+          const len = Math.round(LINK_W + Math.abs(yB - yA));
+          paths.push(
+            `<path d="M0 ${yA} H${mid} V${yB} M${mid} ${(yA + yB) / 2} H${LINK_W}" style="--len:${len};--delay:${child * 60 + round * 120}ms"/>`,
+          );
+        }
       }
+
       parts.push(
         `<div class="links" style="height:${totalH}px"><svg viewBox="0 0 ${LINK_W} ${totalH}" preserveAspectRatio="none" aria-hidden="true">${paths.join('')}</svg></div>`,
       );
     }
+
+    return `<div class="bracket"><div class="grid" style="min-height:${totalH}px">${parts.join('\n')}</div></div>`;
+  };
+
+  const upper = view.matches.filter((match) => match.bracket === 'upper');
+  const lower = view.matches.filter((match) => match.bracket === 'lower');
+  const grand = view.matches.find((match) => match.bracket === 'grand');
+  const twoSided = lower.length > 0;
+
+  const sections = [`<h2>${twoSided ? 'Верхняя сетка' : 'Сетка'}</h2>`, renderPart(upper, roundTitle)];
+
+  if (twoSided) {
+    sections.push(
+      '<h2>Нижняя сетка</h2>',
+      '<p class="lede">Сюда падает проигравший в верхней. Отсюда можно дойти до финала — выбывание только со второго поражения.</p>',
+      renderPart(lower, lowerRoundTitle),
+    );
   }
 
-  return `${head}<h2>Сетка</h2>
-<div class="bracket"><div class="grid" style="min-height:${totalH}px">${parts.join('\n')}</div></div>`;
+  if (grand) {
+    sections.push(
+      '<h2>Гранд-финал</h2>',
+      '<p class="lede">Победитель верхней сетки против того, кто прошёл всю нижнюю.</p>',
+      `<div class="bracket"><div class="grid" style="min-height:${PITCH}px"><div class="col" style="height:${PITCH}px">${card(grand, PITCH / 2 - MATCH_H / 2)}</div></div></div>`,
+    );
+  }
+
+  return `${head}${sections.join('\n')}`;
 }
 
 export interface LeaderboardEntry {

@@ -144,6 +144,7 @@ async function runGuild(
       guildId: schedule.guildId,
       name: `${TOURNAMENT_GAME_LABELS[game] ?? game} — ${date}`,
       game,
+      format: schedule.format,
       entryMode: schedule.entryMode,
       teamSize: schedule.teamSize,
       maxEntrants: schedule.maxEntrants,

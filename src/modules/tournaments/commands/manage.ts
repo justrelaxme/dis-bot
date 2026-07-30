@@ -1,17 +1,27 @@
 import { PermissionFlagsBits, SlashCommandBuilder, type Guild } from 'discord.js';
 import { UserError } from '../../../core/errors.js';
 import type { CommandDefinition, ModuleContext } from '../../../core/module.js';
-import { EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
+import { BRACKET_FORMAT_LABELS, EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
 import { createTournamentRooms } from './play.js';
 import type { ChannelsGateway } from '../discord/channels.js';
 import { registrationPanel } from '../discord/onboarding.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
-import type { TournamentGame } from '../schema.js';
+import type { TournamentFormat, TournamentGame } from '../schema.js';
 import { parseClock, type CycleService } from '../services/cycle.js';
 import { entrantStrengths } from '../services/strength.js';
 import type { TournamentsService } from '../services/tournaments.js';
 
 const REGISTRATION_HOURS_DEFAULT = 4;
+
+/**
+ * Цена формата названа прямо в выборе. Организатор решает не «какая сетка красивее», а
+ * сколько продлится вечер: двойное устранение это шесть волн матчей на восемь команд
+ * вместо трёх, зато проигравший первый матч не уходит домой.
+ */
+const FORMAT_CHOICES = [
+  { name: 'Второй шанс — проигравший идёт в нижнюю сетку, вечер вдвое дольше', value: 'double-elim' },
+  { name: 'На выбывание — одно поражение и всё, зато быстро', value: 'single-elim' },
+] as const;
 
 export interface ManageDeps {
   tournaments: TournamentsService;
@@ -80,6 +90,12 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
             option.setName('hours').setDescription('Сколько часов идёт регистрация').setMinValue(1).setMaxValue(72),
           )
           .addStringOption((option) =>
+            option
+              .setName('format')
+              .setDescription('Сетка: со вторым шансом или на выбывание')
+              .addChoices(...FORMAT_CHOICES),
+          )
+          .addStringOption((option) =>
             option.setName('name').setDescription('Название турнира').setMaxLength(90),
           ),
       )
@@ -112,6 +128,12 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
           )
           .addIntegerOption((option) =>
             option.setName('team_size').setDescription('Игроков в команде').setMinValue(1).setMaxValue(10),
+          )
+          .addStringOption((option) =>
+            option
+              .setName('format')
+              .setDescription('Сетка ежедневного турнира')
+              .addChoices(...FORMAT_CHOICES),
           )
           .addStringOption((option) =>
             option.setName('timezone').setDescription('Часовой пояс, по умолчанию Europe/Berlin'),
@@ -168,11 +190,16 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
   const maxEntrants = interaction.options.getInteger('max_entrants') ?? 16;
   const hours = interaction.options.getInteger('hours') ?? REGISTRATION_HOURS_DEFAULT;
   const name = interaction.options.getString('name') ?? `Турнир по ${TOURNAMENT_GAME_LABELS[game]}`;
+  // У турнира, который организатор ставит руками, по умолчанию второй шанс: это событие,
+  // а не будничный вечер, и приходить ради одного матча обидно. У автомата наоборот —
+  // там по умолчанию выбывание, чтобы вечер укладывался в разумное время.
+  const format = (interaction.options.getString('format') ?? 'double-elim') as TournamentFormat;
 
   const tournament = await deps.tournaments.create({
     guildId: guild.id,
     name,
     game,
+    format,
     entryMode: mode,
     teamSize,
     maxEntrants,
@@ -213,31 +240,42 @@ async function start(interaction: Interaction, guild: Guild, deps: ManageDeps, c
   // построенную сетку. Та же функция вызывается при старте по расписанию.
   await createTournamentRooms(deps, guild, tournament.id);
 
-  const pairs = view.matches
-    .filter((match) => match.round === 1 && match.entrantAId !== null && match.entrantBId !== null)
+  // Только верхняя сетка: у нижней в момент старта соперников ещё нет — они появятся
+  // из проигравших, а первый круг объявления это про то, кто играет сейчас.
+  const firstRound = view.matches.filter((match) => match.bracket === 'upper' && match.round === 1);
+
+  const pairs = firstRound
+    .filter((match) => match.entrantAId !== null && match.entrantBId !== null)
     .map((match) => {
       const a = view.entrants.find((entrant) => entrant.id === match.entrantAId);
       const b = view.entrants.find((entrant) => entrant.id === match.entrantBId);
       return `• ${a?.displayName ?? '?'} — ${b?.displayName ?? '?'}`;
     });
 
-  const byes = view.matches
-    .filter((match) => match.round === 1 && match.state === 'walkover')
+  const byes = firstRound
+    .filter((match) => match.state === 'walkover')
     .map((match) => {
       const lone = match.winnerEntrantId;
       const entrant = view.entrants.find((row) => row.id === lone);
       return `• ${entrant?.displayName ?? '?'} проходит без игры`;
     });
 
+  // Формат берётся из турнира после старта: при двух отметившихся двойное устранение
+  // выродилось в выбывание, и обещать второй шанс, которого не будет, нельзя.
+  const doubleElim = view.tournament.format === 'double-elim';
+
   await interaction.editReply({
     content: [
       `## ${tournament.name} — старт`,
-      `${EVENT_SIZE_LABELS[size]} · ${active.length} участников · жеребьёвка по силе состава`,
+      `${EVENT_SIZE_LABELS[size]} · ${active.length} участников · ${BRACKET_FORMAT_LABELS[view.tournament.format]} · жеребьёвка по силе состава`,
       '',
       '**Первый круг:**',
       ...pairs,
       ...(byes.length > 0 ? ['', ...byes] : []),
       '',
+      doubleElim
+        ? 'Проигравший не уходит: он попадает в нижнюю сетку и может дойти до финала оттуда. Выбывание — со второго поражения.'
+        : 'Одно поражение — и всё: сетка на выбывание.',
       `Победитель матча пишет \`/match report\`, соперник подтверждает. Молчание час — результат принимается сам.`,
       `Сетка: ${deps.publicBaseUrl}/t/${tournament.id}`,
     ].join('\n'),
@@ -285,6 +323,9 @@ async function schedule(interaction: Interaction, guild: Guild, deps: ManageDeps
 
   const mode = interaction.options.getString('mode');
   if (mode !== null) patch['entryMode'] = mode === 'solo' ? 'solo' : 'team';
+
+  const format = interaction.options.getString('format');
+  if (format !== null) patch['format'] = format === 'double-elim' ? 'double-elim' : 'single-elim';
 
   for (const [option, field] of [
     ['poll_hours', 'pollHours'],

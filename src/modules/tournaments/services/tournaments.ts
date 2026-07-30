@@ -2,7 +2,19 @@ import { and, asc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
 import { UserError } from '../../../core/errors.js';
 import type { EventBus } from '../../../core/events/bus.js';
-import { advanceTarget, assignSeeds, bracketSize, buildBracket, totalRounds } from '../bracket.js';
+import {
+  arrivalPlan,
+  assignSeeds,
+  buildBracket,
+  effectiveFormat,
+  loserTarget,
+  positionKey,
+  winnerTarget,
+  type AdvanceTarget,
+  type BracketFormat,
+  type MatchBracket,
+  type MatchPosition,
+} from '../bracket.js';
 import {
   tournamentEntrantMembers,
   tournamentEntrants,
@@ -13,6 +25,7 @@ import {
   type EntryMode,
   type MatchRow,
   type SeedingMode,
+  type TournamentFormat,
   type TournamentGame,
   type TournamentRow,
 } from '../schema.js';
@@ -24,6 +37,7 @@ export interface CreateTournamentInput {
   guildId: string;
   name: string;
   game: TournamentGame;
+  format: TournamentFormat;
   entryMode: EntryMode;
   teamSize: number;
   maxEntrants: number;
@@ -121,18 +135,151 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
   }
 
   /**
-   * Продвигает победителя в родительский матч. Идемпотентно: если в целевом слоте уже
-   * стоит этот же участник, повторный вызов ничего не меняет. Это важно, потому что
-   * продвижение может быть вызвано дважды — двойным нажатием кнопки, повторной доставкой
-   * взаимодействия Discord или наложением автоподтверждения на ручное.
-   *
-   * Финал родителя не имеет: если матч последнего круга подтверждён, турнир завершён.
+   * Форма построенной сетки. Читается из самих матчей, а не считается из числа участников
+   * — и это не стилистика, а исправление живой ошибки: в сетку идут только отметившиеся,
+   * а зарегистрированных бывает больше. Прежний код брал число участников из регистраций,
+   * и стоило зарегистрироваться десяти при пяти пришедших — сетка строилась на 8, а
+   * продвижение считало её на 16, финал не распознавался финалом, турнир не закрывался
+   * никогда. При ежедневном автомате, где неявки — норма, это случилось бы в первую неделю.
    */
-  async function promote(match: MatchRow, winnerEntrantId: number): Promise<{ finished: boolean }> {
-    const entrantCount = (await activeEntrants(match.tournamentId)).length;
-    const rounds = totalRounds(bracketSize(entrantCount));
+  interface BracketShape {
+    size: number;
+    format: BracketFormat;
+    byPosition: Map<string, MatchRow>;
+    /** Сколько участников матч получит за всё время: 0, 1 или 2. */
+    arrivals: Map<string, number>;
+  }
 
-    if (match.round >= rounds) {
+  const BRACKET_ORDER: Record<MatchBracket, number> = { upper: 0, lower: 1, grand: 2 };
+
+  /**
+   * Порядок зависимостей: вся верхняя сетка, потом нижняя по кругам, потом гранд-финал.
+   * Нижняя зависит от верхней, верхняя от нижней — никогда, поэтому такой обход гарантирует,
+   * что к моменту разбора матча все его источники уже разобраны.
+   */
+  function inDependencyOrder(positions: MatchPosition[]): MatchPosition[] {
+    return [...positions].sort(
+      (a, b) =>
+        BRACKET_ORDER[a.bracket] - BRACKET_ORDER[b.bracket] || a.round - b.round || a.slot - b.slot,
+    );
+  }
+
+  async function loadShape(tournamentId: number): Promise<BracketShape> {
+    const rows = await db
+      .select()
+      .from(tournamentMatches)
+      .where(eq(tournamentMatches.tournamentId, tournamentId));
+
+    const byPosition = new Map<string, MatchRow>();
+    for (const row of rows) byPosition.set(positionKey(row), row);
+
+    const occupancy = rows
+      .filter((row) => row.bracket === 'upper' && row.round === 1)
+      .sort((a, b) => a.slot - b.slot)
+      .map((row) => (row.entrantAId === null ? 0 : 1) + (row.entrantBId === null ? 0 : 1));
+
+    // Формат — по факту наличия гранд-финала в построенной сетке, а не по настройке
+    // турнира: настройку можно поменять, а сетка уже сложена и переигрывать её нечем.
+    const format: BracketFormat = byPosition.has(
+      positionKey({ bracket: 'grand', round: 1, slot: 0 }),
+    )
+      ? 'double-elim'
+      : 'single-elim';
+
+    return {
+      size: occupancy.length * 2,
+      format,
+      byPosition,
+      arrivals: arrivalPlan(occupancy, format),
+    };
+  }
+
+  /**
+   * Ставит участника в целевой слот. Идемпотентно: условие «слот ещё пуст» стоит прямо в
+   * WHERE, поэтому повторный вызов не перезапишет уже продвинутого, а конкурентный не
+   * затрёт чужого. Это важно, потому что доставка может случиться дважды — двойным
+   * нажатием кнопки, повторной доставкой взаимодействия Discord или наложением
+   * автоподтверждения на ручное.
+   */
+  async function deliver(
+    shape: BracketShape,
+    target: AdvanceTarget | null,
+    entrantId: number,
+  ): Promise<void> {
+    if (!target) return;
+    const key = positionKey(target);
+    const existing = shape.byPosition.get(key);
+    if (!existing) return;
+
+    const column = target.side === 'a' ? tournamentMatches.entrantAId : tournamentMatches.entrantBId;
+    const [placed] = await db
+      .update(tournamentMatches)
+      .set(target.side === 'a' ? { entrantAId: entrantId } : { entrantBId: entrantId })
+      .where(and(eq(tournamentMatches.id, existing.id), isNull(column)))
+      .returning();
+    if (!placed) return;
+    shape.byPosition.set(key, placed);
+
+    // Пришёл единственный, кого этот матч когда-либо получит: играть не с кем, проходит
+    // дальше без игры. Без этого нижняя сетка неполного турнира встала бы навсегда.
+    if ((shape.arrivals.get(key) ?? 0) <= 1) {
+      await settleWalkover(shape, placed, entrantId);
+      return;
+    }
+
+    if (placed.entrantAId !== null && placed.entrantBId !== null) {
+      await db
+        .update(tournamentMatches)
+        .set({ state: 'ready', updatedAt: new Date() })
+        .where(and(eq(tournamentMatches.id, placed.id), eq(tournamentMatches.state, 'pending')));
+    }
+  }
+
+  /** Проход без игры: пропуск в сетке или неявка. Дальше продвигается тем же путём. */
+  async function settleWalkover(
+    shape: BracketShape,
+    match: MatchRow,
+    winnerEntrantId: number,
+  ): Promise<void> {
+    const now = new Date();
+    const [row] = await db
+      .update(tournamentMatches)
+      .set({ state: 'walkover', winnerEntrantId, confirmedAt: now, updatedAt: now })
+      .where(and(eq(tournamentMatches.id, match.id), isNull(tournamentMatches.winnerEntrantId)))
+      .returning();
+    if (!row) return;
+
+    shape.byPosition.set(positionKey(row), row);
+    await logAction(row.id, 'system', 'walkover', winnerEntrantId, false);
+    await advanceIn(shape, row, winnerEntrantId);
+  }
+
+  /**
+   * Разводит итог матча: проигравший — в нижнюю сетку (при double elimination), победитель
+   * — дальше. Если победителю идти некуда, этот матч и был последним: так финал
+   * определяется формой сетки, а не арифметикой о числе кругов.
+   */
+  async function advanceIn(
+    shape: BracketShape,
+    match: MatchRow,
+    winnerEntrantId: number,
+  ): Promise<{ finished: boolean }> {
+    const position: MatchPosition = {
+      bracket: match.bracket,
+      round: match.round,
+      slot: match.slot,
+    };
+
+    const loserId =
+      match.entrantAId === winnerEntrantId ? match.entrantBId : match.entrantAId;
+    if (loserId !== null) {
+      await deliver(shape, loserTarget(shape.size, shape.format, position), loserId);
+    }
+
+    const target = winnerTarget(shape.size, shape.format, position);
+    const targetRow = target ? shape.byPosition.get(positionKey(target)) : undefined;
+
+    if (!target || !targetRow) {
       const [closed] = await db
         .update(tournaments)
         .set({ state: 'finished', finishedAt: new Date(), updatedAt: new Date() })
@@ -146,39 +293,13 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       return { finished: true };
     }
 
-    const target = advanceTarget(match.round, match.slot);
-    const column = target.side === 'a' ? tournamentMatches.entrantAId : tournamentMatches.entrantBId;
-
-    // Условие «слот ещё пуст» прямо в WHERE: иначе повторный вызов перезаписал бы уже
-    // продвинутого участника, а конкурентный — затёр бы чужого.
-    await db
-      .update(tournamentMatches)
-      .set(target.side === 'a' ? { entrantAId: winnerEntrantId } : { entrantBId: winnerEntrantId })
-      .where(
-        and(
-          eq(tournamentMatches.tournamentId, match.tournamentId),
-          eq(tournamentMatches.round, target.round),
-          eq(tournamentMatches.slot, target.slot),
-          isNull(column),
-        ),
-      );
-
-    // Матч готов к игре, когда известны оба соперника.
-    await db
-      .update(tournamentMatches)
-      .set({ state: 'ready', updatedAt: new Date() })
-      .where(
-        and(
-          eq(tournamentMatches.tournamentId, match.tournamentId),
-          eq(tournamentMatches.round, target.round),
-          eq(tournamentMatches.slot, target.slot),
-          eq(tournamentMatches.state, 'pending'),
-          sql`${tournamentMatches.entrantAId} is not null`,
-          sql`${tournamentMatches.entrantBId} is not null`,
-        ),
-      );
-
+    await deliver(shape, target, winnerEntrantId);
     return { finished: false };
+  }
+
+  async function promote(match: MatchRow, winnerEntrantId: number): Promise<{ finished: boolean }> {
+    const shape = await loadShape(match.tournamentId);
+    return advanceIn(shape, match, winnerEntrantId);
   }
 
   return {
@@ -189,6 +310,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
           guildId: input.guildId,
           name: input.name,
           game: input.game,
+          format: input.format,
           entryMode: input.entryMode,
           teamSize: input.entryMode === 'solo' ? 1 : input.teamSize,
           maxEntrants: input.maxEntrants,
@@ -388,10 +510,21 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         throw new UserError('Играть некому: отметилось меньше двух участников.');
       }
 
+      // Формат может выродиться: двойное устранение на двух участниках это та же пара
+      // второй раз, а не второй шанс. Фактический формат записывается в турнир, чтобы
+      // витрина и подсказки говорили то же, что построено.
+      const format = effectiveFormat(eligible.length, tournament.format);
+
       const seeded = assignSeeds(
         eligible.map((entrant) => ({ entrantId: entrant.id, strength: strengths.get(entrant.id) ?? 0 })),
       );
-      const planned = buildBracket(seeded);
+      const planned = buildBracket(seeded, format);
+
+      const occupancy = planned
+        .filter((match) => match.bracket === 'upper' && match.round === 1)
+        .sort((a, b) => a.slot - b.slot)
+        .map((match) => (match.entrantAId === null ? 0 : 1) + (match.entrantBId === null ? 0 : 1));
+      const arrivals = arrivalPlan(occupancy, format);
 
       await db.transaction(async (tx) => {
         for (const entrant of seeded) {
@@ -402,42 +535,41 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         }
 
         await tx.insert(tournamentMatches).values(
-          planned.map((match) => ({
-            tournamentId,
-            round: match.round,
-            slot: match.slot,
-            entrantAId: match.entrantAId,
-            entrantBId: match.entrantBId,
-            // Матч с одним известным участником — это пропуск: играть не с кем.
-            state:
-              match.entrantAId !== null && match.entrantBId !== null
-                ? ('ready' as const)
-                : ('pending' as const),
-          })),
+          planned.map((match) => {
+            const expected = arrivals.get(positionKey(match)) ?? 0;
+            const known = (match.entrantAId === null ? 0 : 1) + (match.entrantBId === null ? 0 : 1);
+            return {
+              tournamentId,
+              bracket: match.bracket,
+              round: match.round,
+              slot: match.slot,
+              entrantAId: match.entrantAId,
+              entrantBId: match.entrantBId,
+              // Никто не придёт — матча не будет: место под проигравшего, которого не
+              // случилось. Оба известны — можно играть. Иначе ждём предыдущий круг.
+              state:
+                expected === 0 ? ('void' as const) : known === 2 ? ('ready' as const) : ('pending' as const),
+            };
+          }),
         );
 
         await tx
           .update(tournaments)
-          .set({ state: 'running', startedAt: new Date(), updatedAt: new Date() })
+          .set({ state: 'running', format, startedAt: new Date(), updatedAt: new Date() })
           .where(eq(tournaments.id, tournamentId));
       });
 
-      // Пропуски первого круга проводим сразу: участник, оказавшийся один в паре,
-      // проходит дальше без игры, иначе сетка встанет на матче, который никто не сыграет.
-      const firstRound = await db
-        .select()
-        .from(tournamentMatches)
-        .where(and(eq(tournamentMatches.tournamentId, tournamentId), eq(tournamentMatches.round, 1)));
-
-      for (const match of firstRound) {
+      // Пропуски проводим сразу и в порядке зависимостей: участник, оказавшийся один в
+      // паре, проходит дальше без игры, иначе сетка встанет на матче, который никто не
+      // сыграет. Порядок важен — проход по верхней сетке освобождает места в нижней.
+      const shape = await loadShape(tournamentId);
+      for (const position of inDependencyOrder([...shape.byPosition.values()])) {
+        const match = shape.byPosition.get(positionKey(position));
+        if (!match || match.winnerEntrantId !== null || match.state === 'void') continue;
         const lone = match.entrantAId ?? match.entrantBId;
-        if (match.entrantAId !== null && match.entrantBId !== null) continue;
         if (lone === null) continue;
-        await db
-          .update(tournamentMatches)
-          .set({ state: 'walkover', winnerEntrantId: lone, confirmedAt: new Date(), updatedAt: new Date() })
-          .where(eq(tournamentMatches.id, match.id));
-        await promote(match, lone);
+        if ((shape.arrivals.get(positionKey(position)) ?? 0) !== 1) continue;
+        await settleWalkover(shape, match, lone);
       }
 
       return this.bracket(tournamentId);
@@ -502,7 +634,11 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
           .select()
           .from(tournamentMatches)
           .where(eq(tournamentMatches.tournamentId, tournamentId))
-          .orderBy(asc(tournamentMatches.round), asc(tournamentMatches.slot)),
+          .orderBy(
+            asc(tournamentMatches.bracket),
+            asc(tournamentMatches.round),
+            asc(tournamentMatches.slot),
+          ),
       ]);
       return { tournament, entrants, matches };
     },

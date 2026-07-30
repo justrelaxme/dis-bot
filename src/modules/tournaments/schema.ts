@@ -10,6 +10,7 @@ import {
   timestamp,
   unique,
 } from 'drizzle-orm/pg-core';
+import type { BracketFormat, MatchBracket } from './bracket.js';
 
 /**
  * Игра турнира — самостоятельный тип модуля, а не ProviderId из identity: турнир
@@ -63,8 +64,8 @@ export const tournamentPolls = pgTable(
   ],
 );
 
-/** Колонка, а не enum: double elimination и Swiss добавятся значением, без миграции типа. */
-export type TournamentFormat = 'single-elim';
+/** Колонка, а не enum: Swiss добавится значением, без миграции типа. */
+export type TournamentFormat = BracketFormat;
 
 export type EntryMode = 'solo' | 'team';
 
@@ -76,9 +77,21 @@ export type SeedingMode = 'random' | 'rank';
  * `pending` — соперники ещё не известны, предыдущий круг не сыгран. `ready` — оба
  * известны, можно играть. `reported` — кто-то заявил результат. `confirmed` — соперник
  * подтвердил либо сработало автоподтверждение. `disputed` — оспорено, решает организатор.
- * `walkover` — неявка, победа присуждена без игры.
+ * `walkover` — неявка или пропуск: победа присуждена без игры.
+ *
+ * `void` — матч не состоится вовсе, потому что в него никто не придёт. Такое бывает только
+ * в нижней сетке неполного турнира: пропуск в верхней не даёт проигравшего, а значит место,
+ * куда он должен был спуститься, останется пустым навсегда. Отличать это состояние от
+ * `pending` обязательно — иначе нижняя сетка встанет, ожидая соперника, которого нет.
  */
-export type MatchState = 'pending' | 'ready' | 'reported' | 'confirmed' | 'disputed' | 'walkover';
+export type MatchState =
+  | 'pending'
+  | 'ready'
+  | 'reported'
+  | 'confirmed'
+  | 'disputed'
+  | 'walkover'
+  | 'void';
 
 /** Стадия суточного цикла. `skipped` — день пропущен, причина в `skipReason`. */
 export type CycleStage = 'poll' | 'registration' | 'running' | 'finished' | 'skipped';
@@ -185,7 +198,12 @@ export const tournamentMatches = pgTable(
     tournamentId: integer('tournament_id')
       .notNull()
       .references(() => tournaments.id, { onDelete: 'cascade' }),
-    /** 1 — первый круг. */
+    /**
+     * Какая это сетка. У single elimination всё в `upper`. У double elimination проигравшие
+     * спускаются в `lower`, а победители обеих встречаются в единственном матче `grand`.
+     */
+    bracket: text('bracket').$type<MatchBracket>().notNull().default('upper'),
+    /** 1 — первый круг. Нумерация своя в каждой сетке. */
     round: integer('round').notNull(),
     /** Позиция в круге, с нуля. */
     slot: integer('slot').notNull(),
@@ -205,7 +223,13 @@ export const tournamentMatches = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    unique('tournament_matches_position_uq').on(table.tournamentId, table.round, table.slot),
+    // Позиция включает сетку: первый круг верхней и первый круг нижней — разные матчи.
+    unique('tournament_matches_position_uq').on(
+      table.tournamentId,
+      table.bracket,
+      table.round,
+      table.slot,
+    ),
     // Джоба автоподтверждения выбирает заявленные и давно — без индекса это скан.
     index('tournament_matches_reported_idx').on(table.state, table.reportedAt),
   ],
@@ -271,6 +295,14 @@ export const tournamentSchedules = pgTable('tournament_schedules', {
   /** «20:00» — когда закрывать регистрацию и строить сетку. */
   startAt: text('start_at').notNull().default('20:00'),
   entryMode: text('entry_mode').$type<EntryMode>().notNull().default('team'),
+  /**
+   * У ежедневного автомата по умолчанию выбывание с первого поражения, и это не про
+   * «так проще». Двойное устранение примерно удваивает длину вечера: восьми командам
+   * нужно шесть волн матчей вместо трёх, то есть старт в 20:00 заканчивается около
+   * полуночи. Для будней это много, для события выходного дня — нормально, поэтому
+   * формат вынесен в настройку, а не зашит.
+   */
+  format: text('format').$type<BracketFormat>().notNull().default('single-elim'),
   teamSize: integer('team_size').notNull().default(5),
   maxEntrants: integer('max_entrants').notNull().default(16),
   bestOf: integer('best_of').notNull().default(1),

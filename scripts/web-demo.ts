@@ -13,7 +13,8 @@ import { createDatabase } from '../src/core/db/client.js';
 import { guilds, users } from '../src/core/db/schema/core.js';
 import { createLogger } from '../src/core/logger.js';
 import { gameAccounts, rankSnapshots } from '../src/modules/identity/schema.js';
-import { tournamentEntrants, tournamentMatches, tournaments } from '../src/modules/tournaments/schema.js';
+import { tournaments } from '../src/modules/tournaments/schema.js';
+import { createTournamentsService } from '../src/modules/tournaments/services/tournaments.js';
 import { registerWebRoutes } from '../src/modules/web/routes.js';
 
 const PORT = Number.parseInt(process.env['PORT'] ?? '3000', 10);
@@ -44,55 +45,63 @@ const DOTA_MEDALS = ['HERALD', 'GUARDIAN', 'CRUSADER', 'ARCHON', 'LEGEND', 'ANCI
 async function seed(db: Awaited<ReturnType<typeof createDatabase>>['db']): Promise<number> {
   await db.insert(guilds).values({ id: GUILD }).onConflictDoNothing();
 
-  // Турнир на восемь команд: первый круг сыгран, в полуфиналах один результат заявлен.
+  // Сетку строит и разыгрывает тот же сервис, что и в боте: рукописные строки матчей
+  // показывали бы не то, что бот действительно делает, а то, что я про это думаю.
+  const service = createTournamentsService({ db });
+
   const [tournament] = await db
     .insert(tournaments)
     .values({
       guildId: GUILD,
       name: 'Ежедневный турнир по Dota 2',
       game: 'dota2',
+      format: 'double-elim',
       entryMode: 'team',
       teamSize: 5,
       maxEntrants: 16,
-      state: 'running',
+      state: 'registration',
       createdBy: GUILD,
-      startedAt: new Date(),
     })
     .returning();
   if (!tournament) throw new Error('турнир не создался');
 
   const ids: number[] = [];
   for (const [index, name] of TEAMS.entries()) {
-    const [entrant] = await db
-      .insert(tournamentEntrants)
-      .values({
-        tournamentId: tournament.id,
-        displayName: name,
-        captainUserId: `9100000000000000${String(index).padStart(2, '0')}`,
-        seed: index + 1,
-        seedScore: 8000 - index * 420,
-        checkedInAt: new Date(),
-      })
-      .returning();
-    if (entrant) ids.push(entrant.id);
+    const captain = `9100000000000000${String(index).padStart(2, '0')}`;
+    await db.insert(users).values({ id: captain }).onConflictDoNothing();
+    const entrant = await service.createEntrant(tournament.id, captain, name);
+    await service.checkIn(tournament.id, captain);
+    ids.push(entrant.id);
   }
 
-  const at = (index: number): number => {
-    const value = ids[index];
-    if (value === undefined) throw new Error('участник не создался');
-    return value;
+  await service.start(
+    tournament.id,
+    new Map(ids.map((id, index) => [id, 8000 - index * 420])),
+  );
+
+  /** Побеждает старший сеяный: сетка выглядит правдоподобно, а не случайно. */
+  const playOne = async (): Promise<boolean> => {
+    const view = await service.bracket(tournament.id);
+    const next = view.matches.find((match) => match.state === 'ready');
+    if (!next || next.entrantAId === null || next.entrantBId === null) return false;
+    const seedOf = (id: number): number => view.entrants.find((e) => e.id === id)?.seed ?? 99;
+    const winner = seedOf(next.entrantAId) <= seedOf(next.entrantBId) ? next.entrantAId : next.entrantBId;
+    await service.settle(next.id, winner, 'system', 'resolve', true);
+    return true;
   };
 
-  // Расстановка сеяных для восьмёрки: [1,8,4,5,2,7,3,6] — пары ниже идут по ней.
-  await db.insert(tournamentMatches).values([
-    { tournamentId: tournament.id, round: 1, slot: 0, entrantAId: at(0), entrantBId: at(7), state: 'confirmed', winnerEntrantId: at(0), confirmedAt: new Date() },
-    { tournamentId: tournament.id, round: 1, slot: 1, entrantAId: at(3), entrantBId: at(4), state: 'confirmed', winnerEntrantId: at(3), confirmedAt: new Date() },
-    { tournamentId: tournament.id, round: 1, slot: 2, entrantAId: at(1), entrantBId: at(6), state: 'confirmed', winnerEntrantId: at(1), confirmedAt: new Date() },
-    { tournamentId: tournament.id, round: 1, slot: 3, entrantAId: at(2), entrantBId: at(5), state: 'walkover', winnerEntrantId: at(2), confirmedAt: new Date() },
-    { tournamentId: tournament.id, round: 2, slot: 0, entrantAId: at(0), entrantBId: at(3), state: 'reported', reportedBy: '910000000000000000', reportedWinnerId: at(0), reportedAt: new Date() },
-    { tournamentId: tournament.id, round: 2, slot: 1, entrantAId: at(1), entrantBId: at(2), state: 'ready' },
-    { tournamentId: tournament.id, round: 3, slot: 0, state: 'pending' },
-  ]);
+  // Разыгрываем часть сетки: видно и продвижение вверху, и уже заполненную нижнюю.
+  for (let played = 0; played < 9; played += 1) {
+    if (!(await playOne())) break;
+  }
+
+  // Один матч оставляем заявленным — на витрине это состояние «ждём подтверждения».
+  const view = await service.bracket(tournament.id);
+  const pending = view.matches.find((match) => match.state === 'ready' && match.entrantAId !== null);
+  if (pending?.entrantAId) {
+    const captain = view.entrants.find((entrant) => entrant.id === pending.entrantAId)?.captainUserId;
+    if (captain) await service.report(pending.id, captain, pending.entrantAId);
+  }
 
   // Лидерборд: подтверждённые привязки Steam с рангами Dota.
   for (const [index, player] of LADDER.entries()) {
