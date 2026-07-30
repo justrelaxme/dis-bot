@@ -6,10 +6,14 @@ import { createMetrics } from '../../../src/core/metrics.js';
 
 const config = { LOG_LEVEL: 'fatal', NODE_ENV: 'test', HTTP_PORT: 3000 } as Config;
 
-function serverWith(checks: { database: () => Promise<void>; cache: () => Promise<void> }) {
+function serverWith(
+  checks: { database: () => Promise<void>; cache: () => Promise<void> },
+  metricsEnabled = true,
+) {
+  const withMetrics = { ...config, METRICS_ENABLED: metricsEnabled } as Config;
   return createHttpServer({
-    config,
-    logger: createLogger(config),
+    config: withMetrics,
+    logger: createLogger(withMetrics),
     metrics: createMetrics(),
     checks,
   });
@@ -41,13 +45,27 @@ describe('HTTP-сервер', () => {
     await server.close();
   });
 
-  it('отдаёт метрики в формате Prometheus', async () => {
+  it('отдаёт метрики в формате Prometheus, когда они включены', async () => {
     const server = serverWith({ database: ok, cache: ok });
     const response = await server.inject({ method: 'GET', url: '/metrics' });
 
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/plain');
     expect(response.body).toContain('bot_command_duration_seconds');
+    await server.close();
+  });
+
+  /**
+   * Раньше метрики от внешнего мира закрывал только Caddy, и на платформе без него они
+   * оказались бы публичными. Этот тест держит новое поведение: по умолчанию наружу
+   * ничего, включается явно. Без него значение по умолчанию однажды тихо вернётся.
+   */
+  it('прячет метрики, когда они не включены явно', async () => {
+    const server = serverWith({ database: ok, cache: ok }, false);
+    const response = await server.inject({ method: 'GET', url: '/metrics' });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body).not.toContain('bot_command_duration_seconds');
     await server.close();
   });
 

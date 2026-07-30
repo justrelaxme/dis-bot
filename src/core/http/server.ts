@@ -64,7 +64,20 @@ export function createHttpServer(deps: HttpServerDeps): FastifyInstance {
     });
   });
 
+  /**
+   * Метрики закрыты по умолчанию, и это исправление реальной дыры, а не паранойя.
+   *
+   * От внешнего мира их закрывал только Caddy (`respond @metrics 404` в Caddyfile) — то
+   * есть защита жила в обвязке, а не в приложении. Стоило переехать на платформу, которая
+   * даёт домен сама и никакого Caddy не имеет, как счётчики оказались бы открыты всему
+   * интернету: имена команд, число ошибок, имена провайдеров, частота обращений. Не
+   * секреты, но карта того, что внутри и где болит.
+   *
+   * Правило простое: если снаружи endpoint не должен быть виден, это должно быть решено в
+   * коде. Обвязка может отсутствовать, а код едет вместе с приложением.
+   */
   server.get('/metrics', async (_request, reply) => {
+    if (!deps.config.METRICS_ENABLED) return reply.code(404).send({ error: 'Not Found' });
     const body = await deps.metrics.render();
     return reply.header('content-type', deps.metrics.registry.contentType).send(body);
   });
