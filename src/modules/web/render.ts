@@ -1,5 +1,6 @@
 import { EVENT_SIZE_LABELS, eventSize } from '../tournaments/bracket.js';
 import { TOURNAMENT_GAME_LABELS } from '../tournaments/games.js';
+import { standingsOf } from '../tournaments/standings.js';
 import type { EntrantRow, MatchRow, TournamentGame, TournamentRow } from '../tournaments/schema.js';
 
 /**
@@ -185,6 +186,21 @@ td.acct a:hover, td.acct a:focus-visible { color:var(--gold); border-color:var(-
 /* Чемпион — единственная строка таблицы, которой позволено быть латунной. */
 td.champ { color:var(--gold); font-weight:600; }
 .dim { color:var(--dim); }
+
+/* Пьедестал: чемпион крупнее и латунный, остальные — ровно настолько, чтобы читались как
+   места, а не как утешение. Появляются по очереди сверху вниз. */
+.podium { display:grid; gap:.5rem; grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr));
+  margin-bottom:.5rem; }
+.pl { display:grid; grid-template-columns:auto 1fr; grid-template-rows:auto auto; gap:.1rem .7rem;
+  align-items:center; background:var(--sheet); border:1px solid var(--rule); border-radius:3px;
+  padding:.9rem 1rem; animation:enter .45s cubic-bezier(.2,.7,.3,1) both; animation-delay:var(--delay,0ms); }
+.pl.first { border-color:var(--gold); box-shadow:0 0 0 1px rgba(217,165,68,.18); }
+.pl .mk { grid-row:1 / span 2; font-size:1.7rem; line-height:1; }
+.pl .who { font-weight:700; font-size:1.05rem; letter-spacing:-.01em; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.pl.first .who { color:var(--gold); font-size:1.2rem; }
+.pl .pn { font-family:var(--mono); font-size:.68rem; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--dim); }
 /* «Заявлено» намеренно тихое: это оговорка к рангу, а не его часть. */
 .claimed { font-family:var(--mono); font-size:.62rem; letter-spacing:.1em; text-transform:uppercase;
   color:var(--dim); border:1px solid var(--rule); border-radius:2px; padding:.1rem .3rem;
@@ -424,6 +440,11 @@ ${list || '<div class="empty"><p>Ещё никто не записался. Ко
     return `<div class="bracket"><div class="grid" style="min-height:${totalH}px">${parts.join('\n')}</div></div>`;
   };
 
+  // Пьедестал после турнира: сетку читать умеют не все, а «кто победил» спрашивают все.
+  // Показываем только у закрытого турнира — у идущего это было бы гаданием.
+  const podium =
+    view.tournament.state === 'finished' ? renderPodium(view.matches, names) : '';
+
   const upper = view.matches.filter((match) => match.bracket === 'upper');
   const lower = view.matches.filter((match) => match.bracket === 'lower');
   const grand = view.matches.find((match) => match.bracket === 'grand');
@@ -447,7 +468,58 @@ ${list || '<div class="empty"><p>Ещё никто не записался. Ко
     );
   }
 
-  return `${head}${sections.join('\n')}`;
+  return `${head}${podium}${sections.join('\n')}`;
+}
+
+/**
+ * Пьедестал. Третье место показывается только там, где оно честно определено — при двойном
+ * устранении. На выбывание полуфиналисты между собой не играли, и назначать одного из них
+ * третьим значило бы выдумать результат, которого не было.
+ *
+ * Счёта здесь нет и быть не может: бот его не собирает. `/match report` спрашивает только
+ * «кто победил», и придумывать счёт на странице означало бы показать то, чего никто не
+ * вводил.
+ */
+function renderPodium(
+  matches: MatchRow[],
+  names: Map<number, { name: string; seed: number | null }>,
+): string {
+  const places = standingsOf(matches);
+  if (places.championId === null) return '';
+
+  const nameOf = (id: number | null): string =>
+    id === null ? '—' : (names.get(id)?.name ?? `#${id}`);
+
+  const rows = [
+    { mark: '🥇', place: 'Чемпион', who: nameOf(places.championId), top: true },
+    ...(places.runnerUpId !== null
+      ? [{ mark: '🥈', place: 'Второе место', who: nameOf(places.runnerUpId), top: false }]
+      : []),
+    ...(places.thirdId !== null
+      ? [{ mark: '🥉', place: 'Третье место', who: nameOf(places.thirdId), top: false }]
+      : []),
+  ];
+
+  const semis =
+    places.semifinalistIds.length > 0
+      ? `<p class="lede" style="margin:.7rem 0 0">Полуфиналисты: ${places.semifinalistIds
+          .map((id) => escape(nameOf(id)))
+          .join(', ')}. Между собой они не играли, поэтому третьего места нет — и выдумывать его бот не станет.</p>`
+      : '';
+
+  return `<h2>Итог</h2>
+<div class="podium">
+${rows
+  .map(
+    (row, index) =>
+      `<div class="pl${row.top ? ' first' : ''}" style="--delay:${index * 90}ms">
+<span class="mk">${row.mark}</span>
+<span class="who">${escape(row.who)}</span>
+<span class="pn">${escape(row.place)}</span>
+</div>`,
+  )
+  .join('\n')}
+</div>${semis}`;
 }
 
 export interface LeaderboardEntry {
