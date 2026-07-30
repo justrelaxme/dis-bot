@@ -20,4 +20,6 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY src/core/db/migrations ./src/core/db/migrations
 USER node
-CMD ["node", "dist/src/index.js"]
+# Через entrypoint, а не напрямую: на платформах с одним контейнером отдельного шага
+# миграций нет, и бот, запущенный раньше них, упадёт на первом обращении к новой колонке.
+CMD ["node", "dist/scripts/entrypoint.js"]

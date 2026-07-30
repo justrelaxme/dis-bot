@@ -82,7 +82,14 @@ export type Config = z.infer<typeof envSchema>;
  * проблемы, — чтобы не выяснять их по одной за пять перезапусков.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const parsed = envSchema.safeParse(env);
+  // PORT как запасной вариант для HTTP_PORT: платформы, которые сами дают домен и проксируют
+  // на контейнер, задают порт именно этой переменной. Без этого бот слушал бы 3000, прокси
+  // стучался бы в другой порт, и сайт отвечал бы ошибкой при полностью живом боте.
+  // Явный HTTP_PORT всегда сильнее: он написан руками, а PORT приходит от платформы.
+  const effective: NodeJS.ProcessEnv =
+    env.HTTP_PORT === undefined && env.PORT !== undefined ? { ...env, HTTP_PORT: env.PORT } : env;
+
+  const parsed = envSchema.safeParse(effective);
   if (parsed.success) return parsed.data;
 
   const details = parsed.error.issues
