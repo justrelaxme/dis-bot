@@ -172,6 +172,10 @@ td.acct a:hover, td.acct a:focus-visible { color:var(--gold); border-color:var(-
 /* Чемпион — единственная строка таблицы, которой позволено быть латунной. */
 td.champ { color:var(--gold); font-weight:600; }
 .dim { color:var(--dim); }
+/* «Заявлено» намеренно тихое: это оговорка к рангу, а не его часть. */
+.claimed { font-family:var(--mono); font-size:.62rem; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--dim); border:1px solid var(--rule); border-radius:2px; padding:.1rem .3rem;
+  margin-left:.45rem; white-space:nowrap; }
 
 .empty { border:1px dashed var(--rule); border-radius:3px; padding:2rem 1.25rem; text-align:center; }
 .empty p { margin:.35rem 0; color:var(--dim); }
@@ -433,6 +437,8 @@ export interface LeaderboardEntry {
   tier: string | null;
   division: string | null;
   points: number | null;
+  /** Ранг введён игроком руками, а не получен из API. */
+  claimed: boolean;
   score: number;
 }
 
@@ -456,10 +462,14 @@ export function renderLeaderboard(game: TournamentGame, entries: LeaderboardEntr
     .map((entry, index) => {
       const rank = [entry.tier, entry.division].filter(Boolean).join(' ') || 'без ранга';
       const points = entry.points === null ? '' : String(entry.points);
+      // Пометка обязательна: без неё заявленный ранг стоит в таблице как проверенный.
+      const claimed = entry.claimed
+        ? ' <span class="claimed" title="ранг указал сам игрок: подтвердить его в этой игре нечем">заявлено</span>'
+        : '';
       return `<tr style="--delay:${index * 18}ms">
 <td class="pos">${index + 1}</td>
 <td class="acct">${escape(entry.displayName)}</td>
-<td><span class="medal" style="--tc:${tierColor(entry.tier)}">${escape(rank)}</span></td>
+<td><span class="medal" style="--tc:${tierColor(entry.tier)}">${escape(rank)}</span>${claimed}</td>
 <td class="num">${escape(points)}</td>
 </tr>`;
     })

@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
 import { rankScore } from '../../identity/ranks/compare.js';
+import { verificationPossible } from '../../identity/providers/provider.js';
 import type { ProviderId, RankScale, RankSource } from '../../identity/schema.js';
 import type { TournamentGame } from '../schema.js';
 
@@ -32,20 +33,24 @@ interface StrengthRow extends Record<string, unknown> {
 }
 
 /**
- * Есть ли у человека подтверждённая привязка под эту дисциплину. Нужно проводнику:
+ * Есть ли у человека годная привязка под эту дисциплину. Нужно проводнику:
  * новичок, которому просто сказали «нужна привязка», не понимает, есть она у него или нет,
  * и упирается в отказ уже на регистрации. Бот должен уметь ответить за него.
  *
  * Для `other` провайдера нет — привязка не требуется, и это законное состояние.
  */
-export async function hasVerifiedLink(db: Database, userId: string, game: TournamentGame): Promise<boolean> {
+export async function hasUsableLink(db: Database, userId: string, game: TournamentGame): Promise<boolean> {
   const provider = GAME_TO_PROVIDER[game];
   if (provider === null) return true;
 
+  // Подтверждение требуется только там, где оно вообще возможно. У Valorant его нет и не
+  // будет, и требовать его значило бы навсегда считать игрока Valorant непривязанным —
+  // бот просил бы привязать аккаунт человеку, который всё уже сделал.
   const result = await db.execute<{ ok: number }>(sql`
     select 1 as ok
     from game_accounts
-    where user_id = ${userId} and provider = ${provider} and verified_at is not null
+    where user_id = ${userId} and provider = ${provider}
+      ${verificationPossible(provider) ? sql`and verified_at is not null` : sql``}
     limit 1
   `);
   return result.rows.length > 0;
@@ -91,7 +96,8 @@ export async function entrantStrengths(
       m.entrant_id, m.user_id, s.scale, s.tier, s.division, s.points, s.source, s.mode
     from tournament_entrant_members m
     join game_accounts a
-      on a.user_id = m.user_id and a.provider = ${provider} and a.verified_at is not null
+      on a.user_id = m.user_id and a.provider = ${provider}
+      ${verificationPossible(provider) ? sql`and a.verified_at is not null` : sql``}
     join rank_snapshots s on s.account_id = a.id
     where m.tournament_id = ${tournamentId}
     order by m.entrant_id, m.user_id, s.mode, s.captured_at desc

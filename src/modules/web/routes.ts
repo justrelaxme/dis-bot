@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Cache } from '../../core/cache.js';
 import type { Database } from '../../core/db/client.js';
 import type { Logger } from '../../core/logger.js';
+import { verificationPossible } from '../identity/providers/provider.js';
 import { rankScore } from '../identity/ranks/compare.js';
 import type { ProviderId, RankScale, RankSource } from '../identity/schema.js';
 import { TOURNAMENT_GAMES } from '../tournaments/games.js';
@@ -164,13 +165,18 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
       // Последний снимок на каждую пару (аккаунт, режим). DISTINCT ON — ровно тот
       // инструмент, который для этого есть в Postgres; в конструкторе запросов это
       // вышло бы окном с нумерацией и подзапросом, то есть тем же самым, но длиннее.
-      // Берём только подтверждённые привязки: неподтверждённая может быть чужой.
+      // Подтверждение требуем там, где оно возможно: неподтверждённая привязка может быть
+      // чужой. Но у Valorant подтвердить нечем в принципе, и требовать его значило бы
+      // держать таблицу этой игры навсегда пустой. Такие ранги показываются с пометкой
+      // «заявлено»: честнее показать заявленное и назвать это заявленным, чем не показать
+      // ничего и выглядеть сломанным.
       const result = await db.execute<LeaderboardRow>(sql`
         select distinct on (a.id, s.mode)
           a.display_name, s.mode, s.scale, s.tier, s.division, s.points, s.source
         from game_accounts a
         join rank_snapshots s on s.account_id = a.id
-        where a.provider = ${provider} and a.verified_at is not null
+        where a.provider = ${provider}
+          ${verificationPossible(provider) ? sql`and a.verified_at is not null` : sql``}
         order by a.id, s.mode, s.captured_at desc
       `);
 
@@ -182,6 +188,9 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
           tier: row.tier,
           division: row.division,
           points: row.points,
+          // Ранг, введённый руками, помечается как заявленный: смешивать его с
+          // подтверждённым молча значит выдавать чужое утверждение за проверенный факт.
+          claimed: row.source === 'manual',
           score: rankScore({
             mode: row.mode,
             scale: row.scale,

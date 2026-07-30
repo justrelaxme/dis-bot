@@ -1,5 +1,6 @@
-import { and, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
 import type { Database } from '../../core/db/client.js';
+import { UNVERIFIABLE_PROVIDERS } from '../identity/providers/provider.js';
 import { gameAccounts } from '../identity/schema.js';
 import { tournamentEntrantMembers, tournaments, type TournamentRow } from '../tournaments/schema.js';
 
@@ -28,10 +29,20 @@ export async function serverStatus(
   userId: string,
 ): Promise<ServerStatus> {
   const [links, current] = await Promise.all([
+    // Привязка засчитывается, если подтверждена **или** подтвердить её нечем в принципе
+    // (Valorant). Иначе игрок Valorant получал бы «привяжи аккаунт» вечно, уже привязав.
     db
       .select({ provider: gameAccounts.provider })
       .from(gameAccounts)
-      .where(and(eq(gameAccounts.userId, userId), isNotNull(gameAccounts.verifiedAt))),
+      .where(
+        and(
+          eq(gameAccounts.userId, userId),
+          or(
+            isNotNull(gameAccounts.verifiedAt),
+            inArray(gameAccounts.provider, [...UNVERIFIABLE_PROVIDERS]),
+          ),
+        ),
+      ),
     db
       .select()
       .from(tournaments)

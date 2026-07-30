@@ -28,7 +28,7 @@ import {
   teamPicker,
 } from '../discord/onboarding.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
-import { hasVerifiedLink, linkCommandFor } from '../services/strength.js';
+import { hasUsableLink, linkCommandFor } from '../services/strength.js';
 import type { DotaVerifier } from '../services/dota-verify.js';
 import type { TournamentsService } from '../services/tournaments.js';
 
@@ -180,7 +180,7 @@ export function createTeamCommand(deps: PlayDeps): CommandDefinition {
         const unlinked =
           subcommand === 'add' &&
           tournament.requireVerified &&
-          !(await hasVerifiedLink(ctx.db, target.id, tournament.game))
+          !(await hasUsableLink(ctx.db, target.id, tournament.game))
             ? `\n\nУ <@${target.id}> нет подтверждённой привязки к ${TOURNAMENT_GAME_LABELS[tournament.game]} — играть это не мешает, но в жеребьёвке он считается без ранга. Привязать: \`${linkCommandFor(tournament.game)}\`.`
             : '';
 
@@ -219,7 +219,7 @@ export function createCheckinCommand(deps: PlayDeps): CommandDefinition {
         ? (
             await Promise.all(
               members.map(async (userId) =>
-                (await hasVerifiedLink(ctx.db, userId, tournament.game)) ? null : userId,
+                (await hasUsableLink(ctx.db, userId, tournament.game)) ? null : userId,
               ),
             )
           ).filter((userId): userId is string => userId !== null)
@@ -607,7 +607,7 @@ async function handlePanel(deps: PlayDeps, interaction: ButtonInteraction, ctx: 
 
   await interaction.reply({
     content: nextStepText({
-      linked: tournament.requireVerified ? await hasVerifiedLink(ctx.db, userId, tournament.game) : true,
+      linked: tournament.requireVerified ? await hasUsableLink(ctx.db, userId, tournament.game) : true,
       linkCommand: linkCommandFor(tournament.game),
       gameLabel: TOURNAMENT_GAME_LABELS[tournament.game] ?? tournament.game,
       entrant,
