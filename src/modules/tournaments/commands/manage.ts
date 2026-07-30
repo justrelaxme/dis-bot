@@ -372,12 +372,26 @@ async function info(interaction: Interaction, guild: Guild, deps: ManageDeps): P
   const entrants = await deps.tournaments.activeEntrants(tournament.id);
   const checked = entrants.filter((entrant) => entrant.checkedInAt !== null).length;
 
+  // Режим и формат здесь обязательны: без них проверить, что именно создалось, было
+  // нечем — а перепутать «Команды» и «Одиночки» в выпадающем списке легко, и обнаруживалось
+  // это только по панели регистрации, когда люди уже начали записываться.
+  const roster =
+    tournament.entryMode === 'solo'
+      ? 'играют по одному'
+      : `команды по ${tournament.teamSize} человек`;
+
   await interaction.editReply({
     content: [
       `## ${tournament.name}`,
       `${TOURNAMENT_GAME_LABELS[tournament.game]} · ${tournament.state === 'registration' ? 'идёт регистрация' : 'идёт'}`,
-      `Участников: ${entrants.length} из ${tournament.maxEntrants}, отметилось ${checked}.`,
+      `${roster} · ${BRACKET_FORMAT_LABELS[tournament.format]} · максимум ${tournament.maxEntrants}`,
+      `Участников: ${entrants.length}, отметилось ${checked}.`,
+      tournament.state === 'registration'
+        ? 'Не тот режим — `/tournament cancel` и создать заново: состав в уже открытом турнире менять нельзя, за него могли начать записываться.'
+        : null,
       `Сетка: ${deps.publicBaseUrl}/t/${tournament.id}`,
-    ].join('\n'),
+    ]
+      .filter((line) => line !== null)
+      .join('\n'),
   });
 }
