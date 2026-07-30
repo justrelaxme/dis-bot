@@ -34,6 +34,7 @@ describe('модуль tournaments', () => {
       'tournament',
     ]);
     expect(botModule.jobs?.map((j) => j.name).sort()).toEqual([
+      'tournaments:abandon',
       'tournaments:auto-confirm',
       'tournaments:cycle',
       'tournaments:poll-finalize',

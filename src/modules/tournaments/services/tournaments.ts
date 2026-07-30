@@ -25,6 +25,7 @@ import {
   type EntrantRow,
   type EntryMode,
   type MatchRow,
+  type MatchState,
   type SeedingMode,
   type TournamentFormat,
   type TournamentGame,
@@ -402,6 +403,65 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         .update(tournaments)
         .set({ state: 'registration', registrationClosesAt: closesAt, updatedAt: new Date() })
         .where(and(eq(tournaments.id, tournamentId), eq(tournaments.state, 'draft')));
+    },
+
+    /**
+     * Турниры, которые формально идут, а на самом деле брошены: с момента старта прошло
+     * больше отведённого времени и **ни один матч не менялся** всё это время.
+     *
+     * Зачем это вообще нужно. Автоподтверждение закрывает только те матчи, где кто-то
+     * заявил результат. Матч, где оба соперника просто разошлись и никто ничего не написал,
+     * остаётся играбельным навсегда — значит турнир навсегда остаётся running. А суточный
+     * автомат намеренно не начинает новый день, пока предыдущий турнир не закрыт, и
+     * пропускает день. Каждый день. То есть один скучный вечер выключал ежедневные турниры
+     * до вмешательства человека — автомат перестаёт быть автоматом.
+     *
+     * Признак безделья — время последнего изменения матчей, а не число сыгранных: турнир
+     * могут играть медленно, и обрывать живой вечер нельзя.
+     *
+     * Вместе с турниром отдаём число незакрытых матчей. Если их ноль, турнир обязан был
+     * закрыться сам, и отменять его нельзя — это уничтожило бы уже определённого победителя.
+     * Такой случай вызывающий должен разобрать, а не замести.
+     */
+    async staleRunning(
+      now: Date,
+      idleMs: number,
+    ): Promise<{ tournament: TournamentRow; openMatches: number }[]> {
+      const threshold = new Date(now.getTime() - idleMs);
+
+      const running = await db
+        .select()
+        .from(tournaments)
+        .where(
+          and(
+            eq(tournaments.state, 'running'),
+            sql`${tournaments.startedAt} is not null`,
+            lt(tournaments.startedAt, threshold),
+          ),
+        );
+
+      const stale: { tournament: TournamentRow; openMatches: number }[] = [];
+      for (const tournament of running) {
+        const rows = await db
+          .select({ state: tournamentMatches.state, updatedAt: tournamentMatches.updatedAt })
+          .from(tournamentMatches)
+          .where(eq(tournamentMatches.tournamentId, tournament.id));
+
+        const lastTouched = rows.reduce<Date | null>(
+          (latest, row) => (latest === null || row.updatedAt > latest ? row.updatedAt : latest),
+          null,
+        );
+        if (lastTouched !== null && lastTouched >= threshold) continue;
+
+        stale.push({
+          tournament,
+          openMatches: rows.filter((row) =>
+            (['pending', 'ready', 'reported', 'disputed'] as MatchState[]).includes(row.state),
+          ).length,
+        });
+      }
+
+      return stale;
     },
 
     async cancel(tournamentId: number): Promise<void> {

@@ -38,6 +38,14 @@ const AUTO_CONFIRM_BATCH_SIZE = 20;
  */
 const CYCLE_CRON = '* * * * *';
 
+/**
+ * Через сколько безделья турнир считается брошенным. Шесть часов — с запасом больше самого
+ * долгого вечера: восемь команд в двойном устранении это шесть волн матчей, то есть около
+ * четырёх часов. Проверка каждые полчаса: спешить некуда, а лишние запросы к базе ни к чему.
+ */
+const ABANDON_AFTER_MS = 6 * 60 * 60 * 1_000;
+const ABANDON_CRON = '*/30 * * * *';
+
 export interface TournamentsModuleDeps {
   db: Database;
   logger: Logger;
@@ -148,6 +156,67 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
           const settled = await tournaments.autoConfirmDue(new Date(), AUTO_CONFIRM_BATCH_SIZE);
           if (settled.length > 0) {
             ctx.logger.info({ count: settled.length }, 'результаты приняты по молчанию соперника');
+          }
+        },
+      },
+      {
+        /**
+         * Брошенный турнир закрывается сам. Иначе один вечер, когда людям стало неинтересно
+         * и они разошлись не дописав результаты, выключал ежедневные турниры навсегда:
+         * матч без заявленного результата остаётся играбельным вечно, турнир — running, а
+         * автомат намеренно не начинает новый день, пока предыдущий не закрыт.
+         *
+         * Закрываем отменой, а не присуждением побед: победа тому, кто не играл, — неправда
+         * в записи, и она навсегда останется в зале славы. Пропущенный вечер честнее
+         * поддельного чемпиона.
+         */
+        name: 'tournaments:abandon',
+        cron: ABANDON_CRON,
+        async run(ctx): Promise<void> {
+          const stale = await tournaments.staleRunning(new Date(), ABANDON_AFTER_MS);
+
+          for (const { tournament, openMatches } of stale) {
+            if (openMatches === 0) {
+              // Все матчи закрыты, а турнир нет — это дефект продвижения победителя, а не
+              // брошенный вечер. Отмена уничтожила бы уже определённого чемпиона.
+              ctx.logger.error(
+                { tournamentId: tournament.id },
+                'турнир должен был закрыться сам: все матчи закрыты, состояние running — разберитесь вручную, автоматически не отменяю',
+              );
+              continue;
+            }
+
+            const entrants = await tournaments.activeEntrants(tournament.id);
+            await tournaments.cancel(tournament.id);
+
+            const guild = ctx.client.guilds.cache.get(tournament.guildId);
+            if (guild) {
+              for (const entrant of entrants) {
+                if (entrant.voiceChannelId) await channels.deleteChannel(guild, entrant.voiceChannelId);
+              }
+            }
+
+            ctx.logger.warn(
+              { tournamentId: tournament.id, openMatches, hours: ABANDON_AFTER_MS / 3_600_000 },
+              'турнир закрыт как брошенный: результаты не отмечались',
+            );
+
+            if (!tournament.announceChannelId) continue;
+            const channel = await ctx.client.channels.fetch(tournament.announceChannelId).catch(() => null);
+            if (!channel?.isSendable()) continue;
+
+            await channel
+              .send({
+                content: [
+                  `## «${tournament.name}» закрыт`,
+                  `Результаты не отмечались ${ABANDON_AFTER_MS / 3_600_000} часов, поэтому турнир закрыт как брошенный, а комнаты убраны.`,
+                  '',
+                  'Так сделано нарочно: незакрытый турнир останавливал бы ежедневный цикл, и завтрашнего вечера просто не было бы. Победителя не присуждаем — победа тому, кто не играл, осталась бы в зале славы навсегда.',
+                  '',
+                  'Чтобы такого не повторялось, победитель матча пишет `/match report` сразу после игры: соперник подтверждает кнопкой, а если молчит час — результат принимается сам.',
+                ].join('\n'),
+              })
+              .catch(() => undefined);
           }
         },
       },
