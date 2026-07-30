@@ -10,6 +10,7 @@ import type { Cache } from '../../core/cache.js';
 import type { Database } from '../../core/db/client.js';
 import { UserError } from '../../core/errors.js';
 import { plural } from '../../core/russian.js';
+import { applySeasonClosing } from './closing.js';
 import type { BotModule, CommandDefinition, EventHandler, ModuleContext } from '../../core/module.js';
 import {
   ACHIEVEMENTS,
@@ -25,6 +26,9 @@ import { createProgressionService, type ProgressionService } from './service.js'
 
 /** Снятие просроченных покупок — раз в 10 минут: точность до минуты здесь не нужна. */
 const EXPIRY_CRON = '*/10 * * * *';
+
+/** Смена сезона — раз в сутки в тихий час: срок мерится неделями, спешить некуда. */
+const SEASON_ROTATE_CRON = '0 5 * * *';
 const EXPIRY_BATCH = 50;
 const LEADERBOARD_SIZE = 15;
 
@@ -170,6 +174,45 @@ export function createProgressionModule(deps: ProgressionModuleDeps): BotModule 
             // Помечаем снятым в любом случае: иначе джоба вечно натыкается на покупку,
             // роль которой уже удалили руками.
             await progression.markRevoked(purchase.id);
+          }
+        },
+      },
+      {
+        /**
+         * Смена сезона по расписанию. Награды за сезон были сделаны, а запускалось это
+         * только руками — то есть забылось бы в первый же месяц, и обнуление зачёта так и
+         * осталось бы вечным «когда-нибудь». Сезон, который надо помнить закрыть, — это не
+         * сезон, а напоминание себе.
+         *
+         * Раз в сутки: срок мерится неделями, спешить некуда.
+         */
+        name: 'progression:season-rotate',
+        cron: SEASON_ROTATE_CRON,
+        async run(ctx): Promise<void> {
+          for (const config of await progression.guildsWithSeasonRotation()) {
+            const season = await progression.currentSeason(config.guildId);
+            const dueAt = season.startedAt.getTime() + config.seasonWeeks * 7 * 24 * 60 * 60 * 1_000;
+            if (Date.now() < dueAt) continue;
+
+            const name = await progression.nextSeasonName(config.guildId);
+            const closing = await progression.startSeason(config.guildId, name);
+            const lines = await applySeasonClosing({
+              client: ctx.client,
+              guildId: config.guildId,
+              closing,
+              progression,
+            });
+
+            ctx.logger.info(
+              {
+                guildId: config.guildId,
+                closed: closing.previous.name,
+                started: closing.season.name,
+                awarded: closing.awarded.length,
+              },
+              'сезон сменился по расписанию',
+            );
+            ctx.logger.debug({ report: lines.join(' | ') }, 'итоги смены сезона');
           }
         },
       },
@@ -325,9 +368,6 @@ function shopCommand(progression: ProgressionService): CommandDefinition {
   };
 }
 
-/** Медали для первых трёх мест: дальше номер понятнее любого значка. */
-const PLACE_MARKS: Record<number, string> = { 1: '🥇', 2: '🥈', 3: '🥉' };
-
 function adminCommand(progression: ProgressionService): CommandDefinition {
   return {
     defer: { ephemeral: true },
@@ -389,6 +429,13 @@ function adminCommand(progression: ProgressionService): CommandDefinition {
               .setName('announce')
               .setDescription('Куда объявлять итоги сезона')
               .addChannelTypes(ChannelType.GuildText),
+          )
+          .addIntegerOption((option) =>
+            option
+              .setName('weeks')
+              .setDescription('Через сколько недель сезон закрывается сам; 0 — только руками')
+              .setMinValue(0)
+              .setMaxValue(52),
           ),
       )
       .addSubcommand((sub) =>
@@ -435,79 +482,15 @@ function adminCommand(progression: ProgressionService): CommandDefinition {
         case 'season': {
           const name = interaction.options.getString('name', true);
           const closing = await progression.startSeason(guildId, name);
-
-          const lines = [
-            `Начался сезон «${closing.season.name}». Зачёт с нуля, достижения и история остались.`,
-          ];
-
-          if (closing.awarded.length === 0) {
-            lines.push('', 'Награждать было некого: в прошлом сезоне никто не набрал опыта.');
-          } else {
-            lines.push('', `**Итоги «${closing.previous.name}»**`);
-            for (const award of closing.awarded) {
-              lines.push(
-                `${PLACE_MARKS[award.place] ?? `${award.place}.`} <@${award.userId}> — ${award.xp} опыта, +${award.coins} ${plural(award.coins, 'монета', 'монеты', 'монет')}`,
-              );
-            }
-            lines.push('', 'Монеты начислены в новый сезон — в закрытом они бы уже не пригодились.');
-          }
-
-          // Роль чемпиона — текущий статус, поэтому переезжает: надеваем новому, снимаем
-          // с прежнего. Постоянный след оставляет достижение, а не роль.
-          const champion = closing.awarded.find((award) => award.place === 1);
-          if (closing.championRoleId && interaction.guild) {
-            const role = await interaction.guild.roles.fetch(closing.championRoleId).catch(() => null);
-            if (!role) {
-              lines.push('', 'Роль чемпиона настроена, но на сервере не найдена — задайте заново.');
-            } else {
-              const prior = await progression.priorChampion(guildId, closing.previous.id);
-              if (prior && prior !== champion?.userId) {
-                const member = await interaction.guild.members.fetch(prior).catch(() => null);
-                await member?.roles.remove(role).catch(() => undefined);
-              }
-              if (champion) {
-                const member = await interaction.guild.members.fetch(champion.userId).catch(() => null);
-                const granted = member
-                  ? await member.roles
-                      .add(role)
-                      .then(() => true)
-                      .catch(() => false)
-                  : false;
-                lines.push(
-                  '',
-                  granted
-                    ? `Роль **${role.name}** перешла к <@${champion.userId}>.`
-                    : `Роль **${role.name}** выдать не удалось — скорее всего, она стоит выше роли бота.`,
-                );
-              }
-            }
-          }
-
+          // Перенос роли и объявление — общие с автоматической сменой сезона: иначе джоба
+          // молча обнуляла бы зачёт, не наградив никого (src/modules/progression/closing.ts).
+          const lines = await applySeasonClosing({
+            client: interaction.client,
+            guildId,
+            closing,
+            progression,
+          });
           await interaction.editReply({ content: lines.join('\n') });
-
-          // Итоги объявляем публично, если задан канал: приватный ответ администратору
-          // видит только он, а награду показывают серверу.
-          const config = await progression.seasonRewardConfig(guildId);
-          if (config.announceChannelId && closing.awarded.length > 0) {
-            const channel = await interaction.client.channels
-              .fetch(config.announceChannelId)
-              .catch(() => null);
-            if (channel?.isSendable()) {
-              await channel
-                .send({
-                  content: [
-                    `## Сезон «${closing.previous.name}» закрыт`,
-                    ...closing.awarded.map(
-                      (award) =>
-                        `${PLACE_MARKS[award.place] ?? `${award.place}.`} <@${award.userId}> — ${award.xp} опыта, +${award.coins} ${plural(award.coins, 'монета', 'монеты', 'монет')}`,
-                    ),
-                    '',
-                    `Начался «${closing.season.name}» — зачёт с нуля, у всех равные шансы. \`/top\` покажет таблицу.`,
-                  ].join('\n'),
-                })
-                .catch(() => undefined);
-            }
-          }
           return;
         }
         case 'season-rewards': {
@@ -515,8 +498,10 @@ function adminCommand(progression: ProgressionService): CommandDefinition {
           const places = interaction.options.getInteger('places');
           const coins = interaction.options.getInteger('coins');
           const channel = interaction.options.getChannel('announce');
+          const weeks = interaction.options.getInteger('weeks');
 
           const patch: Parameters<typeof progression.saveSeasonRewards>[1] = {};
+          if (weeks !== null) patch.seasonWeeks = weeks;
           if (role) patch.championRoleId = role.id;
           if (places !== null) patch.topCount = places;
           if (coins !== null) patch.coinsBase = coins;
@@ -536,6 +521,9 @@ function adminCommand(progression: ProgressionService): CommandDefinition {
               `Призовых мест: **${saved.topCount}**, монет: ${example}.`,
               `Роль чемпиона: ${saved.championRoleId ? `<@&${saved.championRoleId}>` : 'нет'}`,
               `Объявлять итоги: ${saved.announceChannelId ? `<#${saved.announceChannelId}>` : 'никуда'}`,
+              saved.seasonWeeks > 0
+                ? `Сезон закрывается сам каждые ${saved.seasonWeeks} ${plural(saved.seasonWeeks, 'неделю', 'недели', 'недель')}.`
+                : 'Сезон закрывается только руками — `/progression season-rewards weeks:4` включит автоматическую смену.',
             ].join('\n'),
           });
           return;

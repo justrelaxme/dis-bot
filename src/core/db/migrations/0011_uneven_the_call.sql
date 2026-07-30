@@ -1,0 +1,1 @@
+ALTER TABLE "progression_season_rewards" ADD COLUMN "season_weeks" integer DEFAULT 0 NOT NULL;

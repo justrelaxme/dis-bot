@@ -211,6 +211,15 @@ export const seasonRewards = pgTable('progression_season_rewards', {
   topCount: integer('top_count').notNull().default(3),
   /** Монет за последнее призовое место; каждое место выше — плюс столько же. */
   coinsBase: integer('coins_base').notNull().default(100),
+  /**
+   * Через сколько недель сезон закрывается сам. 0 — только руками.
+   *
+   * По умолчанию 0, и это осознанно: автоматическое обнуление зачёта на сервере, который
+   * об этом не просил, — потеря прогресса без предупреждения. Зато когда администратор
+   * один раз назовёт срок, забывать о сезонах больше не придётся: ровно этим смена
+   * сезона и полезна, а руками её вспоминают ровно один раз.
+   */
+  seasonWeeks: integer('season_weeks').notNull().default(0),
   /** Куда объявлять итоги. Без канала итоги останутся только в базе. */
   announceChannelId: text('announce_channel_id'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

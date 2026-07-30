@@ -276,6 +276,22 @@ export function createProgressionService(deps: { db: Database }) {
       return row?.userId ?? null;
     },
 
+    /** Серверы, где смена сезона настроена по расписанию. Нужно джобе. */
+    async guildsWithSeasonRotation(): Promise<SeasonRewardsRow[]> {
+      return db.select().from(seasonRewards).where(gt(seasonRewards.seasonWeeks, 0));
+    },
+
+    /**
+     * Имя следующего сезона по счёту: «Сезон 3». Автоматической смене нужно имя, а
+     * придумывать его боту не из чего — номер честнее выдуманного названия.
+     */
+    async nextSeasonName(guildId: string): Promise<string> {
+      const result = await db.execute<{ count: number }>(sql`
+        select count(*)::int as count from progression_seasons where guild_id = ${guildId}
+      `);
+      return `Сезон ${(result.rows[0]?.count ?? 0) + 1}`;
+    },
+
     /** Итоги закрытого сезона: место, опыт, выданные монеты. */
     async seasonResults(guildId: string, seasonId: number): Promise<SeasonResultRow[]> {
       return db
