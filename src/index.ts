@@ -41,6 +41,33 @@ process.on('uncaughtException', (error) => {
 
 const shutdown = createShutdown({ logger });
 
+/**
+ * Куда мы вообще стучались — хост, порт и имя базы, без пароля. Нужно ровно для одного
+ * случая, который случается чаще всех остальных вместе: в переменные окружения уехала
+ * строка подключения для локальной разработки, и контейнер бесконечно перезапускается с
+ * «ECONNREFUSED», не говоря куда именно он не смог подключиться.
+ */
+function describeDatabaseTarget(databaseUrl: string): Record<string, string> {
+  let url: URL;
+  try {
+    url = new URL(databaseUrl);
+  } catch {
+    return { database: 'адрес не разобрался как URL' };
+  }
+
+  const local = ['localhost', '127.0.0.1', '::1', ''].includes(url.hostname);
+  return {
+    host: url.hostname,
+    port: url.port || '5432',
+    database: url.pathname.replace(/^\//u, '') || '(не указана)',
+    ...(local
+      ? {
+          hint: 'база указана на localhost. Внутри контейнера localhost — это сам контейнер, а не ваша машина: нужен адрес внешней базы',
+        }
+      : {}),
+  };
+}
+
 const { db, close: closeDatabase } = createDatabase(config, logger);
 
 /**
@@ -63,7 +90,15 @@ if (config.MIGRATE_ON_START) {
   } catch (error) {
     // Стартовать после неудачной миграции нельзя: бот будет падать на каждом запросе к
     // изменённой таблице, и разбирать придётся уже по этим падениям, а не по одной строке.
-    logger.fatal({ err: error }, 'миграции не применились — бот не стартует');
+    //
+    // К ошибке добавляем адрес базы без пароля и подсказку про localhost. Стек drizzle
+    // сообщает «ECONNREFUSED», но не говорит куда, а самая частая причина в контейнере
+    // одна и та же: в переменные уехала строка для локальной разработки, где база на
+    // localhost. Внутри контейнера localhost — это сам контейнер, и там базы нет.
+    logger.fatal(
+      { err: error, ...describeDatabaseTarget(config.DATABASE_URL) },
+      'миграции не применились — бот не стартует',
+    );
     await closeDatabase();
     process.exit(1);
   }
