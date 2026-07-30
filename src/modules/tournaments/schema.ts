@@ -322,7 +322,82 @@ export const tournamentSchedules = pgTable('tournament_schedules', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Драфт перед матчем: вето карт в Valorant, баны и пики героев в Dota.
+ *
+ * Пул и последовательность хранятся **снимком** в самой строке, а не берутся из кода при
+ * каждом чтении. Список героев меняется с патчем, пул карт Riot ротирует — и драфт,
+ * сыгранный месяц назад, должен остаться читаемым ровно таким, каким был. Иначе запись,
+ * ради которой драфт и заводился, перестанет быть записью.
+ *
+ * Токены — способ узнать капитана без входа на сайт. Витрина по устройству анонимна и
+ * только для чтения, а драфт требует знать, кто нажимает: банить за команду может лишь её
+ * капитан. Ссылку с токеном раздаёт бот в личные сообщения, то есть право действовать
+ * по-прежнему выдаёт Discord — как и всё остальное управление.
+ */
+export const matchDrafts = pgTable(
+  'tournament_match_drafts',
+  {
+    id: serial('id').primaryKey(),
+    matchId: integer('match_id')
+      .notNull()
+      .references(() => tournamentMatches.id, { onDelete: 'cascade' }),
+    tournamentId: integer('tournament_id')
+      .notNull()
+      .references(() => tournaments.id, { onDelete: 'cascade' }),
+    subject: text('subject').$type<'heroes' | 'maps'>().notNull(),
+    /** Снимок пула на момент создания: патч не должен переписывать прошлое. */
+    pool: jsonb('pool').$type<{ id: string; label: string; imageUrl?: string }[]>().notNull(),
+    sequence: jsonb('sequence').$type<{ side: 'a' | 'b'; kind: 'ban' | 'pick' }[]>().notNull(),
+    tokenA: text('token_a').notNull(),
+    tokenB: text('token_b').notNull(),
+    /** Докуда ждём текущий ход. Пустой дедлайн — драфт ещё не начали или уже закончили. */
+    deadlineAt: timestamp('deadline_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Один матч — один драфт. Второй драфт того же матча означал бы два протокола, и
+    // спорящие принесли бы каждый свой.
+    unique('tournament_match_drafts_match_uq').on(table.matchId),
+    unique('tournament_match_drafts_token_a_uq').on(table.tokenA),
+    unique('tournament_match_drafts_token_b_uq').on(table.tokenB),
+    // Джоба таймаутов выбирает по этой паре.
+    index('tournament_match_drafts_due_idx').on(table.completedAt, table.deadlineAt),
+  ],
+);
+
+/**
+ * Журнал выборов. Он же и есть состояние драфта: «чей ход» выводится из числа сделанных
+ * шагов, а не хранится отдельно — второй источник истины однажды разошёлся бы с первым и
+ * оставил драфт без выхода.
+ *
+ * Уникальность `(draftId, step)` — защита от двух одновременных нажатий: оба вычислят один
+ * и тот же номер шага, но вставка удастся только одному. Та же схема, что у всех остальных
+ * гонок в проекте: условие в базе, а не проверка перед записью.
+ */
+export const draftChoices = pgTable(
+  'tournament_draft_choices',
+  {
+    id: serial('id').primaryKey(),
+    draftId: integer('draft_id')
+      .notNull()
+      .references(() => matchDrafts.id, { onDelete: 'cascade' }),
+    step: integer('step').notNull(),
+    side: text('side').$type<'a' | 'b'>().notNull(),
+    kind: text('kind').$type<'ban' | 'pick'>().notNull(),
+    /** NULL — ход пропущен: на бане это законно, время вышло. */
+    optionId: text('option_id'),
+    /** NULL — выбрал не человек, а таймаут. */
+    actorId: text('actor_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique('tournament_draft_choices_step_uq').on(table.draftId, table.step)],
+);
+
 export type TournamentRow = typeof tournaments.$inferSelect;
+export type MatchDraftRow = typeof matchDrafts.$inferSelect;
+export type DraftChoiceRow = typeof draftChoices.$inferSelect;
 export type EntrantRow = typeof tournamentEntrants.$inferSelect;
 export type EntrantMemberRow = typeof tournamentEntrantMembers.$inferSelect;
 export type MatchRow = typeof tournamentMatches.$inferSelect;

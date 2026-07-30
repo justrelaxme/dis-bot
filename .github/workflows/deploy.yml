@@ -1,0 +1,53 @@
+# Автообновление бота на хостинге после пуша в master.
+#
+# Почему не вебхук GitHub напрямую: endpoint автообновления bothost требует токен в
+# заголовке `Authorization: Bearer`, а вебхуки GitHub произвольные заголовки отправлять не
+# умеют — у них есть только поле Secret с HMAC-подписью в X-Hub-Signature-256. Поэтому
+# запрос делает Actions, где заголовок задаётся явно.
+#
+# Токен в репозиторий не попадает: он живёт в секретах репозитория.
+# Settings → Secrets and variables → Actions → New repository secret:
+#   BOTHOST_DEPLOY_URL   — адрес без строки запроса, например http://nl9.bothost.ru/api/webhooks/github
+#   BOTHOST_DEPLOY_TOKEN — токен из панели bothost
+name: Деплой на bothost
+
+on:
+  push:
+    branches: [master]
+  # Ручной запуск: пригодится, чтобы пересобрать без нового коммита.
+  workflow_dispatch:
+
+# Одновременно только один деплой: два наложившихся пуша иначе запустят две сборки, и
+# какая из них выиграет — вопрос случая.
+concurrency:
+  group: bothost-deploy
+  cancel-in-progress: false
+
+jobs:
+  redeploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Проверить, что секреты заданы
+        env:
+          URL: ${{ secrets.BOTHOST_DEPLOY_URL }}
+          TOKEN: ${{ secrets.BOTHOST_DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
+            echo "Не заданы секреты BOTHOST_DEPLOY_URL или BOTHOST_DEPLOY_TOKEN."
+            echo "Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      - name: Запустить пересборку
+        env:
+          URL: ${{ secrets.BOTHOST_DEPLOY_URL }}
+          TOKEN: ${{ secrets.BOTHOST_DEPLOY_TOKEN }}
+        # -f роняет шаг на ответе 4xx/5xx: молчаливо неудавшийся деплой хуже красного шага,
+        # потому что о нём узнают из поведения бота, а не из уведомления.
+        run: |
+          curl -fsS -X POST "$URL" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"ref\":\"refs/heads/master\",\"after\":\"${GITHUB_SHA}\"}"
+          echo
+          echo "Пересборка запущена: ${GITHUB_SHA}"
