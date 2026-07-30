@@ -51,6 +51,11 @@ services:
     environment:
       DATABASE_URL: 'postgres://bot:${POSTGRES_PASSWORD}@postgres:5432/disbot'
       REDIS_URL: 'redis://redis:6379'
+      BACKUP_DIR: '/backups'
+    volumes:
+      # Отдельный том: дампы внутри контейнера исчезли бы вместе с ним при первом же
+      # пересоздании, то есть при первом же обновлении бота.
+      - backups:/backups
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,5 +93,6 @@ services:
 volumes:
   pgdata:
   redisdata:
+  backups:
   caddydata:
   caddyconfig:

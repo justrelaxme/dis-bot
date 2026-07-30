@@ -16,6 +16,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "deploy-commands": "tsx --env-file-if-exists=.env scripts/deploy-commands.ts",
+    "backup": "tsx --env-file-if-exists=.env scripts/backup.ts",
     "test:services:up": "node scripts/test-services.mjs up",
     "test:services:down": "node scripts/test-services.mjs down"
   },

@@ -2,6 +2,7 @@ import type { BotModule } from './core/module.js';
 import { createIdentityModule, type IdentityModuleDeps } from './modules/identity/index.js';
 import { pingModule } from './modules/ping/index.js';
 import { createLfgModule } from './modules/lfg/index.js';
+import { createMaintenanceModule } from './modules/maintenance/index.js';
 import { createModerationModule } from './modules/moderation/index.js';
 import { createProgressionModule } from './modules/progression/index.js';
 import { createTournamentsModule } from './modules/tournaments/index.js';
@@ -38,5 +39,6 @@ export function buildModules(identityDeps: IdentityModuleDeps): BotModule[] {
     createLfgModule({ db: identityDeps.db }),
     createModerationModule({ db: identityDeps.db, cache: identityDeps.cache }),
     createWelcomeModule({ db: identityDeps.db, cache: identityDeps.cache }),
+    createMaintenanceModule({ config: identityDeps.config }),
   ];
 }

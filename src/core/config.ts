@@ -54,6 +54,25 @@ const envSchema = z.object({
 
   STEAM_API_KEY: emptyToUndefined(z.string().min(1).optional()),
   RIOT_API_KEY: emptyToUndefined(z.string().min(1).optional()),
+
+  /**
+   * Бэкап включён по умолчанию, и это осознанно: потеря Postgres — безвозвратная потеря
+   * уровней, монет и всей турнирной летописи, а выключенный по умолчанию бэкап включают
+   * ровно на следующий день после того, как он понадобился. Отказ бэкапа бота не роняет.
+   */
+  BACKUP_ENABLED: z
+    .enum(['true', 'false'], { error: 'допустимо: true или false' })
+    .default('true')
+    .transform((value) => value === 'true'),
+  BACKUP_DIR: z.string().min(1).default('./backups'),
+  BACKUP_KEEP_DAYS: z.coerce
+    .number({ error: 'ожидается число дней' })
+    .int('ожидается целое число дней')
+    .min(1, 'хранить меньше суток бессмысленно')
+    .max(365, 'больше года — это уже архив, а не бэкап')
+    .default(7),
+  /** По умолчанию в 4 утра: время, когда на игровом сервере тише всего. */
+  BACKUP_CRON: z.string().min(1).default('0 4 * * *'),
 });
 
 export type Config = z.infer<typeof envSchema>;
