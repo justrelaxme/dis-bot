@@ -70,6 +70,14 @@ export function createLfgService(deps: { db: Database }) {
       return row?.roleId ?? null;
     },
 
+    /** Все настроенные подписки сервера: игра — роль. Нужно самообслуживанию подписок. */
+    async pingRoles(guildId: string): Promise<{ game: LfgGame; roleId: string }[]> {
+      return db
+        .select({ game: lfgPings.game, roleId: lfgPings.roleId })
+        .from(lfgPings)
+        .where(eq(lfgPings.guildId, guildId));
+    },
+
     async setPingRole(guildId: string, game: LfgGame, roleId: string): Promise<void> {
       await db
         .insert(lfgPings)

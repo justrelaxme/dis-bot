@@ -294,7 +294,23 @@ function lfgCommand(
           ),
       )
       .addSubcommand((sub) => sub.setName('list').setDescription('Кто сейчас собирает'))
-      .addSubcommand((sub) => sub.setName('close').setDescription('Закрыть свой сбор')),
+      .addSubcommand((sub) => sub.setName('close').setDescription('Закрыть свой сбор'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('roles')
+          .setDescription('Подписки на игры: о каких сборах тебя упоминать')
+          .addStringOption((option) =>
+            option
+              .setName('game')
+              .setDescription('Игра — включает подписку или снимает, если она уже есть')
+              .addChoices(
+                ...(Object.keys(GAME_LABELS) as LfgGame[]).map((game) => ({
+                  name: GAME_LABELS[game],
+                  value: game,
+                })),
+              ),
+          ),
+      ),
 
     async execute(interaction, ctx): Promise<void> {
       if (!interaction.inGuild()) throw new UserError('Эта команда работает только на сервере.');
@@ -335,6 +351,64 @@ function lfgCommand(
             allowedMentions: pingRole ? { roles: [pingRole] } : { parse: [] },
           });
           await lfg.attachMessage(post.id, message.id);
+          return;
+        }
+
+        /**
+         * Самообслуживание подписок. Роль человек снимает и надевает сам — администратор
+         * не должен раздавать их вручную, а новичку нужен способ не пропускать сборы по
+         * своей игре, не читая канал круглые сутки.
+         */
+        case 'roles': {
+          const configured = await lfg.pingRoles(guildId);
+          if (configured.length === 0) {
+            throw new UserError(
+              'Подписки на этом сервере не настроены. Администратору: `/lfg-setup game`.',
+            );
+          }
+
+          const member = await interaction.guild?.members.fetch(userId).catch(() => null);
+          if (!member) throw new UserError('Не удалось прочитать твои роли на сервере.');
+
+          const chosen = interaction.options.getString('game') as LfgGame | null;
+          if (chosen === null) {
+            await interaction.editReply({
+              content: [
+                '## Подписки на сборы',
+                ...configured.map(
+                  (row) =>
+                    `${member.roles.cache.has(row.roleId) ? '✅' : '▫️'} **${GAME_LABELS[row.game]}** — <@&${row.roleId}>`,
+                ),
+                '',
+                'Включить или снять: `/lfg roles game:…`. Подписка — это упоминание, когда кто-то собирает по этой игре.',
+              ].join('\n'),
+              allowedMentions: { parse: [] },
+            });
+            return;
+          }
+
+          const target = configured.find((row) => row.game === chosen);
+          if (!target) {
+            throw new UserError(`Для ${GAME_LABELS[chosen]} подписка не настроена.`);
+          }
+
+          const had = member.roles.cache.has(target.roleId);
+          try {
+            if (had) await member.roles.remove(target.roleId);
+            else await member.roles.add(target.roleId);
+          } catch (error) {
+            // Почти всегда это иерархия: роль бота стоит ниже выдаваемой.
+            ctx.logger.warn({ err: error, roleId: target.roleId }, 'подписка не переключилась');
+            throw new UserError(
+              'Не смог изменить роль. Похоже, роль бота стоит ниже этой — администратору нужно поднять её выше в настройках сервера.',
+            );
+          }
+
+          await interaction.editReply({
+            content: had
+              ? `Снял подписку на ${GAME_LABELS[chosen]} — упоминать не буду.`
+              : `Подписал на ${GAME_LABELS[chosen]}: упомяну, когда кто-то соберёт компанию.`,
+          });
           return;
         }
 

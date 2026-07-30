@@ -4,3 +4,4 @@ export * from '../../../modules/lfg/schema.js';
 export * from '../../../modules/moderation/schema.js';
 export * from '../../../modules/identity/schema.js';
 export * from '../../../modules/tournaments/schema.js';
+export * from '../../../modules/welcome/schema.js';

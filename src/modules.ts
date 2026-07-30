@@ -5,6 +5,7 @@ import { createLfgModule } from './modules/lfg/index.js';
 import { createModerationModule } from './modules/moderation/index.js';
 import { createProgressionModule } from './modules/progression/index.js';
 import { createTournamentsModule } from './modules/tournaments/index.js';
+import { createWelcomeModule } from './modules/welcome/index.js';
 
 /**
  * Единственное место, перечисляющее модули бота: и bootstrap (src/index.ts), и
@@ -32,5 +33,6 @@ export function buildModules(identityDeps: IdentityModuleDeps): BotModule[] {
     createProgressionModule({ db: identityDeps.db, cache: identityDeps.cache }),
     createLfgModule({ db: identityDeps.db }),
     createModerationModule({ db: identityDeps.db, cache: identityDeps.cache }),
+    createWelcomeModule({ db: identityDeps.db, cache: identityDeps.cache }),
   ];
 }
