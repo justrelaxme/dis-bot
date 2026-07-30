@@ -29,6 +29,7 @@ import {
 } from '../discord/onboarding.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
 import { hasVerifiedLink, linkCommandFor } from '../services/strength.js';
+import type { DotaVerifier } from '../services/dota-verify.js';
 import type { TournamentsService } from '../services/tournaments.js';
 
 /**
@@ -43,6 +44,11 @@ export interface PlayDeps {
   tournaments: TournamentsService;
   channels: ChannelsGateway;
   publicBaseUrl: string;
+  /**
+   * Проверка результата по данным Dota. Необязательна: без ключей и без сети турнир
+   * должен идти обычным путём, а не отказывать в приёме результата.
+   */
+  dotaVerifier?: DotaVerifier;
 }
 
 function requireGuild(guild: Guild | null): Guild {
@@ -263,6 +269,12 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
               .setDescription('Чем закончилось')
               .setRequired(true)
               .addChoices({ name: 'Мы выиграли', value: 'win' }, { name: 'Мы проиграли', value: 'loss' }),
+          )
+          .addStringOption((option) =>
+            option
+              .setName('dota_match')
+              .setDescription('ID матча Dota — бот проверит сам, и подтверждение соперника не понадобится')
+              .setMaxLength(12),
           ),
       )
       .addSubcommand((sub) =>
@@ -301,17 +313,78 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
 
         const won = interaction.options.getString('outcome', true) === 'win';
         const winnerId = won ? mine.id : opponentId;
-        await deps.tournaments.report(match.id, interaction.user.id, winnerId);
 
         const view = await deps.tournaments.bracket(tournament.id);
-        const winnerName = view.entrants.find((entrant) => entrant.id === winnerId)?.displayName ?? '?';
+        const nameOf = (id: number): string =>
+          view.entrants.find((entrant) => entrant.id === id)?.displayName ?? '?';
+
+        // Проверка по данным игры, если ID матча дали. Она необязательна и часто
+        // невозможна — Dota по умолчанию не показывает игроков публичных матчей, — поэтому
+        // любой её отрицательный исход, кроме прямого противоречия, ведёт на обычный путь.
+        const dotaMatchId = interaction.options.getString('dota_match');
+        if (dotaMatchId && deps.dotaVerifier && tournament.game === 'dota2') {
+          const verdict = await deps.dotaVerifier.verify({
+            dotaMatchId,
+            entrantAId: mine.id,
+            entrantBId: opponentId,
+            notBefore: tournament.startedAt,
+          });
+
+          if (verdict.kind === 'decided' && verdict.winnerEntrantId !== winnerId) {
+            throw new UserError(
+              [
+                `По данным матча \`${dotaMatchId}\` победила **${nameOf(verdict.winnerEntrantId)}**, а не то, что заявлено.`,
+                'Заявку не принял. Если ID матча указан неверно — повтори с правильным, а если данные врут, зови организатора: `/match resolve` решит спор.',
+              ].join('\n'),
+            );
+          }
+
+          if (verdict.kind === 'decided') {
+            const settled = await deps.tournaments.settle(
+              match.id,
+              winnerId,
+              interaction.user.id,
+              'verified',
+              false,
+            );
+            await interaction.editReply({
+              content: [
+                `Матч №${match.id}: победа **${nameOf(winnerId)}** — подтверждено данными матча \`${dotaMatchId}\`.`,
+                `Соперника ждать не надо: узнал ${verdict.identifiedA + verdict.identifiedB} игроков по разные стороны.`,
+                settled.finished
+                  ? `\n🏆 Турнир завершён. Победитель — **${nameOf(winnerId)}**.`
+                  : `Сетка: ${deps.publicBaseUrl}/t/${tournament.id}`,
+              ].join('\n'),
+            });
+            return;
+          }
+
+          // Проверить не вышло — говорим почему и идём обычным путём, не отказывая.
+          await deps.tournaments.report(match.id, interaction.user.id, winnerId);
+          const opponentMembers = await deps.tournaments.membersOf(opponentId);
+          await interaction.editReply({
+            content: [
+              `Матч №${match.id}: заявлена победа **${nameOf(winnerId)}**.`,
+              `Проверить по матчу \`${dotaMatchId}\` не получилось: ${verdict.reason}`,
+              `${opponentMembers.map((id) => `<@${id}>`).join(' ')} — подтвердите или оспорьте.`,
+              'Если не ответить час, результат примется сам.',
+            ].join('\n'),
+            components: [matchButtons(match.id)],
+          });
+          return;
+        }
+
+        await deps.tournaments.report(match.id, interaction.user.id, winnerId);
         const opponentMembers = await deps.tournaments.membersOf(opponentId);
 
         await interaction.editReply({
           content: [
-            `Матч №${match.id}: заявлена победа **${winnerName}**.`,
+            `Матч №${match.id}: заявлена победа **${nameOf(winnerId)}**.`,
             `${opponentMembers.map((id) => `<@${id}>`).join(' ')} — подтвердите или оспорьте.`,
             'Если не ответить час, результат примется сам.',
+            ...(tournament.game === 'dota2' && deps.dotaVerifier
+              ? ['', 'В следующий раз можно указать `dota_match:<ID матча>` — тогда бот проверит сам, и ждать соперника не придётся.']
+              : []),
           ].join('\n'),
           components: [matchButtons(match.id)],
         });

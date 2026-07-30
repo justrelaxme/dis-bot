@@ -250,7 +250,7 @@ export const tournamentMatchReports = pgTable('tournament_match_reports', {
   actorId: text('actor_id').notNull(),
   claimedWinnerId: integer('claimed_winner_id'),
   action: text('action')
-    .$type<'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm'>()
+    .$type<'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm' | 'verified'>()
     .notNull(),
   /** true — решение принял организатор, а не участник. */
   byOrganizer: boolean('by_organizer').notNull().default(false),

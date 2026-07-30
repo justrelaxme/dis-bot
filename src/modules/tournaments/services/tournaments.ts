@@ -178,7 +178,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
   async function logAction(
     matchId: number,
     actorId: string,
-    action: 'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm',
+    action: 'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm' | 'verified',
     claimedWinnerId: number | null,
     byOrganizer: boolean,
   ): Promise<void> {
@@ -899,7 +899,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       matchId: number,
       winnerEntrantId: number,
       actorId: string,
-      action: 'confirm' | 'resolve' | 'walkover' | 'auto-confirm',
+      action: 'confirm' | 'resolve' | 'walkover' | 'auto-confirm' | 'verified',
       byOrganizer: boolean,
     ): Promise<{ match: MatchRow; finished: boolean }> {
       const expected =

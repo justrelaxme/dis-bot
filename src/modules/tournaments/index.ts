@@ -1,7 +1,9 @@
 import type { Database } from '../../core/db/client.js';
 import type { EventBus } from '../../core/events/bus.js';
+import type { FetchClient } from '../../core/http/fetch-client.js';
 import type { Logger } from '../../core/logger.js';
 import type { BotModule } from '../../core/module.js';
+import type { RateLimiter } from '../../core/rate-limit.js';
 import { createManageCommand } from './commands/manage.js';
 import {
   createButtonHandler,
@@ -15,6 +17,7 @@ import { createStatsCommand } from './commands/stats.js';
 import { createChannelsGateway } from './discord/channels.js';
 import { createDiscordPollGateway } from './discord/poll-gateway.js';
 import { createCycleService } from './services/cycle.js';
+import { createDotaVerifier } from './services/dota-verify.js';
 import { createPollFinalizer } from './services/finalizer.js';
 import { createPollsService } from './services/polls.js';
 import { runCycleTick } from './services/runner.js';
@@ -42,6 +45,13 @@ export interface TournamentsModuleDeps {
   bus: EventBus;
   /** Публичный адрес витрины: в объявлениях даём ссылку на сетку. */
   publicBaseUrl: string;
+  /**
+   * Клиент и квота для OpenDota: по ним проверяется результат матча Dota. Оба
+   * необязательны — без них работает обычный путь с подтверждением соперника, и это
+   * штатное состояние, а не деградация.
+   */
+  fetchClientFor?: (provider: string) => FetchClient;
+  rateLimiter?: RateLimiter;
 }
 
 /**
@@ -61,7 +71,22 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
   const tournaments = createTournamentsService({ db: deps.db, bus: deps.bus });
   const cycles = createCycleService({ db: deps.db, logger: deps.logger });
   const channels = createChannelsGateway(deps.logger);
-  const play = { tournaments, channels, publicBaseUrl: deps.publicBaseUrl };
+
+  const dotaVerifier =
+    deps.fetchClientFor && deps.rateLimiter
+      ? createDotaVerifier({
+          db: deps.db,
+          client: deps.fetchClientFor('opendota'),
+          rateLimiter: deps.rateLimiter,
+        })
+      : undefined;
+
+  const play = {
+    tournaments,
+    channels,
+    publicBaseUrl: deps.publicBaseUrl,
+    ...(dotaVerifier ? { dotaVerifier } : {}),
+  };
 
   const poll = createTournamentPollCommand({ polls });
 

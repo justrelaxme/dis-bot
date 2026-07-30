@@ -29,6 +29,10 @@ export function buildModules(identityDeps: IdentityModuleDeps): BotModule[] {
       logger: identityDeps.logger,
       bus: identityDeps.bus,
       publicBaseUrl: identityDeps.config.PUBLIC_BASE_URL,
+      // Тот же клиент OpenDota, что у синхронизации рангов: circuit breaker живёт в
+      // замыкании экземпляра, и второй экземпляр не знал бы, что цепь уже разомкнута.
+      fetchClientFor: identityDeps.fetchClientFor,
+      rateLimiter: identityDeps.rateLimiter,
     }),
     createProgressionModule({ db: identityDeps.db, cache: identityDeps.cache }),
     createLfgModule({ db: identityDeps.db }),
