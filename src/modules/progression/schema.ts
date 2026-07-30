@@ -170,7 +170,55 @@ export const voiceSessions = pgTable(
   (table) => [unique('progression_voice_sessions_uq').on(table.guildId, table.userId)],
 );
 
+/**
+ * Итоги сезона: кто и с чем закончил, и что за это получил.
+ *
+ * Сама таблица результатов не нужна была бы — строки `profiles` закрытого сезона никуда не
+ * исчезают, потому что сезон входит в их ключ. Нужна она ради **однократности**: закрытие
+ * сезона выдаёт монеты и роль, и если роль не выдалась из-за иерархии, повтор не должен
+ * заплатить монеты второй раз. Уникальность (сервер, сезон, человек) — и есть эта гарантия.
+ */
+export const seasonResults = pgTable(
+  'progression_season_results',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    guildId: text('guild_id').notNull(),
+    seasonId: integer('season_id').notNull(),
+    userId: text('user_id').notNull(),
+    /** 1 — первое место. */
+    place: integer('place').notNull(),
+    xp: integer('xp').notNull(),
+    coinsAwarded: integer('coins_awarded').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('progression_season_results_uq').on(table.guildId, table.seasonId, table.userId),
+    index('progression_season_results_season_idx').on(table.guildId, table.seasonId, table.place),
+  ],
+);
+
+/**
+ * Награды за сезон. Один множитель вместо трёх сумм: за место `p` из `topCount` даётся
+ * `coinsBase * (topCount - p + 1)`, то есть при трёх местах и сотне за единицу — 300, 200,
+ * 100. Настройка, которую можно объяснить одной фразой, переживает смену администратора;
+ * три отдельные суммы придётся каждый раз выяснять заново.
+ */
+export const seasonRewards = pgTable('progression_season_rewards', {
+  guildId: text('guild_id').primaryKey(),
+  /** Роль текущего чемпиона: переезжает к новому, у прежнего снимается. */
+  championRoleId: text('champion_role_id'),
+  /** Сколько мест получают награду. */
+  topCount: integer('top_count').notNull().default(3),
+  /** Монет за последнее призовое место; каждое место выше — плюс столько же. */
+  coinsBase: integer('coins_base').notNull().default(100),
+  /** Куда объявлять итоги. Без канала итоги останутся только в базе. */
+  announceChannelId: text('announce_channel_id'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type XpEventRow = typeof xpEvents.$inferSelect;
+export type SeasonResultRow = typeof seasonResults.$inferSelect;
+export type SeasonRewardsRow = typeof seasonRewards.$inferSelect;
 export type ProfileRow = typeof profiles.$inferSelect;
 export type SeasonRow = typeof seasons.$inferSelect;
 export type AchievementRow = typeof achievements.$inferSelect;

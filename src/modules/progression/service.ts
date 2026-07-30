@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNull, lte, ne, sql } from 'drizzle-orm';
 import type { Database } from '../../core/db/client.js';
 import { UserError } from '../../core/errors.js';
 import {
@@ -6,6 +6,8 @@ import {
   levelRewards,
   profiles,
   purchases,
+  seasonResults,
+  seasonRewards,
   seasons,
   shopItems,
   voiceSessions,
@@ -13,6 +15,8 @@ import {
   type AchievementRow,
   type LevelRewardRow,
   type ProfileRow,
+  type SeasonResultRow,
+  type SeasonRewardsRow,
   type SeasonRow,
   type XpReason,
 } from './schema.js';
@@ -24,6 +28,25 @@ import {
   achievementByCode,
   levelFromXp,
 } from './rules.js';
+
+/** Награждённое призовое место при закрытии сезона. */
+export interface SeasonAward {
+  userId: string;
+  place: number;
+  xp: number;
+  coins: number;
+}
+
+/**
+ * Итог закрытия сезона. Роли выдаёт вызывающий: сервис не знает про Discord, а роль
+ * чемпиона надо не только надеть новому, но и снять с прежнего.
+ */
+export interface SeasonClosing {
+  season: SeasonRow;
+  previous: SeasonRow;
+  awarded: SeasonAward[];
+  championRoleId: string | null;
+}
 
 export interface AwardResult {
   profile: ProfileRow;
@@ -205,14 +228,141 @@ export function createProgressionService(deps: { db: Database }) {
      * Новый сезон: старый закрывается, зачёт начинается с нуля. Журнал и достижения
      * остаются — сезон обнуляет соревнование, а не историю человека.
      */
-    async startSeason(guildId: string, name: string): Promise<SeasonRow> {
+    async seasonRewardConfig(guildId: string): Promise<SeasonRewardsRow> {
+      const [row] = await db.select().from(seasonRewards).where(eq(seasonRewards.guildId, guildId));
+      if (row) return row;
+      const [created] = await db
+        .insert(seasonRewards)
+        .values({ guildId })
+        .onConflictDoNothing()
+        .returning();
+      if (created) return created;
+      const [again] = await db.select().from(seasonRewards).where(eq(seasonRewards.guildId, guildId));
+      if (!again) throw new Error('настройки наград за сезон не создались');
+      return again;
+    },
+
+    async saveSeasonRewards(
+      guildId: string,
+      patch: Partial<Omit<SeasonRewardsRow, 'guildId'>>,
+    ): Promise<SeasonRewardsRow> {
+      const [row] = await db
+        .insert(seasonRewards)
+        .values({ guildId, ...patch })
+        .onConflictDoUpdate({ target: seasonRewards.guildId, set: { ...patch, updatedAt: new Date() } })
+        .returning();
+      if (!row) throw new Error('настройки наград за сезон не сохранились');
+      return row;
+    },
+
+    /**
+     * Чемпион предыдущего закрытого сезона — с кого снять роль. Берём из записей итогов,
+     * а не из списка носителей роли: список носителей приходит из кэша участников, который
+     * на большом сервере может быть неполным, и тогда роль осталась бы на прежнем чемпионе.
+     */
+    async priorChampion(guildId: string, exceptSeasonId: number): Promise<string | null> {
+      const [row] = await db
+        .select({ userId: seasonResults.userId })
+        .from(seasonResults)
+        .where(
+          and(
+            eq(seasonResults.guildId, guildId),
+            eq(seasonResults.place, 1),
+            ne(seasonResults.seasonId, exceptSeasonId),
+          ),
+        )
+        .orderBy(desc(seasonResults.seasonId))
+        .limit(1);
+      return row?.userId ?? null;
+    },
+
+    /** Итоги закрытого сезона: место, опыт, выданные монеты. */
+    async seasonResults(guildId: string, seasonId: number): Promise<SeasonResultRow[]> {
+      return db
+        .select()
+        .from(seasonResults)
+        .where(and(eq(seasonResults.guildId, guildId), eq(seasonResults.seasonId, seasonId)))
+        .orderBy(asc(seasonResults.place));
+    },
+
+    /**
+     * Закрывает сезон и открывает новый, попутно награждая призовые места.
+     *
+     * Обнуление без награды — это просто потеря прогресса: человек месяц лез в таблицу, а
+     * первого числа обнаружил ноль и никакого следа того, что он был первым. Поэтому
+     * закрытие сезона обязано что-то оставлять.
+     *
+     * Монеты начисляются в **новый** сезон: в закрытом они уже никому не пригодятся, потому
+     * что зачёт и кошелёк в этой модели живут в одной строке на сезон.
+     *
+     * Выдача однократна за счёт уникальности в `season_results`: если роль не выдалась
+     * из-за иерархии ролей, повтор не заплатит монеты второй раз.
+     */
+    async startSeason(guildId: string, name: string): Promise<SeasonClosing> {
       const previous = await currentSeason(guildId);
+      const config = await this.seasonRewardConfig(guildId);
+
+      // Стоящих в таблице читаем до закрытия: после него текущим станет новый сезон.
+      // Нулевой опыт награды не заслуживает — иначе призы уйдут тем, кто не приходил.
+      const standings = await db
+        .select()
+        .from(profiles)
+        .where(
+          and(
+            eq(profiles.guildId, guildId),
+            eq(profiles.seasonId, previous.id),
+            gt(profiles.xp, 0),
+          ),
+        )
+        .orderBy(desc(profiles.xp))
+        .limit(Math.max(config.topCount, 0));
+
       const [created] = await db.transaction(async (tx) => {
         await tx.update(seasons).set({ endedAt: new Date() }).where(eq(seasons.id, previous.id));
         return tx.insert(seasons).values({ guildId, name }).returning();
       });
       if (!created) throw new Error('сезон не создался');
-      return created;
+
+      const awarded: SeasonAward[] = [];
+      for (const [index, row] of standings.entries()) {
+        const place = index + 1;
+        const coins = config.coinsBase * (config.topCount - place + 1);
+
+        const [recorded] = await db
+          .insert(seasonResults)
+          .values({
+            guildId,
+            seasonId: previous.id,
+            userId: row.userId,
+            place,
+            xp: row.xp,
+            coinsAwarded: coins,
+          })
+          .onConflictDoNothing()
+          .returning();
+        // Уже записано — награда за этот сезон выдавалась, второй раз не платим.
+        if (!recorded) continue;
+
+        if (coins > 0) {
+          // profile() создаёт строку нового сезона, если её ещё нет.
+          await this.profile(guildId, row.userId);
+          await db
+            .update(profiles)
+            .set({ coins: sql`${profiles.coins} + ${coins}`, updatedAt: new Date() })
+            .where(
+              and(
+                eq(profiles.guildId, guildId),
+                eq(profiles.userId, row.userId),
+                eq(profiles.seasonId, created.id),
+              ),
+            );
+        }
+
+        await this.grantAchievement(guildId, row.userId, place === 1 ? 'season-winner' : 'season-podium');
+        awarded.push({ userId: row.userId, place, xp: row.xp, coins });
+      }
+
+      return { season: created, previous, awarded, championRoleId: config.championRoleId };
     },
 
     async setLevelReward(guildId: string, level: number, roleId: string): Promise<void> {

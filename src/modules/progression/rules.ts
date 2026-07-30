@@ -89,6 +89,10 @@ export const ACHIEVEMENTS: readonly AchievementDef[] = [
   { code: 'level-10', title: 'Свой', description: 'Дошёл до десятого уровня', xp: 200 },
   { code: 'night-owl', title: 'Ночная смена', description: 'Писал в чат между тремя и шестью утра', xp: 60 },
   { code: 'rank-climber', title: 'Растёт', description: 'Поднял ранг в игре после привязки', xp: 80 },
+  // Роль чемпиона переезжает к новому, а это остаётся навсегда: роль — текущий статус,
+  // достижение — запись в истории, и одно другое не заменяет.
+  { code: 'season-winner', title: 'Лучший сезона', description: 'Занял первое место в сезоне', xp: 500 },
+  { code: 'season-podium', title: 'На подиуме', description: 'Вошёл в тройку сезона', xp: 200 },
 ];
 
 export function achievementByCode(code: string): AchievementDef | undefined {
