@@ -36,9 +36,29 @@ const GAME_TO_PROVIDER: Record<TournamentGame, ProviderId> = {
   valorant: 'riot-valorant',
 };
 
-/** Сетка меняется редко, а по ссылке из объявления придут все сразу. */
+/**
+ * Медленные страницы: лидерборд и зал славы. Ранги обновляются раз в полчаса, зал славы
+ * меняется после турнира — минута свежести и десять минут «отдай устаревшее, обнови в
+ * фоне» здесь ровно то, что нужно.
+ */
 const PAGE_TTL_MS = 60 * 1_000;
 const PAGE_STALE_MS = 10 * 60 * 1_000;
+
+/**
+ * Страницы события — список турниров и сетка. Им та же стратегия противопоказана, и это
+ * выяснилось на живом турнире: капитан отметил состав, а страница показывала прежний
+ * статус. Причём не только минуту: `swr` отдаёт устаревшее сразу и обновляет в фоне, так
+ * что первая перезагрузка после минуты снова показывала старое, и лишь следующая — новое.
+ * Для страницы, которая обещает «обновляется по ходу вечера», это выглядит поломкой.
+ *
+ * Поэтому здесь короткая свежесть и **нет** окна устаревания: как только пять секунд
+ * прошли, страница собирается заново под локом. Толпу, пришедшую по ссылке из объявления,
+ * лок держит по-прежнему — а он и был единственной причиной кэшировать эти страницы.
+ * Цена решения: если Postgres на секунду отвалится, вместо устаревшей страницы будет
+ * ошибка. Для страницы события это честнее: устаревшая сетка хуже отсутствующей, потому
+ * что по ней принимают решения.
+ */
+const LIVE_TTL_MS = 5_000;
 
 const LEADERBOARD_LIMIT = 100;
 const HALL_LIMIT = 50;
@@ -75,13 +95,22 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
   const { db, cache } = deps;
 
   /** Отдаёт готовый HTML из кэша, а если его нет — строит и кладёт. */
-  async function cached(key: string, build: () => Promise<string>): Promise<string> {
-    const result = await cache.swr(key, { ttlMs: PAGE_TTL_MS, staleMs: PAGE_STALE_MS, load: build });
+  async function cached(
+    key: string,
+    build: () => Promise<string>,
+    ttlMs = PAGE_TTL_MS,
+    staleMs = PAGE_STALE_MS,
+  ): Promise<string> {
+    const result = await cache.swr(key, { ttlMs, staleMs, load: build });
     return result.value;
   }
 
+  /** Страница события: короткая свежесть, без окна устаревания. */
+  const cachedLive = (key: string, build: () => Promise<string>): Promise<string> =>
+    cached(key, build, LIVE_TTL_MS, LIVE_TTL_MS);
+
   server.get('/', async (_request, reply) => {
-    const html = await cached('web:index', async () => {
+    const html = await cachedLive('web:index', async () => {
       const rows = await db
         .select({
           tournament: tournaments,
@@ -124,7 +153,7 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
       return reply.code(404).type('text/html; charset=utf-8').send(page('Не найдено', renderNotFound('Такого турнира нет.')));
     }
 
-    const html = await cached(`web:tournament:${id}`, async () => {
+    const html = await cachedLive(`web:tournament:${id}`, async () => {
       const [tournament] = await db.select().from(tournaments).where(eq(tournaments.id, id));
       if (!tournament) return '';
 
