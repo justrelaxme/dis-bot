@@ -1,4 +1,4 @@
-import type { DraftGroup, DraftOption } from '../tournaments/draft/pools.js';
+import type { DraftGroup, DraftOption, DraftSide } from '../tournaments/draft/pools.js';
 import { GROUP_LABELS } from '../tournaments/draft/pools.js';
 import { escape } from './render.js';
 
@@ -156,6 +156,16 @@ export const DRAFT_STYLE = `
   font-family:var(--mono); font-size:.6rem; letter-spacing:.1em; text-transform:uppercase;
   color:var(--who); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
+/* Нет на аккаунте. Только у персонажей Genshin и только когда состав удалось прочитать:
+   банить персонажа, которого у соперника и не было, — потраченный ход, и знать это надо до
+   хода. Плитка при этом остаётся нажимаемой: Летопись обновляется с задержкой, и вчерашняя
+   крутка в ней ещё не появилась. Это сведения, а не запрет. */
+.tile .lack { position:absolute; left:0; right:0; top:0; z-index:2; padding:.16rem .3rem;
+  font-family:var(--mono); font-size:.56rem; letter-spacing:.08em; text-transform:uppercase;
+  background:color-mix(in srgb,var(--ink) 82%,transparent); color:var(--dim);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tile.lacks-you .art img { filter:grayscale(.6) brightness(.72); }
+
 /* Итог фазы. Стоит после занятых нарочно: карта, которую выбрали, — тоже итог, и её рамка
    должна быть акцентной, а не цветом выбравшей команды. */
 .tile.won { border-color:var(--accent);
@@ -183,8 +193,23 @@ export interface DraftShellState {
   phases: { group: DraftGroup; total: number; done: number; resultIds: string[] }[];
 }
 
+/**
+ * Чего не хватает на аккаунте — с точки зрения того, кто смотрит.
+ *
+ * Пустая пометка означает «неизвестно», а не «есть у всех»: состав читается только у
+ * подтверждённых одиночек с публичной Летописью, и во всех прочих случаях пометок нет вовсе.
+ * Зрителю без стороны не показывается ничего — пометка нужна тому, кто делает ход.
+ */
+function lacking(option: DraftOption, you: DraftSide | null): { text: string; mine: boolean } | null {
+  if (!option.owned || !you) return null;
+  const foe: DraftSide = you === 'a' ? 'b' : 'a';
+  if (!option.owned.includes(you)) return { text: 'нет у тебя', mine: true };
+  if (!option.owned.includes(foe)) return { text: 'нет у соперника', mine: false };
+  return null;
+}
+
 /** Плитка варианта. Разметка ставится один раз — дальше меняется только класс. */
-function tile(option: DraftOption, index: number): string {
+function tile(option: DraftOption, index: number, you: DraftSide | null): string {
   const art = option.imageUrl
     ? `<img src="${escape(option.imageUrl)}" alt="${escape(option.label)}" loading="lazy" decoding="async">`
     : '';
@@ -195,8 +220,11 @@ function tile(option: DraftOption, index: number): string {
       ? `<img class="alt" src="${escape(option.iconUrl)}" alt="" loading="lazy" decoding="async">`
       : '';
 
-  return `<button type="button" class="tile free" data-id="${escape(option.id)}" style="--delay:${Math.min(index, 24) * 18}ms">
-<span class="art">${art}${scheme}</span>
+  const lack = lacking(option, you);
+  const note = lack ? `<span class="lack">${escape(lack.text)}</span>` : '';
+
+  return `<button type="button" class="tile free${lack?.mine ? ' lacks-you' : ''}" data-id="${escape(option.id)}" style="--delay:${Math.min(index, 24) * 18}ms">
+<span class="art">${art}${scheme}${note}</span>
 <span class="tl">${escape(option.label)}</span>
 <span class="by"></span>
 </button>`;
@@ -235,7 +263,7 @@ export function draftShell(state: DraftShellState): string {
 <h2><span class="num">Фаза ${order + 1}</span> ${escape(labels.many)} <span class="pm" data-pm="${phase.group}"></span></h2>
 <p class="lede">${PHASE_LEAD[phase.group]}</p>
 ${search}
-<div class="board" data-board="${phase.group}">${options.map(tile).join('')}</div>
+<div class="board" data-board="${phase.group}">${options.map((option, index) => tile(option, index, state.you)).join('')}</div>
 <p class="pres" data-pres="${phase.group}"></p>
 </section>`;
     })

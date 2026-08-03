@@ -13,6 +13,7 @@ import { createProfileCommand } from './commands/profile.js';
 import { createRankSyncCommand } from './commands/ranksync.js';
 import { createRoleMapCommand } from './commands/rolemap.js';
 import { createUnlinkCommand } from './commands/unlink.js';
+import { createHoyolabChronicle } from './providers/hoyolab.js';
 import { createProviderRegistry } from './providers/index.js';
 import { createLinkingService } from './services/linking.js';
 import { createRankSyncService } from './services/rank-sync.js';
@@ -124,7 +125,16 @@ export function createIdentityModule(deps: IdentityModuleDeps): BotModule {
     logger: deps.logger,
   });
 
-  const identityDeps: IdentityDeps = { linking, providers, roles, rankSync, bus: deps.bus };
+  // Летопись HoYoLAB: единственный источник полного состава аккаунта Genshin. Отдельно от
+  // реестра провайдеров, потому что это не привязка и не ранг — это сведения об аккаунте,
+  // и у неё свой ключ, своя квота и своё право отсутствовать.
+  const chronicle = createHoyolabChronicle({
+    client: deps.fetchClientFor('hoyolab'),
+    rateLimiter: deps.rateLimiter,
+    ...(deps.config.HOYOLAB_COOKIE ? { cookie: deps.config.HOYOLAB_COOKIE } : {}),
+  });
+
+  const identityDeps: IdentityDeps = { linking, providers, roles, rankSync, bus: deps.bus, chronicle };
 
   return {
     name: 'identity',

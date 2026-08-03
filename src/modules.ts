@@ -36,6 +36,7 @@ export function buildModules(identityDeps: IdentityModuleDeps): BotModule[] {
       // замыкании экземпляра, и второй экземпляр не знал бы, что цепь уже разомкнута.
       fetchClientFor: identityDeps.fetchClientFor,
       rateLimiter: identityDeps.rateLimiter,
+      ...(identityDeps.config.HOYOLAB_COOKIE ? { hoyolabCookie: identityDeps.config.HOYOLAB_COOKIE } : {}),
     }),
     createProgressionModule({ db: identityDeps.db, cache: identityDeps.cache }),
     // Прогнозы стоят после прогрессии не по алфавиту: монеты за угаданное начисляет её

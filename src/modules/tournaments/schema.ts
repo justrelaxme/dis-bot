@@ -440,7 +440,15 @@ export const matchDrafts = pgTable(
     /** Снимок пула на момент создания: патч не должен переписывать прошлое. */
     pool: jsonb('pool')
       .$type<
-        { id: string; label: string; imageUrl?: string; iconUrl?: string; group?: DraftGroup }[]
+        {
+          id: string;
+          label: string;
+          imageUrl?: string;
+          iconUrl?: string;
+          group?: DraftGroup;
+          /** У кого этот персонаж есть. Только у Genshin и только когда состав прочитан. */
+          owned?: ('a' | 'b')[];
+        }[]
       >()
       .notNull(),
     sequence: jsonb('sequence')

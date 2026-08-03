@@ -7,6 +7,8 @@ import { VALORANT_MAPS } from '../../../src/modules/tournaments/draft/pools.js';
 import type { MatchRow, TournamentRow } from '../../../src/modules/tournaments/schema.js';
 import { createDraftsService } from '../../../src/modules/tournaments/services/drafts.js';
 import { createTournamentsService } from '../../../src/modules/tournaments/services/tournaments.js';
+import { createLinkingService } from '../../../src/modules/identity/services/linking.js';
+import { genshinUidOfEntrant } from '../../../src/modules/tournaments/services/strength.js';
 import { withPostgres } from '../../helpers/postgres.js';
 import { withRedis } from '../../helpers/redis.js';
 
@@ -87,6 +89,8 @@ async function makeMatch(options: {
   game: 'dota2' | 'valorant' | 'genshin';
   solo: boolean;
   abilities?: boolean;
+  /** UID Genshin, привязанный и подтверждённый у участника этой стороны. */
+  genshinUids?: Partial<Record<'a' | 'b', string>>;
 }): Promise<{ tournament: TournamentRow; match: MatchRow }> {
   counter += 1;
   const service = createTournamentsService({ db: pg.db });
@@ -109,11 +113,25 @@ async function makeMatch(options: {
   await service.openRegistration(tournament.id, new Date(Date.now() + 3_600_000));
 
   const ids: number[] = [];
+  const linking = createLinkingService({ db: pg.db });
   for (let index = 0; index < 2; index += 1) {
     const user = `9${String(counter).padStart(8, '0')}${String(index).padStart(8, '0')}`;
     const entrant = await service.createEntrant(tournament.id, user, `Состав ${index + 1}`);
     await service.checkIn(tournament.id, user);
     ids.push(entrant.id);
+
+    // Привязка нужна подтверждённой: без подтверждения любой указал бы чужой UID и играл
+    // «по его составу», и мост её намеренно не видит.
+    const uid = options.genshinUids?.[index === 0 ? 'a' : 'b'];
+    if (uid) {
+      await linking.ensureUser(user);
+      await linking.linkAccount(
+        user,
+        'enka',
+        { externalId: uid, displayName: `Игрок ${uid}`, verificationMethod: 'genshin-signature' },
+        true,
+      );
+    }
   }
   const view = await service.start(tournament.id, new Map(ids.map((id, index) => [id, 1_000 - index])));
 
@@ -126,7 +144,7 @@ async function makeMatch(options: {
  * Настоящий Redis, а не заглушка: справочники ходят через `cache.swr`, и на подделке кэша
  * тест проверял бы не тот путь, которым пул попадает в драфт в бою.
  */
-function drafts() {
+function drafts(options?: { chronicle?: Parameters<typeof createDraftsService>[0]['chronicle'] }) {
   const config = loadConfig({
     DISCORD_TOKEN: 'test',
     DISCORD_APP_ID: '123456789012345678',
@@ -146,10 +164,97 @@ function drafts() {
       dotaClient: catalogClient(heroes),
       valorantClient: catalogClient(agents),
       enkaClient: enkaCatalogClient(genshinRoster, genshinLocales),
+      ...(options?.chronicle ? { chronicle: options.chronicle, genshinUidOf } : {}),
     }),
     cache,
   };
 }
+
+const genshinUidOf = (entrantId: number): Promise<string | null> => genshinUidOfEntrant(pg.db, entrantId);
+
+/** Летопись-заглушка: отдаёт заданный состав по UID, ничего не зная про сеть. */
+function chronicleWith(byUid: Record<string, string[]>): Parameters<typeof createDraftsService>[0]['chronicle'] {
+  return {
+    configured: true,
+    roster: async (uid: string) => {
+      const ids = byUid[uid];
+      return ids ? { ok: true, characters: ids.map((id) => ({ id })) } : { ok: false };
+    },
+  };
+}
+
+/**
+ * Пометки «есть на аккаунте». Смысл в том, чтобы бан не уходил в пустоту: банить персонажа,
+ * которого у соперника и не было, — потраченный ход, и видеть это надо до хода.
+ */
+describe('состав аккаунта в пуле драфта', () => {
+  it('помечает, у кого какой персонаж есть', async () => {
+    const { tournament, match } = await makeMatch({
+      game: 'genshin',
+      solo: true,
+      genshinUids: { a: '700000001', b: '700000002' },
+    });
+    const { service, cache } = drafts({
+      chronicle: chronicleWith({
+        '700000001': ['10000100', '10000101'],
+        '700000002': ['10000101', '10000102'],
+      }),
+    });
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const pool = created?.draft.pool ?? [];
+    const owned = (id: string): string[] | undefined => pool.find((option) => option.id === id)?.owned;
+    expect(owned('10000100')).toEqual(['a']);
+    expect(owned('10000101')).toEqual(['a', 'b']);
+    expect(owned('10000102')).toEqual(['b']);
+    // Ни у кого — это пустой список, а не отсутствие пометки: про этого персонажа известно.
+    expect(owned('10000103')).toBeUndefined();
+  });
+
+  /**
+   * Отсутствие пометок означает «неизвестно». Оно и должно быть неотличимо от того, как драфт
+   * работал до Летописи: закрытая Летопись не повод останавливать матч.
+   */
+  it('закрытая Летопись оставляет пул без пометок', async () => {
+    const { tournament, match } = await makeMatch({
+      game: 'genshin',
+      solo: true,
+      genshinUids: { a: '700000011' },
+    });
+    const { service, cache } = drafts({ chronicle: chronicleWith({}) });
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    expect((created?.draft.pool ?? []).every((option) => option.owned === undefined)).toBe(true);
+  });
+
+  it('без Летописи вовсе пул тот же, что был', async () => {
+    const { tournament, match } = await makeMatch({
+      game: 'genshin',
+      solo: true,
+      genshinUids: { a: '700000021' },
+    });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    expect((created?.draft.pool ?? []).every((option) => option.owned === undefined)).toBe(true);
+  });
+
+  it('без подтверждённой привязки состав не читается: чужой UID играл бы за своего', async () => {
+    const { tournament, match } = await makeMatch({ game: 'genshin', solo: true });
+    const { service, cache } = drafts({ chronicle: chronicleWith({ '700000031': ['10000100'] }) });
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    expect((created?.draft.pool ?? []).every((option) => option.owned === undefined)).toBe(true);
+  });
+});
 
 describe('драфт персонажей Genshin', () => {
   /**

@@ -106,12 +106,16 @@ describe('полотно драфта', () => {
     imageUrl: `https://media.valorant-api.com/agents/${index}/killfeedportrait.png`,
   }));
 
-  const shell = (pool: DraftOption[], phases: { group: 'maps' | 'agents' | 'heroes'; total: number }[]) =>
+  const shell = (
+    pool: DraftOption[],
+    phases: { group: 'maps' | 'agents' | 'heroes' | 'characters'; total: number }[],
+    you: 'a' | 'b' | null = 'a',
+  ) =>
     draftShell({
       matchId: 7,
       tournamentName: 'Кубок',
       teams: { a: 'Пантеры', b: 'Кобры' },
-      you: 'a',
+      you,
       pool,
       phases: phases.map((phase) => ({ ...phase, done: 0, resultIds: [] })),
     });
@@ -185,5 +189,68 @@ describe('полотно драфта', () => {
     );
 
     expect(html).toContain('&lt;b&gt;Ascent&lt;/b&gt;');
+  });
+});
+
+/**
+ * Пометка «нет на аккаунте» у персонажей Genshin. Проверяется точка зрения смотрящего: одна
+ * и та же плитка для одной стороны «нет у тебя», для другой — «нет у соперника», и это две
+ * разные подсказки, а не одна на двоих.
+ */
+describe('состав аккаунта на полотне драфта', () => {
+  const shell = (pool: DraftOption[], you: 'a' | 'b' | null): string =>
+    draftShell({
+      matchId: 7,
+      tournamentName: 'Кубок',
+      teams: { a: 'Пантеры', b: 'Кобры' },
+      you,
+      pool,
+      phases: [{ group: 'characters', total: pool.length, done: 0, resultIds: [] }],
+    });
+
+  const characters: DraftOption[] = [
+    { id: '10000002', label: 'Аяка', group: 'characters', owned: ['a'] },
+    { id: '10000030', label: 'Чжун Ли', group: 'characters', owned: ['a', 'b'] },
+    { id: '10000089', label: 'Фурина', group: 'characters', owned: ['b'] },
+    { id: '10000046', label: 'Ху Тао', group: 'characters' },
+  ];
+  it('своей стороне говорит, чего нет у неё, и чего нет у соперника', () => {
+    const html = shell(characters, 'a');
+
+    // Фурины нет у стороны «a» — она смотрит.
+    expect(html).toContain('нет у тебя');
+    // Аяки нет у стороны «b».
+    expect(html).toContain('нет у соперника');
+  });
+
+  it('та же плитка для другой стороны читается наоборот', () => {
+    const forB = shell([{ id: '10000089', label: 'Фурина', group: 'characters', owned: ['b'] }], 'b');
+
+    expect(forB).toContain('нет у соперника');
+    expect(forB).not.toContain('нет у тебя');
+  });
+
+  /** Пометка помогает делать ход. Зритель ходов не делает, и шум ему ни к чему. */
+  it('зрителю без стороны не показывается ничего', () => {
+    const html = shell(characters, null);
+
+    expect(html).not.toContain('нет у тебя');
+    expect(html).not.toContain('нет у соперника');
+  });
+
+  /**
+   * Отсутствие пометки означает «неизвестно», а не «нет ни у кого». Летопись бывает закрыта,
+   * ключа бота может не быть вовсе — и тогда драфт идёт как раньше, без пометок.
+   */
+  it('без сведений о составе плитка ничем не помечена', () => {
+    const html = shell([{ id: '10000046', label: 'Ху Тао', group: 'characters' }], 'a');
+
+    expect(html).not.toContain('нет у');
+  });
+
+  it('пометка не запрещает ход: плитка остаётся свободной', () => {
+    const html = shell([{ id: '10000089', label: 'Фурина', group: 'characters', owned: ['b'] }], 'a');
+
+    expect(html).toContain('class="tile free lacks-you"');
   });
 });

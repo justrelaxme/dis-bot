@@ -5,6 +5,7 @@ import type { FetchClient } from '../../core/http/fetch-client.js';
 import type { Logger } from '../../core/logger.js';
 import type { BotModule } from '../../core/module.js';
 import type { RateLimiter } from '../../core/rate-limit.js';
+import { createHoyolabChronicle } from '../identity/providers/hoyolab.js';
 import { createManageCommand } from './commands/manage.js';
 import {
   createButtonHandler,
@@ -27,6 +28,7 @@ import { createDraftsService } from './services/drafts.js';
 import { createPollFinalizer } from './services/finalizer.js';
 import { createPollsService } from './services/polls.js';
 import { runCycleTick } from './services/runner.js';
+import { genshinUidOfEntrant } from './services/strength.js';
 import { createTournamentsService } from './services/tournaments.js';
 
 /** Раз в 5 минут: достаточно быстро для голосования на несколько часов и не бьёт по Discord API. */
@@ -75,6 +77,11 @@ export interface TournamentsModuleDeps {
   rateLimiter?: RateLimiter;
   /** Кэш: в нём живёт справочник героев Dota для драфта. */
   cache: Cache;
+  /**
+   * Cookie HoYoLAB владельца бота: с ними драфт персонажей Genshin помечает, у кого какой
+   * персонаж есть. Без них пометок нет, и это штатное состояние.
+   */
+  hoyolabCookie?: string;
 }
 
 /**
@@ -115,6 +122,18 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
           dotaClient: deps.fetchClientFor('opendota'),
           valorantClient: deps.fetchClientFor('valorant-api'),
           enkaClient: deps.fetchClientFor('enka'),
+        }
+      : {}),
+    // Летопись читается отдельным клиентом: у неё свой предохранитель, и её отказ не должен
+    // закрывать справочник персонажей, из которого собирается сам пул.
+    ...(deps.fetchClientFor && deps.rateLimiter
+      ? {
+          chronicle: createHoyolabChronicle({
+            client: deps.fetchClientFor('hoyolab'),
+            rateLimiter: deps.rateLimiter,
+            ...(deps.hoyolabCookie ? { cookie: deps.hoyolabCookie } : {}),
+          }),
+          genshinUidOf: (entrantId: number) => genshinUidOfEntrant(deps.db, entrantId),
         }
       : {}),
   });

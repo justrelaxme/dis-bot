@@ -109,6 +109,16 @@ export function createDraftsService(deps: {
   valorantClient?: FetchClient;
   /** Клиент Enka.Network: нужен только для справочника персонажей Genshin. */
   enkaClient?: FetchClient;
+  /**
+   * Состав аккаунта Genshin из Летописи HoYoLAB. Необязательна: без неё драфт идёт без
+   * пометок «есть на аккаунте», и это ровно то, что было до её появления.
+   */
+  chronicle?: {
+    configured: boolean;
+    roster(uid: string): Promise<{ ok: true; characters: { id: string }[] } | { ok: false }>;
+  };
+  /** UID Genshin участника. Отдаётся мостом к модулю личности, чтобы драфт не знал SQL. */
+  genshinUidOf?: (entrantId: number) => Promise<string | null>;
 }) {
   const { db, cache, logger } = deps;
 
@@ -219,6 +229,48 @@ export function createDraftsService(deps: {
     });
   }
 
+  /**
+   * Отмечает в пуле, у кого какой персонаж есть.
+   *
+   * Пул при этом остаётся общим и полным: пометка — сведения, а не запрет. Запрещать пик
+   * персонажа, которого бот «не увидел», было бы хуже ошибки — Летопись обновляется с
+   * задержкой, и вчерашняя крутка в ней ещё не появилась. Пусть игрок решает сам, зная.
+   *
+   * Идентификаторы сходятся сами: и справочник Enka, и Летопись называют персонажа одним и
+   * тем же внутренним номером игры, потому что берут его из одних данных.
+   */
+  async function markOwnership(pool: DraftOption[], match: MatchRow): Promise<void> {
+    const chronicle = deps.chronicle;
+    const uidOf = deps.genshinUidOf;
+    if (!chronicle?.configured || !uidOf) return;
+
+    const sides: [DraftSide, number | null][] = [
+      ['a', match.entrantAId],
+      ['b', match.entrantBId],
+    ];
+
+    for (const [side, entrantId] of sides) {
+      if (entrantId === null) continue;
+      const uid = await uidOf(entrantId);
+      if (!uid) continue;
+
+      let result: Awaited<ReturnType<typeof chronicle.roster>>;
+      try {
+        result = await chronicle.roster(uid);
+      } catch (error) {
+        logger.warn({ err: error, uid }, 'состав аккаунта Genshin не прочитан — драфт пойдёт без пометок');
+        continue;
+      }
+      if (!result.ok) continue;
+
+      const owned = new Set(result.characters.map((character) => character.id));
+      for (const option of pool) {
+        if (!owned.has(option.id)) continue;
+        option.owned = [...(option.owned ?? []), side];
+      }
+    }
+  }
+
   async function choicesOf(draftId: number): Promise<DraftChoiceRow[]> {
     return db
       .select()
@@ -307,6 +359,11 @@ export function createDraftsService(deps: {
       }
 
       if (pool.length < 2 || sequence.length === 0) return null;
+
+      // Пометки ставятся до записи: пул уходит в базу снимком на момент матча, и потом
+      // страница драфта не зависит ни от HoYoLAB, ни от того, что игрок успел накрутить
+      // после начала. Летопись, прочитанная во время матча, — это и есть протокол.
+      if (subject === 'characters') await markOwnership(pool, match);
 
       const [created] = await db
         .insert(matchDrafts)

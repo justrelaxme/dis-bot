@@ -2,6 +2,7 @@ import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { describeForUser, UserError } from '../../../core/errors.js';
 import type { EventBus } from '../../../core/events/bus.js';
 import type { CommandDefinition } from '../../../core/module.js';
+import { describeRoster, explainRosterFailure, type HoyolabChronicle } from '../providers/hoyolab.js';
 import { canVerify, type GameProvider } from '../providers/provider.js';
 import { RIOT_PLATFORMS, parseRiotId, platformToRegionalRoute } from '../providers/riot.js';
 import { manualValorantRank } from '../providers/valorant.js';
@@ -17,6 +18,11 @@ import type { RoleMappingService } from '../services/role-mapping.js';
  */
 export interface IdentityDeps {
   linking: LinkingService;
+  /**
+   * Состав аккаунта Genshin. Необязательна: без ключа HoYoLAB состав остаётся заявленным
+   * игроком, и это штатное состояние, а не поломка.
+   */
+  chronicle?: HoyolabChronicle;
   providers: Map<ProviderId, GameProvider>;
   roles: RoleMappingService;
   rankSync: RankSyncService;
@@ -185,13 +191,23 @@ export function createLinkCommand(deps: IdentityDeps): CommandDefinition {
         const account = (await deps.linking.listAccounts(userId)).find((a) => a.id === accountId);
         if (account) await deps.rankSync.syncAccount(account);
 
+        // Состав читается сразу: игроку важно узнать про закрытую Летопись здесь, а не за
+        // минуту до драфта. Отказ ничего не отменяет — привязка уже сохранена.
+        const roster = await deps.chronicle?.roster(verified.externalId);
+        const aboutRoster =
+          roster === undefined
+            ? 'Состав аккаунта на этом сервере не проверяется, поэтому персонажи считаются заявленными.'
+            : roster.ok
+              ? `Состав прочитан: ${describeRoster(roster.characters)}. В драфте будет видно, у кого какой персонаж есть.`
+              : explainRosterFailure(roster.reason);
+
         await interaction.followUp({
           content:
             `Готово: **${verified.displayName}** привязан и подтверждён. Подпись профиля можно вернуть какой была.
 ` +
-            'Дальше бот сам читает прогресс Витой Бездны — он и идёт вместо ранга, потому что ' +
-            'соревновательного рейтинга в Genshin нет. А вот какие у тебя персонажи, бот узнать ' +
-            'не может: игра показывает наружу только витрину профиля, до восьми штук.',
+            'Прогресс Витой Бездны бот теперь читает сам — он идёт вместо ранга, потому что ' +
+            `соревновательного рейтинга в Genshin нет.
+${aboutRoster}`,
           flags: MessageFlags.Ephemeral,
         });
         return;

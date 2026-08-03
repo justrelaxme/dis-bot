@@ -75,6 +75,29 @@ export function linkCommandFor(game: TournamentGame): string {
 }
 
 /**
+ * UID Genshin участника — по нему читается состав аккаунта для драфта персонажей.
+ *
+ * Только у одиночек: этаж Бездны проходит один человек своей четвёркой, и «состав команды из
+ * пяти аккаунтов» для него ничего не значит. У команды возвращается `null`, и драфт тогда
+ * идёт без пометок — так же, как когда состав вообще не удалось прочитать.
+ *
+ * Подтверждение обязательно. Здесь оно возможно (код в подписи профиля), и без него любой
+ * мог бы указать чужой UID и играть «по его составу».
+ */
+export async function genshinUidOfEntrant(db: Database, entrantId: number): Promise<string | null> {
+  const result = await db.execute<{ external_id: string }>(sql`
+    select a.external_id
+    from tournament_entrant_members m
+    join game_accounts a
+      on a.user_id = m.user_id and a.provider = 'enka' and a.verified_at is not null
+    where m.entrant_id = ${entrantId}
+    limit 2
+  `);
+  // Ровно один игрок: у двоих и больше «его состав» — уже не его.
+  return result.rows.length === 1 ? (result.rows[0]?.external_id ?? null) : null;
+}
+
+/**
  * Сила каждого участника: для команды — **средний** ранг состава, для одиночки — его
  * собственный. Средний, а не максимальный: команда из одного Immortal и четырёх Herald
  * играет не как Immortal, и сеять её первой значило бы отдать ей пропуск, которого она
