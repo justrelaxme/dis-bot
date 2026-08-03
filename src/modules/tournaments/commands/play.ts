@@ -12,6 +12,7 @@ import {
   type StringSelectMenuInteraction,
 } from 'discord.js';
 import { UserError, describeForUser } from '../../../core/errors.js';
+import type { Logger } from '../../../core/logger.js';
 import type { CommandDefinition, EventHandler, ModuleContext } from '../../../core/module.js';
 import type { ChannelsGateway } from '../discord/channels.js';
 import {
@@ -554,8 +555,20 @@ export async function createTournamentRooms(deps: PlayDeps, guild: Guild, tourna
   await ensureMatchDrafts(deps, guild, tournamentId);
 }
 
-/** Уборка комнат после турнира: без неё сервер за месяц ежедневных турниров забьётся. */
-async function cleanup(deps: PlayDeps, guild: Guild, tournamentId: number, ctx: ModuleContext): Promise<void> {
+/**
+ * Уборка комнат после турнира: без неё сервер за месяц ежедневных турниров забьётся.
+ *
+ * Экспортируется намеренно. Турнир заканчивается не только нажатием кнопки: последний матч
+ * чаще закрывается молчанием соперника, то есть джобой автоподтверждения, — и она обязана
+ * убирать за собой так же, как обработчик команды. Пока уборка жила только здесь, турнир,
+ * доигранный без подтверждения, оставлял все голосовые комнаты на сервере.
+ */
+export async function closeTournamentRooms(
+  deps: Pick<PlayDeps, 'tournaments' | 'channels'>,
+  guild: Guild,
+  tournamentId: number,
+  logger: Logger,
+): Promise<void> {
   const entrants = await deps.tournaments.activeEntrants(tournamentId);
   for (const entrant of entrants) {
     if (entrant.voiceChannelId) await deps.channels.deleteChannel(guild, entrant.voiceChannelId);
@@ -567,7 +580,11 @@ async function cleanup(deps: PlayDeps, guild: Guild, tournamentId: number, ctx: 
     await deps.channels.archiveThread(guild, threadId);
   }
 
-  ctx.logger.info({ tournamentId }, 'комнаты турнира убраны');
+  logger.info({ tournamentId }, 'комнаты турнира убраны');
+}
+
+async function cleanup(deps: PlayDeps, guild: Guild, tournamentId: number, ctx: ModuleContext): Promise<void> {
+  await closeTournamentRooms(deps, guild, tournamentId, ctx.logger);
 }
 
 /**

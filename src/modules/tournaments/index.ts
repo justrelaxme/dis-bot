@@ -11,8 +11,10 @@ import {
   createCheckinCommand,
   createMatchCommand,
   createTeamCommand,
+  closeTournamentRooms,
   createTournamentRooms,
 } from './commands/play.js';
+import { announceFinish } from './discord/closing.js';
 import { createTournamentPollCommand } from './commands/poll.js';
 import { createStatsCommand } from './commands/stats.js';
 import { createChannelsGateway } from './discord/channels.js';
@@ -180,8 +182,27 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
         cron: AUTO_CONFIRM_CRON,
         async run(ctx): Promise<void> {
           const settled = await tournaments.autoConfirmDue(new Date(), AUTO_CONFIRM_BATCH_SIZE);
-          if (settled.length > 0) {
-            ctx.logger.info({ count: settled.length }, 'результаты приняты по молчанию соперника');
+          if (settled.length === 0) return;
+          ctx.logger.info({ count: settled.length }, 'результаты приняты по молчанию соперника');
+
+          // Последний матч турнира чаще всего закрывается именно здесь, а не кнопкой. Значит,
+          // и убирать за турниром обязана эта джоба: пока она этого не делала, голосовые
+          // комнаты команд оставались на сервере навсегда.
+          for (const { match, finished } of settled) {
+            if (!finished) continue;
+            try {
+              const tournament = await tournaments.byId(match.tournamentId);
+              const guild = await ctx.client.guilds.fetch(tournament.guildId).catch(() => null);
+              if (!guild) continue;
+              await closeTournamentRooms(play, guild, tournament.id, ctx.logger);
+              await announceFinish(play, guild, tournament, ctx.logger);
+            } catch (error) {
+              // Сбой уборки одного турнира не должен обрывать остальные принятые результаты.
+              ctx.logger.error(
+                { err: error, matchId: match.id },
+                'турнир закрылся по молчанию, но убрать за ним не удалось',
+              );
+            }
           }
         },
       },

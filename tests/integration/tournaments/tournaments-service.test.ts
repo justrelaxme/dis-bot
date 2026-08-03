@@ -322,6 +322,51 @@ describe('событие о победителе', () => {
   });
 });
 
+/**
+ * Час молчания соперника — самый частый путь, которым закрывается последний матч
+ * ежедневного турнира. Признак «турнир закончился» должен доехать до вызывающего: пока он
+ * терялся, джоба принимала результат и ничего больше не делала, а голосовые комнаты команд
+ * оставались на сервере навсегда. Уборка живёт у вызывающего, поэтому проверяем именно то,
+ * по чему он её решает запустить.
+ */
+describe('приём результата по молчанию соперника', () => {
+  it('о закрытии турнира сообщает наверх, а не только принимает матч', async () => {
+    const { service, tournamentId, entrantIds, users } = await startTournament({ registered: 2 });
+
+    const view = await service.bracket(tournamentId);
+    const final = view.matches.find((match) => match.state === 'ready');
+    expect(final).toBeDefined();
+    await service.report(final?.id as number, users[0] as string, entrantIds[0] as number);
+
+    // Смотрим из будущего вместо правки reportedAt в базе: порог считается от переданного
+    // времени, и подделывать строку ради этого незачем. Приём результатов идёт по всей базе,
+    // поэтому ищем свой матч, а не полагаемся на длину: тесты делят одну базу.
+    const settled = await service.autoConfirmDue(new Date(Date.now() + 10 * 60 * 60 * 1_000), 50);
+    const mine = settled.find((entry) => entry.match.id === final?.id);
+
+    expect(mine, 'матч не приняли по молчанию').toBeDefined();
+    expect(mine?.finished, 'турнир закрылся, но джоба об этом не узнала').toBe(true);
+    expect(await stateOf(tournamentId)).toBe('finished');
+  });
+
+  it('матч в середине сетки турнир не закрывает', async () => {
+    const { service, tournamentId, entrantIds, users } = await startTournament({ registered: 4 });
+
+    const view = await service.bracket(tournamentId);
+    const first = view.matches.find((match) => match.state === 'ready');
+    const reporter = view.entrants.find((entrant) => entrant.id === first?.entrantAId);
+    const index = entrantIds.indexOf(reporter?.id as number);
+    await service.report(first?.id as number, users[index] as string, reporter?.id as number);
+
+    const settled = await service.autoConfirmDue(new Date(Date.now() + 10 * 60 * 60 * 1_000), 50);
+    const mine = settled.find((entry) => entry.match.id === first?.id);
+
+    expect(mine, 'матч не приняли по молчанию').toBeDefined();
+    expect(mine?.finished, 'матч первого круга не должен закрывать турнир').toBe(false);
+    expect(await stateOf(tournamentId)).toBe('running');
+  });
+});
+
 describe('брошенный турнир', () => {
   it('распознаётся по отсутствию изменений и не трогает живой', async () => {
     const stale = await startTournament({ registered: 4 });

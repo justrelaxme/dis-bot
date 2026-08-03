@@ -1020,7 +1020,18 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
      * неотвечающий игрок останавливает всю сетку, и турнир упирается в присутствие
      * организатора ровно так же, как если бы результаты вбивал он сам.
      */
-    async autoConfirmDue(now: Date, limit: number): Promise<MatchRow[]> {
+    /**
+     * Принимает результаты, которые соперник не подтвердил за отведённый час.
+     *
+     * Признак `finished` возвращается наверх, и это не украшение подписи: последний матч
+     * турнира чаще всего закрывается именно здесь, молчанием, а не нажатием кнопки. Пока
+     * этот признак терялся, турнир, доигранный без подтверждения, заканчивался вообще без
+     * уборки — голосовые комнаты команд оставались на сервере навсегда.
+     */
+    async autoConfirmDue(
+      now: Date,
+      limit: number,
+    ): Promise<{ match: MatchRow; finished: boolean }[]> {
       const threshold = new Date(now.getTime() - AUTO_CONFIRM_AFTER_MS);
       const due = await db
         .select()
@@ -1029,11 +1040,10 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         .orderBy(asc(tournamentMatches.reportedAt))
         .limit(limit);
 
-      const settled: MatchRow[] = [];
+      const settled: { match: MatchRow; finished: boolean }[] = [];
       for (const match of due) {
         if (match.reportedWinnerId === null) continue;
-        const result = await this.settle(match.id, match.reportedWinnerId, 'system', 'auto-confirm', false);
-        settled.push(result.match);
+        settled.push(await this.settle(match.id, match.reportedWinnerId, 'system', 'auto-confirm', false));
       }
       return settled;
     },
