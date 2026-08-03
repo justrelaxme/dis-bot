@@ -3,6 +3,7 @@ import type { Logger } from '../../../core/logger.js';
 import { standingsOf } from '../standings.js';
 import type { TournamentRow } from '../schema.js';
 import type { TournamentsService } from '../services/tournaments.js';
+import type { TournamentEventsGateway } from './events.js';
 
 /**
  * Что бот говорит, когда турнир закончился сам.
@@ -17,6 +18,40 @@ import type { TournamentsService } from '../services/tournaments.js';
 export interface ClosingDeps {
   tournaments: TournamentsService;
   publicBaseUrl: string;
+  /** Афиша во вкладке «События»: её надо закрыть, иначе турнир остаётся «идущим» навсегда. */
+  events?: TournamentEventsGateway;
+}
+
+/**
+ * Победитель турнира по его сетке. Отдельно от объявления, потому что нужен и афише: она
+ * остаётся в списке прошедших событий, и без победителя не отвечает на единственный вопрос,
+ * который к ней потом приходят.
+ */
+export async function championOf(
+  deps: Pick<ClosingDeps, 'tournaments'>,
+  tournamentId: number,
+): Promise<string | null> {
+  const view = await deps.tournaments.bracket(tournamentId);
+  const places = standingsOf(view.matches);
+  if (places.championId === null) return null;
+  return view.entrants.find((entrant) => entrant.id === places.championId)?.displayName ?? null;
+}
+
+/**
+ * Закрывает турнир снаружи: объявляет итог и снимает афишу. Вызывается и обработчиком кнопки,
+ * и джобой автоподтверждения — у турнира два пути закрыться, и оба обязаны выглядеть одинаково.
+ */
+export async function closeTournamentPublic(
+  deps: ClosingDeps,
+  guild: Guild,
+  tournament: TournamentRow,
+  logger: Logger,
+): Promise<void> {
+  const champion = await championOf(deps, tournament.id);
+  await announceFinish(deps, guild, tournament, logger);
+  if (deps.events && tournament.scheduledEventId) {
+    await deps.events.finish(guild, tournament.scheduledEventId, champion);
+  }
 }
 
 /**

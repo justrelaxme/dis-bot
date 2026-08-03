@@ -1,0 +1,1 @@
+ALTER TABLE "tournaments" ADD COLUMN "scheduled_event_id" text;

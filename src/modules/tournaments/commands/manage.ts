@@ -8,6 +8,7 @@ import { registrationPanel } from '../discord/onboarding.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentFormat, TournamentGame } from '../schema.js';
 import { parseClock, type CycleService } from '../services/cycle.js';
+import type { TournamentEventsGateway } from '../discord/events.js';
 import type { MessagesService } from '../services/messages.js';
 import { entrantStrengths } from '../services/strength.js';
 import type { TournamentsService } from '../services/tournaments.js';
@@ -32,6 +33,8 @@ export interface ManageDeps {
   publicBaseUrl: string;
   /** Учёт отправленных сообщений — чтобы убрать панель регистрации после турнира. */
   messages?: MessagesService;
+  /** Афиша во вкладке «События»: ставится при создании, снимается при отмене. */
+  events?: TournamentEventsGateway;
 }
 
 function requireGuild(guild: Guild | null): Guild {
@@ -243,6 +246,17 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
     components: panel.components,
   });
 
+  // Афиша во вкладке «События»: сама напомнит подписавшимся и покажет отсчёт.
+  if (deps.events) {
+    const eventId = await deps.events.announce(
+      guild,
+      tournament,
+      closesAt,
+      `${deps.publicBaseUrl}/t/${tournament.id}`,
+    );
+    if (eventId) await deps.tournaments.attachScheduledEvent(tournament.id, eventId);
+  }
+
   // Панель с живыми кнопками — сор, и самый вредный: по ней нажимают через сутки. Запись
   // не должна ронять создание турнира, поэтому ошибка здесь только в лог.
   try {
@@ -317,6 +331,10 @@ async function cancel(interaction: Interaction, guild: Guild, deps: ManageDeps):
   if (!tournament) throw new UserError('Сейчас нет турнира, который можно отменить.');
 
   const entrants = await deps.tournaments.activeEntrants(tournament.id);
+  // Афишу снимаем до отмены: после неё турнир уже не найти по «текущему».
+  if (deps.events && tournament.scheduledEventId) {
+    await deps.events.cancel(guild, tournament.scheduledEventId);
+  }
   await deps.tournaments.cancel(tournament.id);
 
   for (const entrant of entrants) {

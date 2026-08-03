@@ -429,6 +429,14 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         .where(and(eq(tournaments.id, tournamentId), eq(tournaments.state, 'draft')));
     },
 
+    /** Запоминает афишу турнира — событие Discord, которое её показывает. */
+    async attachScheduledEvent(tournamentId: number, eventId: string): Promise<void> {
+      await db
+        .update(tournaments)
+        .set({ scheduledEventId: eventId, updatedAt: new Date() })
+        .where(eq(tournaments.id, tournamentId));
+    },
+
     /**
      * Турниры, которые формально идут, а на самом деле брошены: с момента старта прошло
      * больше отведённого времени и **ни один матч не менялся** всё это время.

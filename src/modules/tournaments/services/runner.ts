@@ -4,6 +4,7 @@ import type { Logger } from '../../../core/logger.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { ScheduleRow, TournamentGame } from '../schema.js';
 import { checkinReminder, registrationPanel } from '../discord/onboarding.js';
+import type { TournamentEventsGateway } from '../discord/events.js';
 import { eventLabel, localParts, parseClock, type CycleService } from './cycle.js';
 import type { MessagesService } from './messages.js';
 import type { PollsService } from './polls.js';
@@ -21,6 +22,11 @@ export interface RunnerDeps {
    * Необязателен: без него цикл идёт как раньше, только сор в канале остаётся.
    */
   messages?: MessagesService;
+  /**
+   * Афиша во вкладке «События». Необязательна: без права «Управление событиями» её просто не
+   * будет, и вечер пройдёт как обычно.
+   */
+  events?: TournamentEventsGateway;
   /** Создание комнат: голосовые командам и ветки матчам. */
   onStarted(guild: Guild, tournamentId: number): Promise<void>;
 }
@@ -241,6 +247,18 @@ async function runGuild(
     // сейчас, когда турнир наконец есть: на момент отправки привязать его было не к чему.
     await remember(tournament.id, { channelId: poll.channelId, id: poll.messageId }, true);
 
+    // Афиша во вкладке «События»: она сама напомнит подписавшимся и покажет отсчёт. Ставится
+    // вместе с открытием регистрации — именно до старта её и надо видеть.
+    if (deps.events) {
+      const eventId = await deps.events.announce(
+        guild,
+        tournament,
+        startsAt,
+        `${deps.publicBaseUrl}/t/${tournament.id}`,
+      );
+      if (eventId) await deps.tournaments.attachScheduledEvent(tournament.id, eventId);
+    }
+
     const channel = await announceChannel(client, schedule);
     if (channel) {
       // Панель с кнопками, а не инструкция текстом: новичок не должен разбираться, какую
@@ -291,6 +309,10 @@ async function runGuild(
     // Меньше двух — играть физически некому. Порога «меньше четырёх — отменяем» нет:
     // событие на две команды проводится, просто называется иначе.
     if (ready.length < 2) {
+      const doomed = await deps.tournaments.byId(cycle.tournamentId);
+      if (deps.events && doomed.scheduledEventId) {
+        await deps.events.cancel(guild, doomed.scheduledEventId);
+      }
       await deps.tournaments.cancel(cycle.tournamentId);
       await deps.cycles.skipDay(cycle.id, `отметилось ${ready.length}`);
       const empty = await deps.cycles.bumpEmptyDays(schedule.guildId, true);
@@ -312,6 +334,9 @@ async function runGuild(
     const view = await deps.tournaments.start(cycle.tournamentId, strengths);
     await deps.cycles.updateCycle(cycle.id, { stage: 'running' });
     await deps.onStarted(guild, cycle.tournamentId);
+    if (deps.events && view.tournament.scheduledEventId) {
+      await deps.events.begin(guild, view.tournament.scheduledEventId);
+    }
 
     const seeded = view.entrants.filter((entrant) => entrant.seed !== null);
     const pairs = view.matches

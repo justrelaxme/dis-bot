@@ -113,6 +113,13 @@
       "when": 1785755241555,
       "tag": "0015_motionless_wrecker",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1785755923973,
+      "tag": "0016_glossy_firedrake",
+      "breakpoints": true
     }
   ]
 }

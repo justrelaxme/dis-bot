@@ -14,7 +14,8 @@ import {
   closeTournamentRooms,
   createTournamentRooms,
 } from './commands/play.js';
-import { announceFinish } from './discord/closing.js';
+import { closeTournamentPublic } from './discord/closing.js';
+import { createTournamentEventsGateway } from './discord/events.js';
 import { createTournamentPollCommand } from './commands/poll.js';
 import { createStatsCommand } from './commands/stats.js';
 import { createChannelsGateway } from './discord/channels.js';
@@ -118,12 +119,14 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
   });
 
   const messages = createMessagesService({ db: deps.db });
+  const events = createTournamentEventsGateway(deps.logger);
 
   const play = {
     tournaments,
     channels,
     drafts,
     messages,
+    events,
     publicBaseUrl: deps.publicBaseUrl,
     ...(dotaVerifier ? { dotaVerifier } : {}),
   };
@@ -168,6 +171,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
               polls,
               tournaments,
               messages,
+              events,
               publicBaseUrl: deps.publicBaseUrl,
               onStarted: async (guild, tournamentId) => {
                 await createTournamentRooms(play, guild, tournamentId);
@@ -200,7 +204,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
               const guild = await ctx.client.guilds.fetch(tournament.guildId).catch(() => null);
               if (!guild) continue;
               await closeTournamentRooms(play, guild, tournament.id, ctx.logger);
-              await announceFinish(play, guild, tournament, ctx.logger);
+              await closeTournamentPublic(play, guild, tournament, ctx.logger);
             } catch (error) {
               // Сбой уборки одного турнира не должен обрывать остальные принятые результаты.
               ctx.logger.error(

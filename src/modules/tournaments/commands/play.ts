@@ -29,6 +29,8 @@ import {
   teamPicker,
 } from '../discord/onboarding.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
+import { championOf } from '../discord/closing.js';
+import type { TournamentEventsGateway } from '../discord/events.js';
 import { parseScore, type MatchScore } from '../score.js';
 import { hasUsableLink, linkCommandFor } from '../services/strength.js';
 import type { DotaVerifier } from '../services/dota-verify.js';
@@ -63,6 +65,8 @@ export interface PlayDeps {
    * Необязателен: без него турнир идёт как раньше, просто сор в канале остаётся.
    */
   messages?: MessagesService;
+  /** Афиша во вкладке «События». Необязательна: без права её просто не будет. */
+  events?: TournamentEventsGateway;
 }
 
 function requireGuild(guild: Guild | null): Guild {
@@ -642,6 +646,13 @@ export async function closeTournamentRooms(
 
 async function cleanup(deps: PlayDeps, guild: Guild, tournamentId: number, ctx: ModuleContext): Promise<void> {
   await closeTournamentRooms(deps, guild, tournamentId, ctx.logger);
+  // Афишу во вкладке «События» надо снять здесь же, иначе турнир остаётся «идущим» навсегда.
+  // Итог объявляет сам обработчик кнопки, поэтому от публичного закрытия берём только афишу.
+  const tournament = await deps.tournaments.byId(tournamentId);
+  if (deps.events && tournament.scheduledEventId) {
+    const champion = await championOf(deps, tournamentId);
+    await deps.events.finish(guild, tournament.scheduledEventId, champion);
+  }
 }
 
 /**
