@@ -129,6 +129,11 @@ export interface FinishedTournament {
   champion: string | null;
   entrants: number;
   matches: number;
+  /**
+   * Счёт решающего матча — гранд-финала при двойном устранении, финала верхней сетки иначе.
+   * `null`, если счёт не вводили: придумать его нельзя, а прочерк честнее цифры из воздуха.
+   */
+  finalScore: string | null;
 }
 
 /** Завершённые турниры с чемпионом, новые сверху. Это и есть летопись сервера. */
@@ -146,10 +151,26 @@ export async function finishedTournaments(
     champion: string | null;
     entrants: number;
     matches: number;
+    final_score: string | null;
   }>(sql`
     select
       t.id, t.name, t.game, t.format, t.finished_at,
       w.display_name as champion,
+      (
+        -- Решающий матч: гранд-финал, если он есть, иначе последний круг верхней сетки.
+        -- Счёт берётся как записан, победитель первым — так его и читают в летописи.
+        select case
+                 when f.winner_entrant_id = f.entrant_a_id then f.score_a || ':' || f.score_b
+                 else f.score_b || ':' || f.score_a
+               end
+        from tournament_matches f
+        where f.tournament_id = t.id
+          and f.score_a is not null and f.score_b is not null
+          and f.winner_entrant_id is not null
+        order by case f.bracket when 'grand' then 2 when 'upper' then 1 else 0 end desc,
+                 f.round desc
+        limit 1
+      ) as final_score,
       (
         select count(*)::int from tournament_entrants x
         where x.tournament_id = t.id and x.seed is not null
@@ -174,6 +195,7 @@ export async function finishedTournaments(
     champion: row.champion,
     entrants: row.entrants,
     matches: row.matches,
+    finalScore: row.final_score,
   }));
 }
 

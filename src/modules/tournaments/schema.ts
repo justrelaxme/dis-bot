@@ -232,9 +232,22 @@ export const tournamentMatches = pgTable(
     entrantBId: integer('entrant_b_id'),
     winnerEntrantId: integer('winner_entrant_id'),
     state: text('state').$type<MatchState>().notNull().default('pending'),
+    /**
+     * Счёт матча. Необязателен, и это осознанно: бот не может его проверить, а требовать
+     * обязательное поле, которое всё равно вводят руками, значит выбирать между «наврал» и
+     * «не смог отчитаться». Победителя по-прежнему называют отдельно — счёт его только
+     * поясняет, а не заменяет.
+     *
+     * Заполняется тем же обновлением, что закрывает матч: до подтверждения заявленный счёт
+     * лежит в `reportedScore*`, как и заявленный победитель.
+     */
+    scoreA: integer('score_a'),
+    scoreB: integer('score_b'),
     /** Кто заявил результат: нужен, чтобы тот же человек не мог его же и подтвердить. */
     reportedBy: text('reported_by'),
     reportedWinnerId: integer('reported_winner_id'),
+    reportedScoreA: integer('reported_score_a'),
+    reportedScoreB: integer('reported_score_b'),
     reportedAt: timestamp('reported_at', { withTimezone: true }),
     confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
     disputedAt: timestamp('disputed_at', { withTimezone: true }),

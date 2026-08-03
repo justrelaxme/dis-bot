@@ -16,6 +16,7 @@ import {
   type MatchBracket,
   type MatchPosition,
 } from '../bracket.js';
+import { scoreDisagrees, type MatchScore } from '../score.js';
 import {
   tournamentEntrantMembers,
   tournamentEntrants,
@@ -128,6 +129,23 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         ),
       );
     return row?.entrant ?? null;
+  }
+
+  /**
+   * Названия сторон матча. Нужны для отказа по счёту: сказать «счёт против победителя» мало,
+   * человеку надо назвать, кто с кем перепутан, иначе он будет гадать, что именно исправить.
+   */
+  async function sideNames(
+    tournamentId: number,
+    entrantAId: number,
+    entrantBId: number,
+  ): Promise<{ a: string; b: string }> {
+    const rows = await db
+      .select({ id: tournamentEntrants.id, name: tournamentEntrants.displayName })
+      .from(tournamentEntrants)
+      .where(eq(tournamentEntrants.tournamentId, tournamentId));
+    const nameOf = (id: number): string => rows.find((row) => row.id === id)?.name ?? `#${id}`;
+    return { a: nameOf(entrantAId), b: nameOf(entrantBId) };
   }
 
   async function membersOf(entrantId: number): Promise<string[]> {
@@ -878,7 +896,17 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
      * Заявка результата. CAS по состоянию `ready`: повторная заявка на уже заявленный
      * матч не проходит, и это не ошибка сети, а именно то, что нужно.
      */
-    async report(matchId: number, actorId: string, winnerEntrantId: number): Promise<MatchRow> {
+    async report(
+      matchId: number,
+      actorId: string,
+      winnerEntrantId: number,
+      /**
+       * Счёт со стороны A и B. Необязателен: проверить его бот не может, а требовать поле,
+       * которое всё равно вводят руками, значит ставить участника перед выбором между
+       * «наврал» и «не смог отчитаться».
+       */
+      score?: MatchScore,
+    ): Promise<MatchRow> {
       const match = await this.matchById(matchId);
       if (match.entrantAId === null || match.entrantBId === null) {
         throw new UserError('В этом матче ещё не известны оба соперника.');
@@ -892,6 +920,18 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         throw new UserError('Заявить результат может только участник этого матча.');
       }
 
+      // Счёт, противоречащий названному победителю, — либо опечатка, либо попытка подправить
+      // историю. Остановить это надо здесь: в сетке и зале славы запись остаётся навсегда.
+      if (score) {
+        const names = await sideNames(match.tournamentId, match.entrantAId, match.entrantBId);
+        const disagrees = scoreDisagrees(
+          score,
+          winnerEntrantId === match.entrantAId ? 'a' : 'b',
+          names,
+        );
+        if (disagrees) throw new UserError(disagrees);
+      }
+
       const now = new Date();
       const [row] = await db
         .update(tournamentMatches)
@@ -899,6 +939,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
           state: 'reported',
           reportedBy: actorId,
           reportedWinnerId: winnerEntrantId,
+          ...(score ? { reportedScoreA: score.a, reportedScoreB: score.b } : {}),
           reportedAt: now,
           updatedAt: now,
         })
@@ -967,6 +1008,11 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       actorId: string,
       action: 'confirm' | 'resolve' | 'walkover' | 'auto-confirm' | 'verified',
       byOrganizer: boolean,
+      /**
+       * Счёт, когда матч закрывается сразу, без заявки: проверенный по данным игры результат
+       * минует `report`, и переносить счёт из `reportedScore*` там нечего.
+       */
+      score?: MatchScore,
     ): Promise<{ match: MatchRow; finished: boolean }> {
       const expected =
         action === 'confirm' || action === 'auto-confirm'
@@ -979,6 +1025,16 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         .set({
           state: action === 'walkover' ? 'walkover' : 'confirmed',
           winnerEntrantId,
+          // Заявленный счёт становится счётом матча. Победа без игры счёта не получает: её
+          // не играли, и цифры там были бы выдумкой.
+          ...(action === 'walkover'
+            ? {}
+            : score
+              ? { scoreA: score.a, scoreB: score.b }
+              : {
+                  scoreA: sql`${tournamentMatches.reportedScoreA}`,
+                  scoreB: sql`${tournamentMatches.reportedScoreB}`,
+                }),
           confirmedAt: now,
           updatedAt: now,
         })

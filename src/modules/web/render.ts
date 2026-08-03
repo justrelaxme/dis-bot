@@ -270,7 +270,20 @@ ${list || '<div class="empty"><p>Ещё никто не записался. Ко
       const entrant = names.get(id);
       const won = match.winnerEntrantId === id;
       const seed = entrant?.seed === null || entrant?.seed === undefined ? '' : `<span class="seed">${entrant.seed}</span>`;
-      const note = won ? (match.state === 'walkover' ? 'без игры' : 'победа') : '';
+      /**
+       * Справа стоит счёт, если его вводили, и слово о состоянии, если нет. Цифра сильнее
+       * слова «победа»: она отвечает и на «кто», и на «насколько». Придумывать её нельзя —
+       * бот проверить счёт не может, поэтому у матчей без счёта остаётся слово.
+       */
+      const own = id === match.entrantAId ? match.scoreA : match.scoreB;
+      const note =
+        own !== null
+          ? String(own)
+          : won
+            ? match.state === 'walkover'
+              ? 'без игры'
+              : 'победа'
+            : '';
       return `<div class="s${won ? ' won' : ''}"><span class="nm">${seed}${escape(entrant?.name ?? `#${id}`)}</span><span class="sd">${escape(note)}</span></div>`;
     };
 
@@ -498,6 +511,8 @@ export function renderHall(
     champion: string | null;
     entrants: number;
     matches: number;
+    /** Счёт решающего матча, победитель первым. Пусто, если счёт не вводили. */
+    finalScore?: string | null;
   }[],
   titles: { name: string; titles: number }[],
 ): string {
@@ -516,10 +531,13 @@ export function renderHall(
           ? '—'
           : row.finishedAt.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
       const champion = row.champion === null ? '<span class="dim">не определён</span>' : escape(row.champion);
+      // Прочерк, а не пустота: пустая ячейка читается как «забыли», прочерк — как «не вводили».
+      const score = row.finalScore ? escape(row.finalScore) : '<span class="dim">—</span>';
       return `<tr style="--delay:${index * 18}ms">
 <td class="acct"><a href="/t/${row.id}">${escape(row.name)}</a></td>
 <td>${escape(TOURNAMENT_GAME_LABELS[row.game] ?? row.game)}</td>
 <td class="champ">${champion}</td>
+<td class="num">${score}</td>
 <td class="num">${row.entrants}</td>
 <td class="num">${row.matches}</td>
 <td class="num">${escape(when)}</td>
@@ -541,7 +559,7 @@ export function renderHall(
 <h1>Зал славы</h1>
 <p class="lede">Что уже сыграно. Личные цифры — команда <code>/stats</code> в Discord.</p>
 <div class="scroll"><table>
-<thead><tr><th>Турнир</th><th>Игра</th><th>Чемпион</th><th class="num">Уч.</th><th class="num">Матчей</th><th class="num">Когда</th></tr></thead>
+<thead><tr><th>Турнир</th><th>Игра</th><th>Чемпион</th><th class="num">Финал</th><th class="num">Уч.</th><th class="num">Матчей</th><th class="num">Когда</th></tr></thead>
 <tbody>${rows}</tbody>
 </table></div>
 ${

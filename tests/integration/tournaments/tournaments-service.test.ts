@@ -367,6 +367,82 @@ describe('приём результата по молчанию соперник
   });
 });
 
+/**
+ * Счёт. Проверить его боту нечем, поэтому вся защита — согласие с названным победителем и
+ * перенос заявленного счёта в закрытый матч. Ошибка здесь остаётся в сетке и зале славы
+ * навсегда.
+ */
+describe('счёт матча', () => {
+  async function firstMatch(registered: number) {
+    const started = await startTournament({ registered });
+    const view = await started.service.bracket(started.tournamentId);
+    const match = view.matches.find((row) => row.state === 'ready');
+    if (!match) throw new Error('матч не построился');
+    return { ...started, match };
+  }
+
+  it('заявленный счёт становится счётом матча после подтверждения', async () => {
+    const { service, entrantIds, users, match } = await firstMatch(2);
+    const winner = match.entrantAId as number;
+    const winnerIndex = entrantIds.indexOf(winner);
+    const loserIndex = winnerIndex === 0 ? 1 : 0;
+
+    await service.report(match.id, users[winnerIndex] as string, winner, { a: 13, b: 8 });
+
+    // До подтверждения счёт матча пуст: заявка ещё не результат.
+    const reported = await service.matchById(match.id);
+    expect(reported.scoreA).toBeNull();
+    expect(reported.reportedScoreA).toBe(13);
+
+    await service.confirm(match.id, users[loserIndex] as string);
+
+    const settled = await service.matchById(match.id);
+    expect(settled.scoreA).toBe(13);
+    expect(settled.scoreB).toBe(8);
+  });
+
+  it('счёт против названного победителя не принимается', async () => {
+    const { service, entrantIds, users, match } = await firstMatch(2);
+    const winner = match.entrantAId as number;
+    const winnerIndex = entrantIds.indexOf(winner);
+
+    // Победила сторона A, а счёт говорит, что больше у B.
+    await expect(
+      service.report(match.id, users[winnerIndex] as string, winner, { a: 8, b: 13 }),
+    ).rejects.toThrow(/выиграл/);
+
+    // Заявки не случилось вовсе: матч остался готовым к игре.
+    expect((await service.matchById(match.id)).state).toBe('ready');
+  });
+
+  it('без счёта матч закрывается как раньше', async () => {
+    const { service, entrantIds, users, match } = await firstMatch(2);
+    const winner = match.entrantAId as number;
+    const winnerIndex = entrantIds.indexOf(winner);
+    const loserIndex = winnerIndex === 0 ? 1 : 0;
+
+    await service.report(match.id, users[winnerIndex] as string, winner);
+    await service.confirm(match.id, users[loserIndex] as string);
+
+    const settled = await service.matchById(match.id);
+    expect(settled.winnerEntrantId).toBe(winner);
+    expect(settled.scoreA).toBeNull();
+    expect(settled.scoreB).toBeNull();
+  });
+
+  /** Победу без игры не играли — счёта у неё быть не может, даже если он был заявлен. */
+  it('победа без игры счёта не получает', async () => {
+    const { service, match } = await firstMatch(2);
+    const winner = match.entrantAId as number;
+
+    await service.settle(match.id, winner, 'organizer', 'walkover', true, { a: 13, b: 0 });
+
+    const settled = await service.matchById(match.id);
+    expect(settled.state).toBe('walkover');
+    expect(settled.scoreA).toBeNull();
+  });
+});
+
 describe('брошенный турнир', () => {
   it('распознаётся по отсутствию изменений и не трогает живой', async () => {
     const stale = await startTournament({ registered: 4 });

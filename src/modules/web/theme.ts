@@ -182,7 +182,9 @@ h3 { margin:0 0 .2rem; font-size:1.45rem; letter-spacing:-.02em; text-transform:
   height:calc(var(--match-h)/2 - 1px); padding:0 .6rem; font-family:var(--mono); font-size:.82rem; }
 .m .s + .s { border-top:1px solid var(--rule); }
 .m .s .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.m .s .sd { color:var(--dim); font-size:.7rem; }
+/* Справа стоит счёт или слово о состоянии. Цифры табличные и крупнее слов: в сетке за ними
+   и приходят, а колонки счёта не должны дёргаться от разной ширины знаков. */
+.m .s .sd { color:var(--dim); font-size:.78rem; font-variant-numeric:tabular-nums; }
 .m .s.won { color:var(--accent); }
 .m .s.won .sd { color:var(--accent); }
 .m .s.tbd { color:var(--dim); }

@@ -29,6 +29,7 @@ import {
   teamPicker,
 } from '../discord/onboarding.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
+import { parseScore, type MatchScore } from '../score.js';
 import { hasUsableLink, linkCommandFor } from '../services/strength.js';
 import type { DotaVerifier } from '../services/dota-verify.js';
 import type { DraftsService } from '../services/drafts.js';
@@ -67,6 +68,20 @@ export interface PlayDeps {
 function requireGuild(guild: Guild | null): Guild {
   if (!guild) throw new UserError('Эта команда работает только на сервере.');
   return guild;
+}
+
+/**
+ * Хвост со счётом к сообщению о результате: « со счётом 13:8 (Пантеры — Кобры)». Названия
+ * сторон обязательны — без них «13:8» не говорит, у кого тринадцать, а порядок сторон в базе
+ * не совпадает с тем, как счёт вводили.
+ */
+function scoreSuffix(
+  score: MatchScore | undefined,
+  match: { entrantAId: number | null; entrantBId: number | null },
+  nameOf: (id: number) => string,
+): string {
+  if (!score || match.entrantAId === null || match.entrantBId === null) return '';
+  return ` со счётом ${score.a}:${score.b} (${nameOf(match.entrantAId)} — ${nameOf(match.entrantBId)})`;
 }
 
 async function currentTournament(deps: PlayDeps, guild: Guild) {
@@ -285,6 +300,12 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
           )
           .addStringOption((option) =>
             option
+              .setName('score')
+              .setDescription('Счёт, свой первым: 13:8 или 2-1. Не обязательно')
+              .setMaxLength(7),
+          )
+          .addStringOption((option) =>
+            option
               .setName('dota_match')
               .setDescription('ID матча Dota — бот проверит сам, и подтверждение соперника не понадобится')
               .setMaxLength(12),
@@ -327,6 +348,22 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
         const won = interaction.options.getString('outcome', true) === 'win';
         const winnerId = won ? mine.id : opponentId;
 
+        /**
+         * Счёт вводится со своей стороны первым — так его и называет игрок: «мы тринадцать,
+         * они восемь». В базе он хранится по сторонам матча, поэтому здесь переворачивается,
+         * если заявляющий оказался стороной B.
+         */
+        const rawScore = interaction.options.getString('score');
+        let score: MatchScore | undefined;
+        if (rawScore) {
+          const parsed = parseScore(rawScore);
+          if (!parsed.ok) throw new UserError(parsed.reason);
+          score =
+            match.entrantAId === mine.id
+              ? parsed.score
+              : { a: parsed.score.b, b: parsed.score.a };
+        }
+
         const view = await deps.tournaments.bracket(tournament.id);
         const nameOf = (id: number): string =>
           view.entrants.find((entrant) => entrant.id === id)?.displayName ?? '?';
@@ -359,6 +396,7 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
               interaction.user.id,
               'verified',
               false,
+              score,
             );
             await interaction.editReply({
               content: [
@@ -373,7 +411,7 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
           }
 
           // Проверить не вышло — говорим почему и идём обычным путём, не отказывая.
-          await deps.tournaments.report(match.id, interaction.user.id, winnerId);
+          await deps.tournaments.report(match.id, interaction.user.id, winnerId, score);
           const opponentMembers = await deps.tournaments.membersOf(opponentId);
           await interaction.editReply({
             content: [
@@ -387,12 +425,12 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
           return;
         }
 
-        await deps.tournaments.report(match.id, interaction.user.id, winnerId);
+        await deps.tournaments.report(match.id, interaction.user.id, winnerId, score);
         const opponentMembers = await deps.tournaments.membersOf(opponentId);
 
         await interaction.editReply({
           content: [
-            `Матч №${match.id}: заявлена победа **${nameOf(winnerId)}**.`,
+            `Матч №${match.id}: заявлена победа **${nameOf(winnerId)}**${scoreSuffix(score, match, nameOf)}.`,
             `${opponentMembers.map((id) => `<@${id}>`).join(' ')} — подтвердите или оспорьте.`,
             'Если не ответить час, результат примется сам.',
             ...(tournament.game === 'dota2' && deps.dotaVerifier
