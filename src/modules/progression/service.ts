@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gt, isNull, lte, ne, sql } from 'drizzle-orm';
 import type { Database } from '../../core/db/client.js';
+import { auditLog } from '../../core/db/schema/core.js';
 import { UserError } from '../../core/errors.js';
 import {
   achievements,
@@ -177,6 +178,31 @@ export function createProgressionService(deps: { db: Database }) {
      * гарантия «один раз»; `onConflictDoNothing` возвращает пусто, когда достижение уже
      * было, и это не ошибка, а нормальный исход повторной проверки.
      */
+    /**
+     * Начисляет монеты за что-то, посчитанное вне прогрессии, — например за угаданный прогноз.
+     *
+     * Отдельный метод, а не прямая правка таблицы из чужого модуля: кошелёк живёт здесь, и
+     * второй способ его менять означал бы два места, где заводится правило «сколько у человека
+     * монет». Опыта такое начисление не даёт: монеты за угадывание не должны поднимать уровень,
+     * который считается за участие.
+     */
+    async grantCoins(guildId: string, userId: string, coins: number, reason: string): Promise<void> {
+      if (coins <= 0) return;
+      const profile = await this.profile(guildId, userId);
+      await db
+        .update(profiles)
+        .set({ coins: sql`${profiles.coins} + ${coins}`, updatedAt: new Date() })
+        .where(eq(profiles.id, profile.id));
+
+      await db.insert(auditLog).values({
+        guildId,
+        actorId: 'system',
+        action: 'progression.coins',
+        targetId: userId,
+        details: { coins, reason },
+      });
+    },
+
     async grantAchievement(guildId: string, userId: string, code: string): Promise<AchievementRow | null> {
       const definition = achievementByCode(code);
       if (!definition) throw new Error(`неизвестное достижение: ${code}`);

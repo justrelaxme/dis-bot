@@ -4,6 +4,7 @@ import { pingModule } from './modules/ping/index.js';
 import { createLfgModule } from './modules/lfg/index.js';
 import { createMaintenanceModule } from './modules/maintenance/index.js';
 import { createModerationModule } from './modules/moderation/index.js';
+import { createPredictionsModule } from './modules/predictions/index.js';
 import { createProgressionModule } from './modules/progression/index.js';
 import { createTournamentsModule } from './modules/tournaments/index.js';
 import { createWelcomeModule } from './modules/welcome/index.js';
@@ -37,6 +38,9 @@ export function buildModules(identityDeps: IdentityModuleDeps): BotModule[] {
       rateLimiter: identityDeps.rateLimiter,
     }),
     createProgressionModule({ db: identityDeps.db, cache: identityDeps.cache }),
+    // Прогнозы стоят после прогрессии не по алфавиту: монеты за угаданное начисляет её
+    // кошелёк, и порядок в списке напоминает, кто от кого зависит.
+    createPredictionsModule({ db: identityDeps.db, logger: identityDeps.logger }),
     createLfgModule({ db: identityDeps.db }),
     createModerationModule({ db: identityDeps.db, cache: identityDeps.cache }),
     createWelcomeModule({ db: identityDeps.db, cache: identityDeps.cache }),
