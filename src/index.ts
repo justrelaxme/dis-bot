@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { Events } from 'discord.js';
+import { Events, Routes } from 'discord.js';
 import { createCache } from './core/cache.js';
 import { createDiscordClient } from './core/client.js';
 import { createRouter } from './core/commands/router.js';
@@ -282,6 +282,28 @@ client.once(Events.ClientReady, (ready) => {
   logger.info({ tag: ready.user.tag, modules: modules.map((m) => m.name) }, 'бот подключён');
   scheduler.start();
   void bus.emit('core.ready', { at: new Date() });
+  void deployCommands();
 });
+
+/**
+ * Набор команд приводится к тому, что в коде. Гильдейская регистрация, поэтому изменения
+ * видны сразу, без часа ожидания глобального распространения.
+ *
+ * Неудача здесь бота не роняет: он уже подключён и умеет всё, кроме новых команд. Падать
+ * из-за недоступного Discord API было бы хуже — прошлый набор команд работает, а
+ * упавший бот не работает вовсе.
+ */
+async function deployCommands(): Promise<void> {
+  if (!config.DEPLOY_COMMANDS_ON_START) return;
+  const body = [...registry.commands.values()].map((entry) => entry.command.builder.toJSON());
+  try {
+    await client.rest.put(Routes.applicationGuildCommands(config.DISCORD_APP_ID, config.DISCORD_GUILD_ID), {
+      body,
+    });
+    logger.info({ count: body.length }, 'команды зарегистрированы на сервере');
+  } catch (error) {
+    logger.error({ err: error }, 'команды не зарегистрировались — в Discord остался прошлый набор');
+  }
+}
 
 await client.login(config.DISCORD_TOKEN);
