@@ -261,6 +261,41 @@ export const tournamentMatchReports = pgTable('tournament_match_reports', {
 });
 
 /**
+ * Сообщения, которые бот отправил по поводу турнира.
+ *
+ * Нужны, чтобы за собой убрать. Ежедневный турнир оставляет в канале объявлений панель
+ * регистрации с живыми кнопками, напоминание неотметившимся и голосование — за неделю это
+ * канал, в котором не найти сегодняшнее. А панель с кнопками хуже простого сора: по ней
+ * нажимают через сутки и не понимают, почему ничего не происходит.
+ *
+ * Поэтому у каждого сообщения есть пометка: сор или запись. **Сор удаляется, запись
+ * остаётся.** Итог турнира и пары первого круга — это летопись, и стирать её значило бы
+ * стирать то, ради чего турнир проводили. Решение принимается на отправке, а не при уборке:
+ * тот, кто отправляет, знает, что именно он отправил.
+ *
+ * Уникальность `(channelId, messageId)` — защита от повторной записи одного сообщения:
+ * джобы идемпотентны, и один и тот же вызов может дойти дважды.
+ */
+export const tournamentMessages = pgTable(
+  'tournament_messages',
+  {
+    id: serial('id').primaryKey(),
+    tournamentId: integer('tournament_id')
+      .notNull()
+      .references(() => tournaments.id, { onDelete: 'cascade' }),
+    channelId: text('channel_id').notNull(),
+    messageId: text('message_id').notNull(),
+    /** true — сор: панель с кнопками, напоминание, голосование. false — запись: итог, пары. */
+    transient: boolean('transient').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('tournament_messages_uq').on(table.channelId, table.messageId),
+    index('tournament_messages_sweep_idx').on(table.tournamentId, table.transient),
+  ],
+);
+
+/**
  * Суточный цикл. Уникальность `(guildId, cycleDate)` — и есть защита от того, что
  * перезапуск процесса, наложение прогонов или повторная доставка дадут два голосования
  * за один день. Проверка запросом означала бы гонку между двумя прогонами.
@@ -410,6 +445,7 @@ export const draftChoices = pgTable(
 
 export type TournamentRow = typeof tournaments.$inferSelect;
 export type MatchDraftRow = typeof matchDrafts.$inferSelect;
+export type TournamentMessageRow = typeof tournamentMessages.$inferSelect;
 export type DraftChoiceRow = typeof draftChoices.$inferSelect;
 export type EntrantRow = typeof tournamentEntrants.$inferSelect;
 export type EntrantMemberRow = typeof tournamentEntrantMembers.$inferSelect;

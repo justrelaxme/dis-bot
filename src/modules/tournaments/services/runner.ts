@@ -1,10 +1,11 @@
-import { ChannelType, type Client, type Guild, type TextChannel } from 'discord.js';
+import { ChannelType, PermissionFlagsBits, type Client, type Guild, type TextChannel } from 'discord.js';
 import type { Database } from '../../../core/db/client.js';
 import type { Logger } from '../../../core/logger.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { ScheduleRow, TournamentGame } from '../schema.js';
 import { checkinReminder, registrationPanel } from '../discord/onboarding.js';
 import { eventLabel, localParts, parseClock, type CycleService } from './cycle.js';
+import type { MessagesService } from './messages.js';
 import type { PollsService } from './polls.js';
 import { entrantStrengths } from './strength.js';
 import type { TournamentsService } from './tournaments.js';
@@ -15,6 +16,11 @@ export interface RunnerDeps {
   polls: PollsService;
   tournaments: TournamentsService;
   publicBaseUrl: string;
+  /**
+   * Учёт отправленных сообщений — чтобы после турнира убрать сор и оставить летопись.
+   * Необязателен: без него цикл идёт как раньше, только сор в канале остаётся.
+   */
+  messages?: MessagesService;
   /** Создание комнат: голосовые командам и ветки матчам. */
   onStarted(guild: Guild, tournamentId: number): Promise<void>;
 }
@@ -29,6 +35,37 @@ async function announceChannel(client: Client, schedule: ScheduleRow): Promise<T
   const channel = await client.channels.fetch(schedule.announceChannelId).catch(() => null);
   if (!channel || channel.type !== ChannelType.GuildText) return null;
   return channel as TextChannel;
+}
+
+/**
+ * Куда сказать, что день не состоялся, когда канал объявлений не задан или недоступен.
+ *
+ * Без этого автомат вёл себя худшим из возможных способов: включённое расписание каждый день
+ * молча пропускало турнир, а причина уходила только в лог, которого никто не читает. Со
+ * стороны это выглядело так, будто бот сломался, — и именно так и было доложено.
+ *
+ * Берём системный канал сервера, а если писать в него нельзя — первый текстовый, где у бота
+ * есть право на сообщение. Написать не туда, куда хотелось бы, лучше, чем не написать вовсе:
+ * сообщение говорит, что делать, и адресовано организатору.
+ */
+async function fallbackChannel(guild: Guild): Promise<TextChannel | null> {
+  const me = guild.members.me;
+  if (!me) return null;
+
+  const writable = (channel: TextChannel | null | undefined): TextChannel | null =>
+    channel && channel.permissionsFor(me)?.has(PermissionFlagsBits.SendMessages) ? channel : null;
+
+  const system = writable(guild.systemChannel);
+  if (system) return system;
+
+  const channels = await guild.channels.fetch().catch(() => null);
+  if (!channels) return null;
+  for (const channel of channels.values()) {
+    if (channel?.type !== ChannelType.GuildText) continue;
+    const usable = writable(channel as TextChannel);
+    if (usable) return usable;
+  }
+  return null;
 }
 
 /**
@@ -60,6 +97,27 @@ async function runGuild(
   now: Date,
   schedule: ScheduleRow,
 ): Promise<void> {
+  /**
+   * Запоминает отправленное, чтобы после турнира убрать сор. Никогда не роняет отправку:
+   * сообщение уже ушло к людям, и падать из-за того, что мы о нём не запомнили, — обмен
+   * полезного на аккуратное.
+   */
+  const remember = async (
+    tournamentId: number,
+    message: { channelId: string; id: string },
+    transient: boolean,
+  ): Promise<void> => {
+    try {
+      await deps.messages?.remember(
+        tournamentId,
+        { channelId: message.channelId, messageId: message.id },
+        { transient },
+      );
+    } catch (error) {
+      logger.warn({ err: error, tournamentId }, 'сообщение отправлено, но не записано для уборки');
+    }
+  };
+
   const { date, minutes } = localParts(now, schedule.timezone);
   const pollAt = parseClock(schedule.pollAt);
   const startAt = parseClock(schedule.startAt);
@@ -88,9 +146,15 @@ async function runGuild(
     const unfinished = await deps.tournaments.current(schedule.guildId);
     if (unfinished) {
       await deps.cycles.skipDay(cycle.id, `не закрыт турнир «${unfinished.name}»`);
-      const channel = await announceChannel(client, schedule);
+      // Канал объявлений может быть не задан, а сказать об этом надо всё равно: иначе день
+      // пропускается молча, и снаружи это выглядит поломкой.
+      const channel = (await announceChannel(client, schedule)) ?? (await fallbackChannel(guild));
       await channel?.send(
-        `Сегодняшний турнир не начинаем: не закрыт предыдущий — «${unfinished.name}». Закройте его, и завтра цикл пойдёт как обычно.`,
+        [
+          `**Сегодняшний турнир не начинаем:** не закрыт предыдущий — «${unfinished.name}».`,
+          'Пока он открыт, новый заводить нельзя: участники оказались бы в двух сетках сразу, и по `/match report` было бы не понять, к какому турниру он относится.',
+          'Дожмите его результаты или закройте `/tournament manage cancel` — завтра цикл пойдёт как обычно.',
+        ].join('\n'),
       );
       return;
     }
@@ -99,6 +163,18 @@ async function runGuild(
     if (!channel) {
       await deps.cycles.skipDay(cycle.id, 'не задан канал объявлений');
       logger.warn({ guildId: schedule.guildId }, 'расписание включено, но канал объявлений не задан');
+
+      // Говорим об этом людям, а не только логу. Молчаливый пропуск выглядит поломкой бота, и
+      // ровно так его и восприняли: расписание включили, а на следующий день «ничего не
+      // произошло». Сказать некуда — вот и не сказали.
+      const fallback = await fallbackChannel(guild);
+      await fallback?.send(
+        [
+          '**Турнир сегодня не начался: боту некуда объявлять.**',
+          'Расписание включено, но канал объявлений не задан — без него бот не может ни открыть регистрацию, ни позвать людей.',
+          'Задать канал: `/tournament schedule announce_channel:#канал`. После этого цикл пойдёт со следующего дня сам.',
+        ].join('\n'),
+      );
       return;
     }
 
@@ -160,12 +236,16 @@ async function runGuild(
     await deps.tournaments.openRegistration(tournament.id, startsAt);
     await deps.cycles.updateCycle(cycle.id, { stage: 'registration', tournamentId: tournament.id });
 
+    // Голосование — сор: оно про сегодняшний выбор, а не про итог. Запоминаем его только
+    // сейчас, когда турнир наконец есть: на момент отправки привязать его было не к чему.
+    await remember(tournament.id, { channelId: poll.channelId, id: poll.messageId }, true);
+
     const channel = await announceChannel(client, schedule);
     if (channel) {
       // Панель с кнопками, а не инструкция текстом: новичок не должен разбираться, какую
       // команду набрать, — он нажимает «Что мне делать?» и получает свой следующий шаг.
       const panel = registrationPanel(tournament);
-      await channel.send({
+      const sent = await channel.send({
         content: [
           panel.content,
           '',
@@ -173,6 +253,9 @@ async function runGuild(
         ].join('\n'),
         components: panel.components,
       });
+      // Сор, и самый вредный: по живым кнопкам нажимают через сутки и не понимают, почему
+      // ничего не происходит.
+      await remember(tournament.id, sent, true);
     }
     return;
   }
@@ -190,7 +273,9 @@ async function runGuild(
       );
       if (waiting.length > 0) {
         const channel = await announceChannel(client, schedule);
-        await channel?.send(checkinReminder(waiting, REMINDER_LEAD_MINUTES));
+        const sent = await channel?.send(checkinReminder(waiting, REMINDER_LEAD_MINUTES));
+        // Напоминание живёт четверть часа и после старта не значит ничего.
+        if (sent) await remember(cycle.tournamentId, sent, true);
       }
     }
 
@@ -198,7 +283,9 @@ async function runGuild(
 
     const entrants = await deps.tournaments.activeEntrants(cycle.tournamentId);
     const ready = entrants.filter((entrant) => entrant.checkedInAt !== null);
-    const channel = await announceChannel(client, schedule);
+    // Запасной канал и здесь: «никто не отметился» и «расписание на паузе» — как раз те две
+    // вещи, из-за которых организатор идёт выяснять, почему бот молчит.
+    const channel = (await announceChannel(client, schedule)) ?? (await fallbackChannel(guild));
 
     // Меньше двух — играть физически некому. Порога «меньше четырёх — отменяем» нет:
     // событие на две команды проводится, просто называется иначе.
@@ -234,7 +321,7 @@ async function runGuild(
         return `• ${nameOf(match.entrantAId)} — ${nameOf(match.entrantBId)}`;
       });
 
-    await channel?.send(
+    const startMessage = await channel?.send(
       [
         `## ${view.tournament.name} — старт`,
         `${eventLabel(seeded.length)} · ${seeded.length} участников · жеребьёвка по силе состава`,
@@ -246,6 +333,8 @@ async function runGuild(
         `Сетка: ${deps.publicBaseUrl}/t/${view.tournament.id}`,
       ].join('\n'),
     );
+    // Пары первого круга — запись, а не сор: по ним потом восстанавливают, кто с кем играл.
+    if (startMessage) await remember(cycle.tournamentId, startMessage, false);
     return;
   }
 

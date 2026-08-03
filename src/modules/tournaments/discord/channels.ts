@@ -44,6 +44,7 @@ export interface ChannelsGateway {
   }): Promise<string | null>;
   archiveThread(guild: Guild, threadId: string): Promise<void>;
   deleteChannel(guild: Guild, channelId: string): Promise<void>;
+  deleteMessage(guild: Guild, channelId: string, messageId: string): Promise<void>;
   /**
    * Открывает или закрывает человеку доступ в комнату команды. Нужно заменам: состав
    * поменялся посреди турнира, а канал был закрыт по списку, который был на старте, —
@@ -164,6 +165,22 @@ export function createChannelsGateway(logger: Logger): ChannelsGateway {
           { err: error, channelId: input.channelId, userId: input.userId },
           'не удалось изменить доступ в комнату команды',
         );
+      }
+    },
+
+    /**
+     * Удаляет сообщение бота. Ошибка здесь не ошибка уборки: сообщение могли удалить руками,
+     * канал — тоже, а Discord не даёт удалять чужие сообщения старше двух недель. Ни один из
+     * этих случаев не повод считать закрытие турнира неудавшимся.
+     */
+    async deleteMessage(guild, channelId, messageId): Promise<void> {
+      try {
+        const channel = await guild.channels.fetch(channelId);
+        if (!channel || !channel.isTextBased()) return;
+        const message = await channel.messages.fetch(messageId);
+        await message.delete();
+      } catch (error) {
+        logger.warn({ err: error, channelId, messageId }, 'не удалось убрать сообщение турнира');
       }
     },
 

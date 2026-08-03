@@ -32,6 +32,7 @@ import { TOURNAMENT_GAME_LABELS } from '../games.js';
 import { hasUsableLink, linkCommandFor } from '../services/strength.js';
 import type { DotaVerifier } from '../services/dota-verify.js';
 import type { DraftsService } from '../services/drafts.js';
+import type { MessagesService } from '../services/messages.js';
 import type { TournamentsService } from '../services/tournaments.js';
 
 /**
@@ -56,6 +57,11 @@ export interface PlayDeps {
    * справочник героев — штатные состояния, матч играется и без него.
    */
   drafts?: DraftsService;
+  /**
+   * Учёт отправленных сообщений — чтобы убрать за собой панель регистрации и напоминания.
+   * Необязателен: без него турнир идёт как раньше, просто сор в канале остаётся.
+   */
+  messages?: MessagesService;
 }
 
 function requireGuild(guild: Guild | null): Guild {
@@ -564,7 +570,7 @@ export async function createTournamentRooms(deps: PlayDeps, guild: Guild, tourna
  * доигранный без подтверждения, оставлял все голосовые комнаты на сервере.
  */
 export async function closeTournamentRooms(
-  deps: Pick<PlayDeps, 'tournaments' | 'channels'>,
+  deps: Pick<PlayDeps, 'tournaments' | 'channels'> & { messages?: MessagesService },
   guild: Guild,
   tournamentId: number,
   logger: Logger,
@@ -580,7 +586,20 @@ export async function closeTournamentRooms(
     await deps.channels.archiveThread(guild, threadId);
   }
 
-  logger.info({ tournamentId }, 'комнаты турнира убраны');
+  // Сор за собой: панель регистрации с живыми кнопками, напоминание, голосование. Пары
+  // первого круга и итог помечены как запись и остаются — это летопись сервера.
+  let swept = 0;
+  if (deps.messages) {
+    for (const message of await deps.messages.sweepable(tournamentId)) {
+      await deps.channels.deleteMessage(guild, message.channelId, message.messageId);
+      // Забываем и при неудаче: сообщение, которое не удалилось дважды, не удалится и в
+      // третий раз, а строка о нём осталась бы в базе навсегда.
+      await deps.messages.forget(message);
+      swept += 1;
+    }
+  }
+
+  logger.info({ tournamentId, swept }, 'комнаты и сообщения турнира убраны');
 }
 
 async function cleanup(deps: PlayDeps, guild: Guild, tournamentId: number, ctx: ModuleContext): Promise<void> {

@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
 import type { Logger } from '../../../core/logger.js';
 import { EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
@@ -93,6 +93,21 @@ export function createCycleService(deps: CycleServiceDeps) {
         .select()
         .from(tournamentCycles)
         .where(and(eq(tournamentCycles.guildId, guildId), eq(tournamentCycles.cycleDate, cycleDate)));
+      return row ?? null;
+    },
+
+    /**
+     * Последний проведённый день. Нужен, чтобы «почему вчера ничего не произошло» отвечалось
+     * командой, а не чтением логов на сервере: причина пропуска пишется в базу, но до этой
+     * правки её никто не показывал.
+     */
+    async lastDay(guildId: string): Promise<CycleRow | null> {
+      const [row] = await db
+        .select()
+        .from(tournamentCycles)
+        .where(eq(tournamentCycles.guildId, guildId))
+        .orderBy(desc(tournamentCycles.cycleDate))
+        .limit(1);
       return row ?? null;
     },
 

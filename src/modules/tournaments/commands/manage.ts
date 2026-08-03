@@ -8,6 +8,7 @@ import { registrationPanel } from '../discord/onboarding.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentFormat, TournamentGame } from '../schema.js';
 import { parseClock, type CycleService } from '../services/cycle.js';
+import type { MessagesService } from '../services/messages.js';
 import { entrantStrengths } from '../services/strength.js';
 import type { TournamentsService } from '../services/tournaments.js';
 
@@ -29,6 +30,8 @@ export interface ManageDeps {
   cycles: CycleService;
   /** Публичный адрес витрины: в объявлениях даём ссылку на сетку. */
   publicBaseUrl: string;
+  /** Учёт отправленных сообщений — чтобы убрать панель регистрации после турнира. */
+  messages?: MessagesService;
 }
 
 function requireGuild(guild: Guild | null): Guild {
@@ -217,7 +220,7 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
   // Панель с кнопками вместо инструкции текстом: новичку не надо разбираться, какую
   // команду набрать, — он нажимает «Что мне делать?» и получает свой следующий шаг.
   const panel = registrationPanel(tournament);
-  await interaction.editReply({
+  const sent = await interaction.editReply({
     content: [
       panel.content,
       '',
@@ -225,6 +228,19 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
     ].join('\n'),
     components: panel.components,
   });
+
+  // Панель с живыми кнопками — сор, и самый вредный: по ней нажимают через сутки. Запись
+  // не должна ронять создание турнира, поэтому ошибка здесь только в лог.
+  try {
+    await deps.messages?.remember(
+      tournament.id,
+      { channelId: sent.channelId, messageId: sent.id },
+      { transient: true },
+    );
+  } catch {
+    // Турнир создан, панель отправлена — этого достаточно. Сор останется, и это не повод
+    // сообщать организатору об ошибке.
+  }
 }
 
 async function start(interaction: Interaction, guild: Guild, deps: ManageDeps, ctx: ModuleContext): Promise<void> {
@@ -348,12 +364,32 @@ async function schedule(interaction: Interaction, guild: Guild, deps: ManageDeps
     throw new UserError(`Время должно быть в виде ЧЧ:ММ. Не разобрал: ${badClock.join(', ')}.`);
   }
 
+  // Исход последнего дня. Он и отвечает на «включил, а на следующий день ничего не
+  // произошло»: причина пропуска пишется в базу, но до этого её никто не показывал, и
+  // выяснять приходилось по логам на сервере.
+  const last = await deps.cycles.lastDay(guild.id);
+  const lastLine = ((): string | null => {
+    if (!last) return null;
+    const when = String(last.cycleDate);
+    if (last.stage === 'skipped') {
+      return `⚠️ Последний день (${when}) **пропущен**: ${last.skipReason ?? 'причина не записана'}.`;
+    }
+    const stages: Record<string, string> = {
+      poll: 'идёт голосование',
+      registration: 'открыта регистрация',
+      running: 'турнир идёт',
+      finished: 'турнир доигран',
+    };
+    return `Последний день (${when}): ${stages[last.stage] ?? last.stage}.`;
+  })();
+
   await interaction.editReply({
     content: [
       `## Ежедневный автомат — ${saved.enabled ? 'включён' : 'выключен'}`,
       `Голосование в **${saved.pollAt}** на ${saved.pollHours} ч, старт в **${saved.startAt}** (${saved.timezone}).`,
       `${saved.entryMode === 'team' ? `Команды по ${saved.teamSize}` : 'Одиночки'}, до ${saved.maxEntrants} участников.`,
       `Объявления и ветки матчей — в этом канале.`,
+      ...(lastLine ? ['', lastLine] : []),
       '',
       saved.enabled
         ? 'Дальше бот ведёт день сам: голосование, условия, регистрация, жеребьёвка, комнаты.'

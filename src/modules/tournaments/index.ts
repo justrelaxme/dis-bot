@@ -20,6 +20,7 @@ import { createStatsCommand } from './commands/stats.js';
 import { createChannelsGateway } from './discord/channels.js';
 import { createDiscordPollGateway } from './discord/poll-gateway.js';
 import { createCycleService } from './services/cycle.js';
+import { createMessagesService } from './services/messages.js';
 import { createDotaVerifier } from './services/dota-verify.js';
 import { createDraftsService } from './services/drafts.js';
 import { createPollFinalizer } from './services/finalizer.js';
@@ -116,10 +117,13 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
       : {}),
   });
 
+  const messages = createMessagesService({ db: deps.db });
+
   const play = {
     tournaments,
     channels,
     drafts,
+    messages,
     publicBaseUrl: deps.publicBaseUrl,
     ...(dotaVerifier ? { dotaVerifier } : {}),
   };
@@ -163,6 +167,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
               cycles,
               polls,
               tournaments,
+              messages,
               publicBaseUrl: deps.publicBaseUrl,
               onStarted: async (guild, tournamentId) => {
                 await createTournamentRooms(play, guild, tournamentId);
