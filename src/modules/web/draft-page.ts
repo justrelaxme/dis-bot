@@ -141,16 +141,20 @@ export const DRAFT_STYLE = `
   animation:strike .34s cubic-bezier(.2,.8,.2,1) both; }
 @keyframes strike { from { transform:scaleX(0); } to { transform:scaleX(1); } }
 
-/* Взято: полоса цвета команды вырастает поперёк верха, и подпись говорит, чьё это. */
+/* Взято: полоса цвета команды вырастает поперёк верха, и подпись говорит, чьё это.
+   Обе стороны на одном герое — законное состояние: полоса делится пополам, по цвету каждой.
+   Это и есть зеркальный пул, и видно его должно быть сразу. */
 .tile.by-a { --who:var(--side-a); }
 .tile.by-b { --who:var(--side-b); }
-.tile.by-a, .tile.by-b { border-color:var(--who); }
-.tile.by-a::before, .tile.by-b::before { content:''; position:absolute; inset:0 0 auto; height:3px;
-  background:var(--who); z-index:2; transform-origin:left;
+.tile.by-both { --who:var(--bone); }
+.tile.by-a, .tile.by-b, .tile.by-both { border-color:var(--who); }
+.tile.by-a::before, .tile.by-b::before, .tile.by-both::before { content:''; position:absolute;
+  inset:0 0 auto; height:3px; background:var(--who); z-index:2; transform-origin:left;
   animation:strike .3s var(--ease) both; }
-.tile.by-a .by, .tile.by-b .by { display:block; padding:0 .5rem .36rem; font-family:var(--mono);
-  font-size:.6rem; letter-spacing:.1em; text-transform:uppercase; color:var(--who);
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tile.by-both::before { background:linear-gradient(90deg,var(--side-a) 0 50%,var(--side-b) 50% 100%); }
+.tile.by-a .by, .tile.by-b .by, .tile.by-both .by { display:block; padding:0 .5rem .36rem;
+  font-family:var(--mono); font-size:.6rem; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--who); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
 /* Итог фазы. Стоит после занятых нарочно: карта, которую выбрали, — тоже итог, и её рамка
    должна быть акцентной, а не цветом выбравшей команды. */
@@ -198,12 +202,16 @@ function tile(option: DraftOption, index: number): string {
 </button>`;
 }
 
+/**
+ * Пояснение к фазе. У героев и агентов оно про зеркальный пул, и это главное, что надо
+ * сказать: иначе первый же капитан решит, что взятый соперником герой у него отобран.
+ */
 const PHASE_LEAD: Record<DraftGroup, string> = {
   maps: 'Банят по очереди. Оставшаяся карта — решающая: её никто не выбирал, поэтому спорить не о чем.',
   heroes:
-    'Сначала баны, потом пики змейкой. Забаненного не берёт никто, выбранного не заберёт соперник.',
+    'Сначала баны, потом пики змейкой. Забаненного не берёт никто. А вот взятого соперником взять можно — чужой пик виден, и под него берут контрпик.',
   agents:
-    'Правило сервера, а не Riot: в самой игре агентов не делят, и обе команды могут взять одного. Здесь — не могут.',
+    'Сначала баны, потом пики. Забаненного не берёт никто, но взятого соперником взять можно: его пик виден, и под него подбирают ответ.',
 };
 
 export function draftShell(state: DraftShellState): string {
@@ -312,15 +320,36 @@ ${sections}
     return 'Твой пик: возьми ' + what + ' себе. Соперник его уже не возьмёт.';
   }
 
-  /** Класс плитки целиком: состояние варианта плюс право на него нажать. */
+  /** Взят ли вариант этой стороной. Один и тот же герой может стоять сразу у обеих. */
+  function heldBy(id, side) { return state.picks[side].indexOf(id) >= 0; }
+  function isBanned(id) { return state.banned.indexOf(id) >= 0; }
+
+  /**
+   * Класс плитки целиком: состояние варианта плюс право на него нажать.
+   *
+   * Нажать нельзя по забаненному и по тому, что уже взяла **своя** сторона. По взятому
+   * соперником — можно, если пики в этом наборе зеркальные: в этом и смысл контрпика.
+   */
   function tileClass(id, group, resultIds) {
-    var taken = state.states[id];
+    var mirrored = group !== 'maps';
+    var banned = isBanned(id);
+    var byA = heldBy(id, 'a');
+    var byB = heldBy(id, 'b');
+
     var classes = ['tile'];
-    if (taken === 'banned') classes.push('banned');
-    else if (taken === 'a' || taken === 'b') classes.push('by-' + taken);
+    if (banned) classes.push('banned');
+    else if (byA && byB) classes.push('by-both');
+    else if (byA) classes.push('by-a');
+    else if (byB) classes.push('by-b');
     else classes.push('free');
+
     if (resultIds.indexOf(id) >= 0) classes.push('won');
-    if (myTurn() && state.current.group === group && !taken) classes.push('hot');
+
+    if (myTurn() && state.current.group === group) {
+      var mine = heldBy(id, state.you);
+      var blocked = banned || mine || (!mirrored && (byA || byB));
+      if (!blocked) classes.push('hot');
+    }
     return classes.join(' ');
   }
 
@@ -390,9 +419,15 @@ ${sections}
         var next = tileClass(id, phase.group, phase.resultIds);
         if (button.className !== next) button.className = next;
 
-        var owner = state.states[id];
         var by = button.querySelector('.by');
-        var label = owner === 'a' || owner === 'b' ? teamName(owner) : '';
+        var holders = [];
+        if (!isBanned(id)) {
+          if (heldBy(id, 'a')) holders.push(state.teams.a);
+          if (heldBy(id, 'b')) holders.push(state.teams.b);
+        }
+        // «Пантеры и Кобры» — обе взяли одного героя. Это законно, и промолчать об этом
+        // значило бы показать плитку взятой неизвестно кем.
+        var label = holders.join(' и ');
         if (by.textContent !== label) by.textContent = label;
 
         var option = byId[id] || { label: '' };

@@ -63,6 +63,20 @@ export function survivorsAreResult(group: DraftGroup): boolean {
   return group === 'maps';
 }
 
+/**
+ * Забирает ли пик вариант у соперника.
+ *
+ * У карт — да: играют на одной, и взятая карта занята для обоих.
+ *
+ * У героев и агентов — **нет**, и в этом весь смысл драфта. Команды могут взять одного и
+ * того же героя; ценность в том, что чужой пик виден, и под него берут контрпик. Пул,
+ * который блокирует героя за соперником, эту ценность как раз уничтожает: контрить нечем,
+ * если контрпик уже забрали. Бан при этом убирает вариант у обоих — на то он и бан.
+ */
+export function picksBlockOpponent(group: DraftGroup): boolean {
+  return group === 'maps';
+}
+
 const VALORANT_MEDIA = 'https://media.valorant-api.com/maps';
 
 /**
@@ -202,8 +216,15 @@ export const DOTA_DRAFT_SEQUENCE: readonly DraftStep[] = pickBanSequence('heroes
  * оставил бы драфт в состоянии, из которого нет выхода: банить есть что, а выбирать нечего.
  */
 export function poolFits(poolSize: number, steps: readonly DraftStep[], group: DraftGroup): boolean {
-  const needed = steps.filter((step) => (step.group ?? group) === group).length;
-  return poolSize >= needed;
+  const own = steps.filter((step) => (step.group ?? group) === group);
+  if (picksBlockOpponent(group)) return poolSize >= own.length;
+
+  // Пики зеркальные, поэтому считать надо не все шаги, а худший случай для одной стороны:
+  // все баны — они общие — плюс её собственные пики.
+  const bans = own.filter((step) => step.kind === 'ban').length;
+  const picks = (side: DraftSide): number =>
+    own.filter((step) => step.kind === 'pick' && step.side === side).length;
+  return poolSize >= bans + Math.max(picks('a'), picks('b'));
 }
 
 /**

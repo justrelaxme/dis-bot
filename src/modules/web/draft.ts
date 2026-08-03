@@ -27,9 +27,6 @@ export interface DraftRoutesDeps {
   logger: Logger;
 }
 
-/** Кто занял вариант. Свободных в карте нет — отсутствие ключа и означает «свободен». */
-type OptionState = 'banned' | 'a' | 'b';
-
 interface DraftPhaseView {
   /**
    * Всегда заполнен: у драфтов, заведённых до появления фаз, набора у шагов нет, и здесь
@@ -61,8 +58,11 @@ interface DraftPayload {
    * это тридцать килобайт на пустом месте.
    */
   pool?: DraftOption[];
-  states: Record<string, OptionState>;
-  /** Порядок банов и пиков: он нужен плашкам, а по состояниям порядок не восстановить. */
+  /**
+   * Забанено и взято каждой стороной, в порядке ходов. Отдельной карты «состояние варианта»
+   * нет намеренно: у героев и агентов пик соперника вариант не занимает, и один и тот же
+   * герой может стоять сразу у обоих. Одно значение на вариант такое не выразило бы.
+   */
   banned: string[];
   picks: { a: string[]; b: string[] };
   phases: DraftPhaseView[];
@@ -95,11 +95,6 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
     const nameOf = (id: number | null): string =>
       entrants.find((entrant) => entrant.id === id)?.displayName ?? '—';
 
-    const states: Record<string, OptionState> = {};
-    for (const id of state.view.banned) states[id] = 'banned';
-    for (const id of state.view.pickedA) states[id] = 'a';
-    for (const id of state.view.pickedB) states[id] = 'b';
-
     const { total } = draftProgress(draft.sequence, state.choices);
     // Набор для шагов без пометки — `subject` драфта: так странице всегда достаётся
     // конкретный набор, включая записи, заведённые до появления фаз.
@@ -121,7 +116,6 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
       ...(options.withPool
         ? { pool: draft.pool.map((option) => ({ ...option, group: groupOf(option.group) })) }
         : {}),
-      states,
       banned: state.view.banned,
       picks: { a: state.view.pickedA, b: state.view.pickedB },
       phases: state.view.phases.map((phase) => ({

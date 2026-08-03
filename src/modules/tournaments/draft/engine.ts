@@ -1,4 +1,5 @@
 import {
+  picksBlockOpponent,
   survivorsAreResult,
   type DraftGroup,
   type DraftKind,
@@ -95,7 +96,21 @@ export function draftView(
   const done = current === null;
   const group = current === null ? undefined : groupOf(current);
 
-  const available = pool.filter((option) => !taken.has(option.id) && inGroup(option, group));
+  /**
+   * Что занято **для этой стороны**. Бан занимает вариант всегда: он общий. Пик занимает его
+   * у соперника только там, где играют одним и тем же, — то есть у карт. Героя, взятого
+   * соперником, взять можно: чужой пик виден, и под него берут контрпик, в этом и смысл.
+   */
+  const blockedFor = (side: DraftSide, forGroup: DraftGroup | undefined): Set<string> => {
+    const own = side === 'a' ? pickedA : pickedB;
+    if (forGroup !== undefined && !picksBlockOpponent(forGroup)) {
+      return new Set([...banned, ...own]);
+    }
+    return taken;
+  };
+
+  const blocked = current === null ? taken : blockedFor(current.side, group);
+  const available = pool.filter((option) => !blocked.has(option.id) && inGroup(option, group));
 
   // Фазы идут подряд: шаги одного набора не перемешаны с шагами другого. Поэтому пройденное
   // в фазе — это просто число сделанных выборов минус то, что осталось за её началом.

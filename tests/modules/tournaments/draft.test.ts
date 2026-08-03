@@ -13,6 +13,7 @@ import {
   draftSubject,
   mapVetoSequence,
   pickBanSequence,
+  picksBlockOpponent,
   poolFits,
   survivorsAreResult,
   type DraftOption,
@@ -278,8 +279,9 @@ describe('последовательность банов и пиков под �
   it('пул меньше нужного не подходит: банить было бы что, а выбирать нечего', () => {
     const steps = pickBanSequence('agents', 5, 2);
 
+    // Порог считается по худшей стороне: четыре общих бана плюс пять её собственных пиков.
     expect(poolFits(29, steps, 'agents')).toBe(true);
-    expect(poolFits(13, steps, 'agents')).toBe(false);
+    expect(poolFits(6, steps, 'agents')).toBe(false);
   });
 
   it('пятёрка Dota осталась тем же порядком, что и была', () => {
@@ -311,6 +313,107 @@ describe('итог фазы', () => {
 
     expect(view.done).toBe(true);
     expect(view.result.map((option) => option.id)).toEqual(['pudge', 'sniper']);
+  });
+});
+
+/**
+ * Зеркальные пулы. Ради этого драфт героев и агентов вообще нужен: чужой пик виден, и под
+ * него берут контрпик. Пул, который блокирует героя за соперником, эту ценность уничтожает —
+ * контрить нечем, если контрпик уже забрали. Карты — исключение: играют на одной.
+ */
+describe('пик соперника не забирает героя', () => {
+  const heroes: DraftOption[] = ['axe', 'lina', 'pudge', 'sniper', 'lion', 'tiny'].map((id) => ({
+    id,
+    label: id,
+    group: 'heroes',
+  }));
+  const sequence = pickBanSequence('heroes', 2, 1);
+
+  it('у карт пик забирает, у героев и агентов — нет', () => {
+    expect(picksBlockOpponent('maps')).toBe(true);
+    expect(picksBlockOpponent('heroes')).toBe(false);
+    expect(picksBlockOpponent('agents')).toBe(false);
+  });
+
+  it('взятого соперником героя можно взять себе', () => {
+    // Баны A и B, потом пик A берёт pudge. Дальше ход B — pudge обязан быть доступен.
+    const view = draftView(heroes, sequence, choose(sequence, ['axe', 'lina', 'pudge']), 'heroes');
+
+    expect(view.current).toEqual({ side: 'b', kind: 'pick', group: 'heroes' });
+    expect(view.available.map((option) => option.id)).toContain('pudge');
+    expect(canChoose(view, 'b', 'pudge')).toEqual({ ok: true });
+  });
+
+  it('своего же взятого героя второй раз взять нельзя', () => {
+    // Порядок при двух пиках на сторону: бан A, бан B, пик A, пик B, пик B, пик A.
+    // A взял pudge своим первым пиком; на шестом шаге ход снова его — у себя pudge занят.
+    const view = draftView(
+      heroes,
+      sequence,
+      choose(sequence, ['axe', 'lina', 'pudge', 'pudge', 'sniper']),
+      'heroes',
+    );
+
+    expect(view.current?.side).toBe('a');
+    expect(canChoose(view, 'a', 'pudge')).toEqual({ ok: false, reason: 'Этот вариант уже занят.' });
+    expect(view.available.map((option) => option.id)).not.toContain('pudge');
+    // А взятого соперником sniper — можно: пул зеркальный.
+    expect(canChoose(view, 'a', 'sniper')).toEqual({ ok: true });
+  });
+
+  it('забаненного не берёт никто', () => {
+    const view = draftView(heroes, sequence, choose(sequence, ['axe', 'lina']), 'heroes');
+
+    expect(view.current?.kind).toBe('pick');
+    expect(view.available.map((option) => option.id)).toEqual(['pudge', 'sniper', 'lion', 'tiny']);
+    expect(canChoose(view, 'a', 'axe')).toEqual({ ok: false, reason: 'Этот вариант уже занят.' });
+  });
+
+  it('обе стороны могут собрать одинаковый состав', () => {
+    const full = draftView(
+      heroes,
+      sequence,
+      choose(sequence, ['axe', 'lina', 'pudge', 'pudge', 'sniper', 'sniper']),
+      'heroes',
+    );
+
+    expect(full.done).toBe(true);
+    expect(full.pickedA).toEqual(['pudge', 'sniper']);
+    expect(full.pickedB).toEqual(['pudge', 'sniper']);
+    // В итоге герой один раз: показывать «Pudge, Pudge» было бы бессмысленно.
+    expect(full.result.map((option) => option.id)).toEqual(['pudge', 'sniper']);
+  });
+
+  it('автоход тоже видит взятое соперником как свободное', () => {
+    const view = draftView(heroes, sequence, choose(sequence, ['axe', 'lina', 'pudge']), 'heroes');
+
+    // Первый свободный для стороны B — именно pudge, взятый стороной A.
+    expect(autoChoice(view)).toBe('pudge');
+  });
+
+  /**
+   * Карты остаются общими: взятую соперником карту забрать нельзя, потому что играть на ней
+   * будут оба.
+   */
+  it('карту, взятую соперником, забрать нельзя', () => {
+    const maps: DraftOption[] = ['ascent', 'bind', 'haven', 'icebox'].map((id) => ({
+      id,
+      label: id,
+      group: 'maps',
+    }));
+    const bo3 = mapVetoSequence(maps.length, 3);
+    const view = draftView(maps, bo3, choose(bo3, ['ascent', 'bind', 'haven']), 'maps');
+
+    expect(view.current).toEqual({ side: 'b', kind: 'pick', group: 'maps' });
+    expect(canChoose(view, 'b', 'haven')).toEqual({ ok: false, reason: 'Этот вариант уже занят.' });
+  });
+
+  it('пул считается по худшей стороне, а не по всем шагам', () => {
+    const steps = pickBanSequence('agents', 5, 2);
+
+    // Зеркальные пики: одной стороне нужны 4 бана плюс её 5 пиков — девять, а не четырнадцать.
+    expect(poolFits(9, steps, 'agents')).toBe(true);
+    expect(poolFits(8, steps, 'agents')).toBe(false);
   });
 });
 
