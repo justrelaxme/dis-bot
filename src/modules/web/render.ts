@@ -67,6 +67,13 @@ const NAV = [
 
 export interface PageChrome {
   /**
+   * Что это за страница одной фразой. Уходит в описание и в карточку ссылки: ссылки на витрину
+   * кидают в Discord, и без разметки там появляется пустой прямоугольник с адресом.
+   */
+  description?: string;
+  /** Картинка для карточки ссылки. Берётся из арта дисциплины — он и так на странице. */
+  image?: string;
+  /**
    * Дисциплина страницы. Задаёт акцентный цвет и полосу арта — по ним видно, чья это
    * страница, до чтения заголовка. Без дисциплины берутся цвета сервера и смешанная полоса:
    * список турниров и зал славы не про одну игру, и назначать им главную было бы неверно.
@@ -92,13 +99,33 @@ function band(images: readonly string[]): string {
   return `<div class="band" aria-hidden="true">${panels}</div>`;
 }
 
+/**
+ * Иконка страницы: акцентный ромб на цвете фона. Своя, а не запрос к серверу за файлом — на
+ * вкладке без иконки браузер рисует пустой лист, и ссылка теряется среди прочих.
+ */
+function favicon(accent: string): string {
+  // Атрибуты внутри SVG — на одинарных кавычках, и всё вместе кодируется. Двойные кавычки
+  // закрыли бы HTML-атрибут раньше времени, и остаток разметки высыпался бы текстом на
+  // страницу — именно это и происходило.
+  const svg =
+    `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>` +
+    `<rect width='32' height='32' fill='#101319'/>` +
+    `<path d='M16 5l11 11-11 11L5 16z' fill='${accent}'/></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
 export function page(title: string, body: string, chrome: PageChrome = {}): string {
   const identity = chrome.game ? GAME_IDENTITY[chrome.game] : null;
-  const accent = identity?.accent;
+  const accent = identity?.accent ?? '#3fd4e8';
   const nav = NAV.map(
     (item) =>
       `<a href="${item.href}"${chrome.current === item.href ? ' aria-current="page"' : ''}>${escape(item.label)}</a>`,
   ).join('');
+
+  const description =
+    chrome.description ?? 'Турниры игрового сервера: сетки, драфт, ранги и зал славы.';
+  // Картинка карточки — первая из полосы дисциплины: тот же арт, что и на самой странице.
+  const image = chrome.image ?? identity?.band[0] ?? SERVER_BAND[0] ?? '';
 
   return `<!doctype html>
 <html lang="ru">
@@ -107,17 +134,28 @@ export function page(title: string, body: string, chrome: PageChrome = {}): stri
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>${escape(title)}</title>
+<meta name="description" content="${escape(description)}">
+<meta name="theme-color" content="${accent}">
+<link rel="icon" href="${favicon(accent)}">
+<meta property="og:type" content="website">
+<meta property="og:title" content="${escape(title)}">
+<meta property="og:description" content="${escape(description)}">
+${image ? `<meta property="og:image" content="${escape(image)}">` : ''}
+<meta name="twitter:card" content="summary_large_image">
 <style>${STYLE}</style>
 ${chrome.head ?? ''}
 </head>
-<body${accent ? ` style="--accent:${accent}"` : ''}>
+<body${identity ? ` style="--accent:${identity.accent}"` : ''}>
+<a class="skiplink" href="#main">К содержимому</a>
 ${band(identity?.band ?? SERVER_BAND)}
 <div class="wrap">
   <header class="top">
     <a href="/" class="mark">Турниры сервера</a>
     <nav>${nav}</nav>
   </header>
+  <main id="main">
 ${body}
+  </main>
   <footer>
     <p>Ранги приходят из API игр и обновляются каждые полчаса. Показаны только подтверждённые привязки.</p>
     <p class="credit">${escape(identity?.credit ?? SERVER_CREDIT)}</p>

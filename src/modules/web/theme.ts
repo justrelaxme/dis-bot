@@ -20,10 +20,14 @@
  * фотография, а та же карта в полосе шапки — монохромный силуэт. Иначе шапка спорила бы за
  * внимание с тем, ради чего страницу открыли.
  *
- * Шрифт системный, своего не подключается. Дело не в лени: файл шрифта пришлось бы отдавать
- * отдельным маршрутом и копировать в образ, то есть добавить к сборке ещё один способ
- * не доехать до сервера. Характер здесь несут размер, начертание и разрядка, а не гарнитура.
+ * Три роли шрифта. Заголовки набраны своей гарнитурой (Unbounded, вшита в `font.ts`) —
+ * системный шрифт делает страницу похожей на любую другую, а заголовок это единственное место,
+ * где характер виден сразу. Данные — моноширинным: имена в сетке выстраиваются в колонки, как
+ * на настоящем турнирном листе. Всё остальное — системным, потому что читать его надо, а не
+ * рассматривать.
  */
+
+import { FONT_FACE } from './font.js';
 
 /** Геометрия сетки. Считается на сервере, поэтому размеры нужны и коду, и стилям. */
 export const MATCH_H = 58;
@@ -33,6 +37,7 @@ export const COL_W = 208;
 export const LINK_W = 44;
 
 export const STYLE = `
+${FONT_FACE}
 :root {
   /* Холодная гамма. Тёплая пара «латунь плюс сливочный» ушла намеренно: это ровно тот набор,
      который выдаёт машинная вёрстка, а не выбор под задачу. Здесь табло игрового сервера, и
@@ -50,8 +55,16 @@ export const STYLE = `
   --side-a:#f0a93c; --side-b:#59a5d8;
   --mono: ui-monospace,'SF Mono','Cascadia Mono','JetBrains Mono',Consolas,'Liberation Mono',monospace;
   --sans: ui-sans-serif,system-ui,-apple-system,'Segoe UI Variable Display','Segoe UI',Roboto,sans-serif;
+  /**
+   * Гарнитура заголовков. Отдельная роль, а не «то же, но крупнее»: системный шрифт делает
+   * страницу похожей на любую другую, а заголовок — единственное место, где характер виден
+   * сразу. Подключена в font.ts и вшита туда же, поэтому падение сети её не уносит.
+   */
+  --display: 'Unbounded', var(--sans);
   --match-h:${MATCH_H}px; --pitch:${PITCH}px; --col-w:${COL_W}px; --link-w:${LINK_W}px;
   --ease:cubic-bezier(.2,.7,.3,1);
+  /* Тень тонирована фоном: чистое чёрное на синеватой поверхности читается грязным пятном. */
+  --shadow: 0 10px 26px -14px rgba(6,10,18,.9);
   /**
    * Одна система углов на весь сайт: прямые углы со срезом наискось. Это и есть подпись
    * оформления, взятая у интерфейсов самих игр, — и она же закрывает требование единой формы,
@@ -61,7 +74,7 @@ export const STYLE = `
   --panel: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
 * { box-sizing:border-box; }
-html { -webkit-text-size-adjust:100%; }
+html { -webkit-text-size-adjust:100%; scroll-behavior:smooth; }
 body {
   margin:0; background:var(--ink); color:var(--bone); font-family:var(--sans);
   font-size:16px; line-height:1.5;
@@ -73,11 +86,31 @@ body {
 a { color:inherit; text-decoration:none; }
 img { max-width:100%; }
 
+/**
+ * Зерно поверх всего. Ровный цвет читается как незаполненный, а не как выбранный: плотность
+ * поверхности даёт именно шум. Слой не перехватывает курсор и не попадает в поток, поэтому
+ * ни на разметку, ни на нажатия не влияет.
+ */
+body::after {
+  content:''; position:fixed; inset:0; z-index:9; pointer-events:none; opacity:.035;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+/**
+ * Ссылка для тех, кто ходит с клавиатуры: без неё до содержимого надо протабать всю навигацию.
+ * Имя класса не «skip» намеренно: оно уже занято кнопкой «Пропустить бан» на странице драфта,
+ * и совпадение увело бы ту кнопку за край экрана. Обратные кавычки внутри этой таблицы стилей
+ * тоже нельзя — она сама шаблонная строка, и они её закрывают.
+ */
+.skiplink { position:absolute; left:-999px; top:0; z-index:20; background:var(--sheet);
+  border:1px solid var(--accent); color:var(--bone); padding:.5rem .8rem; font-family:var(--mono);
+  font-size:.8rem; }
+.skiplink:focus { left:.6rem; top:.6rem; }
+
 /* ── Полоса игрового арта ───────────────────────────────────────────────────────────────
    Не украшение, а опознавательный знак: по ней видно, чья это дисциплина, до чтения
    заголовка. Обесцвечена и тонирована акцентом — см. правило для картинок выше. */
-.band { display:flex; gap:2px; height:clamp(76px,14vw,128px); overflow:hidden;
-  background:var(--ink-2); border-bottom:1px solid var(--rule); }
+.band { display:flex; gap:2px; height:clamp(140px,24vw,260px); overflow:hidden;
+  background:var(--ink-2); }
 .band figure { position:relative; flex:1 1 0; margin:0; overflow:hidden; isolation:isolate;
   clip-path:inset(0 0 100% 0); animation:wipe .5s var(--ease) both; animation-delay:var(--delay,0ms); }
 /* Кадр берётся выше середины: у портретов там лицо, у карт — постройки, а не небо. */
@@ -95,7 +128,15 @@ img { max-width:100%; }
 @media (max-width:720px) { .band figure:nth-child(n+4) { display:none; } }
 @media (max-width:420px) { .band figure:nth-child(n+3) { display:none; } }
 
-.wrap { max-width:76rem; margin:0 auto; padding:1.35rem 1.15rem 4rem; }
+/**
+ * Содержимое заходит на полосу арта снизу. Раньше полоса и заголовок стояли раздельно, и
+ * страница читалась двумя не связанными кусками; наложение делает из них одно целое — тот же
+ * приём, что в нижней плашке трансляции, где имя лежит поверх картинки.
+ *
+ * Полоса гаснет к низу до цвета фона, поэтому текст поверх неё остаётся читаемым без подложки.
+ */
+.wrap { max-width:76rem; margin:calc(-1 * clamp(3rem,7vw,6.5rem)) auto 0; padding:1.35rem 1.15rem 4rem;
+  position:relative; z-index:1; }
 
 /* Шапка: полоса состояния, а не украшение — она показывает, что происходит сейчас. */
 .top { display:flex; align-items:baseline; gap:1.25rem; flex-wrap:wrap; padding-bottom:.9rem;
@@ -117,9 +158,9 @@ img { max-width:100%; }
    трансляции, — сначала «что это», потом «как называется». */
 .eyebrow { font-family:var(--mono); font-size:.7rem; letter-spacing:.26em; text-transform:uppercase;
   color:var(--accent); margin:0 0 .5rem; animation:enter .45s var(--ease) both; }
-h1 { font-size:clamp(2rem,6vw,3.3rem); line-height:.98; margin:0 0 .55rem;
-  font-weight:800; letter-spacing:-.035em; text-transform:uppercase;
-  animation:enter .5s var(--ease) .04s both; }
+h1 { font-family:var(--display); font-size:clamp(1.7rem,5vw,2.9rem); line-height:1.04;
+  margin:0 0 .6rem; font-weight:800; letter-spacing:-.045em; text-transform:uppercase;
+  text-wrap:balance; animation:enter .5s var(--ease) .04s both; }
 h2 { font-family:var(--mono); font-size:.76rem; letter-spacing:.22em; text-transform:uppercase;
   color:var(--dim); font-weight:500; margin:2.4rem 0 .9rem;
   animation:enter .45s var(--ease) both; }
@@ -127,7 +168,8 @@ h2 { font-family:var(--mono); font-size:.76rem; letter-spacing:.22em; text-trans
 h2::after { content:''; display:block; width:2.2rem; height:1px; background:var(--accent); margin-top:.5rem;
   transform-origin:left; animation:swipe .55s var(--ease) .1s both; }
 @keyframes swipe { from { transform:scaleX(0); } to { transform:scaleX(1); } }
-h3 { margin:0 0 .2rem; font-size:1.45rem; letter-spacing:-.02em; text-transform:uppercase; }
+h3 { font-family:var(--display); margin:0 0 .3rem; font-size:1.25rem; letter-spacing:-.04em;
+  text-transform:uppercase; font-weight:700; }
 .lede { color:var(--dim); font-size:.95rem; margin:0 0 1.5rem; max-width:56ch;
   animation:enter .5s var(--ease) .08s both; }
 .mono { font-family:var(--mono); }
@@ -156,6 +198,7 @@ h3 { margin:0 0 .2rem; font-size:1.45rem; letter-spacing:-.02em; text-transform:
   background:var(--mark,var(--accent)); transform:scaleY(.28); transform-origin:top;
   transition:transform .28s ease; }
 .card:hover, .card:focus-visible { border-color:var(--accent); transform:translateX(2px); }
+.card:active { transform:translateX(2px) scale(.995); }
 .card:hover::before, .card:focus-visible::before { transform:scaleY(1); }
 .card .sig { width:58px; height:58px; overflow:hidden; flex:0 0 auto;
   background:var(--sheet-2); isolation:isolate; position:relative; }
@@ -168,7 +211,8 @@ h3 { margin:0 0 .2rem; font-size:1.45rem; letter-spacing:-.02em; text-transform:
 .card:hover .sig::after { opacity:0; }
 /* display:block обязателен: внутри карточки это span-ы, а строчные элементы встали бы в одну
    строку — название, данные и состояние слиплись бы в кашу. */
-.card .name { display:block; font-size:1.1rem; font-weight:700; letter-spacing:-.015em; }
+.card .name { display:block; font-family:var(--display); font-size:1.02rem; font-weight:700;
+  letter-spacing:-.04em; text-transform:uppercase; }
 .card .meta { display:block; color:var(--dim); font-size:.84rem; margin-top:.2rem; font-family:var(--mono); }
 .card .tail { display:block; margin-top:.5rem; }
 @media (max-width:520px) { .card .sig { display:none; } .card { grid-template-columns:1fr; } }
@@ -252,7 +296,9 @@ td.champ { color:var(--accent); font-weight:600; }
 .pl.first .mk { color:var(--accent); font-size:3rem; }
 .pl .who { font-weight:700; font-size:1.05rem; letter-spacing:-.015em; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; }
-.pl.first .who { color:var(--accent); font-size:1.25rem; }
+/* Чемпион — своей гарнитурой: единственное имя на странице, которое надо запомнить. */
+.pl.first .who { font-family:var(--display); color:var(--accent); font-size:1.3rem;
+  letter-spacing:-.04em; text-transform:uppercase; }
 .pl .pn { font-family:var(--mono); font-size:.66rem; letter-spacing:.18em; text-transform:uppercase;
   color:var(--dim); }
 
@@ -270,6 +316,7 @@ footer p { margin:.3rem 0; }
 @media (max-width:640px) { :root { --col-w:170px; --link-w:30px; } .wrap { padding:1.15rem .85rem 3rem; } }
 
 @media (prefers-reduced-motion:reduce) {
+  html { scroll-behavior:auto; }
   .links path { animation:none; stroke-dashoffset:0; }
   /* Всё, что появляется движением, обязано просто быть — иначе анимация станет условием
      видимости, и человек с выключенным движением увидит пустую страницу. */

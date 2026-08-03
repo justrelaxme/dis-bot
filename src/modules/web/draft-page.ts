@@ -186,7 +186,7 @@ export interface DraftShellState {
 /** Плитка варианта. Разметка ставится один раз — дальше меняется только класс. */
 function tile(option: DraftOption, index: number): string {
   const art = option.imageUrl
-    ? `<img src="${escape(option.imageUrl)}" alt="" loading="lazy" decoding="async">`
+    ? `<img src="${escape(option.imageUrl)}" alt="${escape(option.label)}" loading="lazy" decoding="async">`
     : '';
   // Схема — только там, где она отличается от основной картинки: у карт. У героя и агента
   // иконка это та же картинка помельче, и открывать её по наведению было бы бессмысленно.

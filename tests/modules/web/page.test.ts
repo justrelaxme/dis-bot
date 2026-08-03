@@ -43,6 +43,33 @@ describe('оболочка страницы', () => {
     expect(band?.[1]).toContain('aria-hidden="true"');
   });
 
+  /**
+   * Регрессия. Иконка вшита как data-URI со SVG внутри, и двойные кавычки в его атрибутах
+   * закрывали HTML-атрибут раньше времени: остаток разметки высыпался текстом в левый верхний
+   * угол страницы. Проверяем, что за атрибутом иконки сразу идёт закрывающий тег.
+   */
+  it('иконка не разрывает свой атрибут', () => {
+    const html = page('Кубок', '', { game: 'valorant' });
+    const icon = /<link rel="icon" href="([^"]*)">/.exec(html);
+
+    expect(icon, 'атрибут иконки не собрался целиком').not.toBeNull();
+    // Внутри значения не должно остаться ни кавычек, ни угловых скобок: всё закодировано.
+    expect(icon?.[1]).not.toMatch(/["<>]/);
+    expect(icon?.[1]).toMatch(/^data:image\/svg\+xml,/);
+  });
+
+  it('в head нет разорванных атрибутов', () => {
+    const html = page('Кубок', '', { game: 'dota2' });
+    const head = html.slice(html.indexOf('<head>'), html.indexOf('</head>'));
+
+    // Чётное число кавычек в каждой строке head: непарная означает разорванный атрибут.
+    for (const line of head.split('\n')) {
+      if (!line.includes('=')) continue;
+      const quotes = (line.match(/"/g) ?? []).length;
+      expect(quotes % 2, `непарная кавычка: ${line.slice(0, 80)}`).toBe(0);
+    }
+  });
+
   it('заголовок экранируется', () => {
     const html = page('<script>alert(1)</script>', '');
 
