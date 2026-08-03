@@ -200,6 +200,10 @@ export function createDraftsService(deps: {
       const [existing] = await db.select().from(matchDrafts).where(eq(matchDrafts.matchId, match.id));
       if (existing) return { draft: existing, created: false };
 
+      // Способности выключены — делить нечего: дуэль на прицел играется на любом агенте, и
+      // ни агенты, ни карта на неё не влияют. Драфта у такого турнира нет вовсе.
+      if (!tournament.abilities) return null;
+
       const subject = draftSubject(tournament.game);
       if (subject === null) return null;
       if (match.entrantAId === null || match.entrantBId === null) return null;

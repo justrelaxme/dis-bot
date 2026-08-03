@@ -226,6 +226,7 @@ async function runGuild(
       maxEntrants: schedule.maxEntrants,
       seeding: 'rank',
       bestOf: schedule.bestOf,
+      abilities: schedule.abilities,
       requireVerified: schedule.requireVerified,
       createdBy: client.user?.id ?? 'system',
       ...(schedule.announceChannelId ? { announceChannelId: schedule.announceChannelId } : {}),

@@ -98,6 +98,11 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
               .setDescription('Сетка: со вторым шансом или на выбывание')
               .addChoices(...FORMAT_CHOICES),
           )
+          .addBooleanOption((option) =>
+            option
+              .setName('abilities')
+              .setDescription('Играют со способностями. Выключить — дуэль на прицел, драфта не будет'),
+          )
           .addStringOption((option) =>
             option.setName('name').setDescription('Название турнира').setMaxLength(90),
           ),
@@ -113,6 +118,11 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
           .setDescription('Ежедневный автомат: голосование, регистрация и старт без организатора')
           .addBooleanOption((option) =>
             option.setName('enabled').setDescription('Включить или выключить автомат'),
+          )
+          .addBooleanOption((option) =>
+            option
+              .setName('abilities')
+              .setDescription('Играют со способностями. Выключить — дуэль на прицел, драфта не будет'),
           )
           .addStringOption((option) =>
             option.setName('poll_at').setDescription('Когда вывешивать голосование, например 14:00'),
@@ -197,6 +207,9 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
   // а не будничный вечер, и приходить ради одного матча обидно. У автомата наоборот —
   // там по умолчанию выбывание, чтобы вечер укладывался в разумное время.
   const format = (interaction.options.getString('format') ?? 'double-elim') as TournamentFormat;
+  // Со способностями по умолчанию: обычный турнир играется ими, а дуэль на прицел —
+  // отдельный случай, который организатор выбирает осознанно.
+  const abilities = interaction.options.getBoolean('abilities') ?? true;
 
   const tournament = await deps.tournaments.create({
     guildId: guild.id,
@@ -208,6 +221,7 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
     maxEntrants,
     seeding: 'rank',
     bestOf: 1,
+    abilities,
     requireVerified: true,
     createdBy: interaction.user.id,
     ...(interaction.channelId ? { announceChannelId: interaction.channelId } : {}),
@@ -340,6 +354,9 @@ async function schedule(interaction: Interaction, guild: Guild, deps: ManageDeps
   const mode = interaction.options.getString('mode');
   if (mode !== null) patch['entryMode'] = mode === 'solo' ? 'solo' : 'team';
 
+  const abilities = interaction.options.getBoolean('abilities');
+  if (abilities !== null) patch['abilities'] = abilities;
+
   const format = interaction.options.getString('format');
   if (format !== null) patch['format'] = format === 'double-elim' ? 'double-elim' : 'single-elim';
 
@@ -413,8 +430,8 @@ async function info(interaction: Interaction, guild: Guild, deps: ManageDeps): P
   // это только по панели регистрации, когда люди уже начали записываться.
   const roster =
     tournament.entryMode === 'solo'
-      ? 'играют по одному'
-      : `команды по ${tournament.teamSize} человек`;
+      ? `играют по одному${tournament.abilities ? '' : ', способности выключены — дуэль на прицел'}`
+      : `команды по ${tournament.teamSize} человек${tournament.abilities ? '' : ', способности выключены'}`;
 
   await interaction.editReply({
     content: [

@@ -117,6 +117,18 @@ export const tournaments = pgTable(
     state: text('state').$type<TournamentState>().notNull().default('draft'),
     /** Число карт в матче: 1, 3 или 5. Одинаково для всех матчей турнира. */
     bestOf: integer('best_of').notNull().default(1),
+    /**
+     * Играют ли со способностями.
+     *
+     * Выключенные способности — это не оттенок правил, а другая игра: дуэль в Valorant «на
+     * любом агенте, чисто пострелять» проверяет прицел, и делить там нечего. Поэтому у такого
+     * турнира драфта нет вовсе — ни агентов, ни карты. Обещать вето там, где выбор ни на что
+     * не влияет, значило бы заставлять капитанов нажимать кнопки без причины.
+     *
+     * По умолчанию включены: обычный турнир играется со способностями, а дуэль на прицел —
+     * отдельный случай, который организатор задаёт осознанно.
+     */
+    abilities: boolean('abilities').notNull().default(true),
     /** Требовать подтверждённую привязку по игре у каждого игрока состава. */
     requireVerified: boolean('require_verified').notNull().default(true),
     /**
@@ -350,6 +362,8 @@ export const tournamentSchedules = pgTable('tournament_schedules', {
   teamSize: integer('team_size').notNull().default(5),
   maxEntrants: integer('max_entrants').notNull().default(16),
   bestOf: integer('best_of').notNull().default(1),
+  /** Играют ли со способностями. Выключены — драфта у турнира нет вовсе. */
+  abilities: boolean('abilities').notNull().default(true),
   requireVerified: boolean('require_verified').notNull().default(true),
   games: jsonb('games').$type<TournamentGame[]>().notNull(),
   announceChannelId: text('announce_channel_id'),

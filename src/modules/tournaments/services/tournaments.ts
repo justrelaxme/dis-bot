@@ -45,6 +45,11 @@ export interface CreateTournamentInput {
   maxEntrants: number;
   seeding: SeedingMode;
   bestOf: number;
+  /**
+   * Играют ли со способностями. Не задано — да: обычный турнир играется ими, а дуэль на
+   * прицел это отдельный случай. Выключенные способности означают турнир без драфта вовсе.
+   */
+  abilities?: boolean;
   requireVerified: boolean;
   createdBy: string;
   announceChannelId?: string;
@@ -373,6 +378,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
           maxEntrants: input.maxEntrants,
           seeding: input.seeding,
           bestOf: input.bestOf,
+          abilities: input.abilities ?? true,
           requireVerified: input.requireVerified,
           createdBy: input.createdBy,
           ...(input.announceChannelId ? { announceChannelId: input.announceChannelId } : {}),
