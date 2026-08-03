@@ -106,6 +106,11 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
               .setName('abilities')
               .setDescription('Играют со способностями. Выключить — дуэль на прицел, драфта не будет'),
           )
+          .addBooleanOption((option) =>
+            option
+              .setName('auto_teams')
+              .setDescription('Составы собирает бот из записавшихся по одному, по силе'),
+          )
           .addStringOption((option) =>
             option.setName('name').setDescription('Название турнира').setMaxLength(90),
           ),
@@ -126,6 +131,11 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
             option
               .setName('abilities')
               .setDescription('Играют со способностями. Выключить — дуэль на прицел, драфта не будет'),
+          )
+          .addBooleanOption((option) =>
+            option
+              .setName('auto_teams')
+              .setDescription('Составы собирает бот из записавшихся по одному, по силе'),
           )
           .addStringOption((option) =>
             option.setName('poll_at').setDescription('Когда вывешивать голосование, например 14:00'),
@@ -213,6 +223,7 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
   // Со способностями по умолчанию: обычный турнир играется ими, а дуэль на прицел —
   // отдельный случай, который организатор выбирает осознанно.
   const abilities = interaction.options.getBoolean('abilities') ?? true;
+  const autoTeams = interaction.options.getBoolean('auto_teams') ?? false;
 
   const tournament = await deps.tournaments.create({
     guildId: guild.id,
@@ -225,6 +236,7 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
     seeding: 'rank',
     bestOf: 1,
     abilities,
+    autoTeams,
     requireVerified: true,
     createdBy: interaction.user.id,
     ...(interaction.channelId ? { announceChannelId: interaction.channelId } : {}),
@@ -275,6 +287,15 @@ async function start(interaction: Interaction, guild: Guild, deps: ManageDeps, c
   const tournament = await deps.tournaments.current(guild.id);
   if (!tournament) throw new UserError('Сейчас нет турнира, который можно стартовать.');
 
+  // Автосбор: одиночки превращаются в составы до жеребьёвки. Силу после этого считаем заново —
+  // она теперь у команд, а не у отдельных людей, и старая карта указывала бы на участников,
+  // которых больше нет.
+  let assembled = { teams: 0, benched: [] as string[] };
+  if (tournament.autoTeams) {
+    const before = await entrantStrengths(ctx.db, tournament.id, tournament.game);
+    assembled = await deps.tournaments.assembleTeams(tournament.id, before);
+  }
+
   const strengths = await entrantStrengths(ctx.db, tournament.id, tournament.game);
   const view = await deps.tournaments.start(tournament.id, strengths);
   const active = view.entrants.filter((entrant) => entrant.withdrawnAt === null && entrant.seed !== null);
@@ -312,6 +333,17 @@ async function start(interaction: Interaction, guild: Guild, deps: ManageDeps, c
     content: [
       `## ${tournament.name} — старт`,
       `${EVENT_SIZE_LABELS[size]} · ${active.length} участников · ${BRACKET_FORMAT_LABELS[view.tournament.format]} · жеребьёвка по силе состава`,
+      ...(assembled.teams > 0
+        ? [
+            '',
+            `Составы собрал бот: ${assembled.teams} по ${view.tournament.teamSize}, раздача по силе.`,
+            ...(assembled.benched.length > 0
+              ? [
+                  `Не хватило на полный состав: ${assembled.benched.map((id) => `<@${id}>`).join(', ')} — в сетку не попали.`,
+                ]
+              : []),
+          ]
+        : []),
       '',
       '**Первый круг:**',
       ...pairs,
@@ -374,6 +406,9 @@ async function schedule(interaction: Interaction, guild: Guild, deps: ManageDeps
 
   const abilities = interaction.options.getBoolean('abilities');
   if (abilities !== null) patch['abilities'] = abilities;
+
+  const autoTeams = interaction.options.getBoolean('auto_teams');
+  if (autoTeams !== null) patch['autoTeams'] = autoTeams;
 
   const format = interaction.options.getString('format');
   if (format !== null) patch['format'] = format === 'double-elim' ? 'double-elim' : 'single-elim';

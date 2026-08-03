@@ -36,10 +36,13 @@ export function registrationPanel(tournament: TournamentRow): {
   components: ActionRowBuilder<ButtonBuilder>[];
 } {
   const game = TOURNAMENT_GAME_LABELS[tournament.game] ?? tournament.game;
+  // Записываются по одному и в одиночном турнире, и в командном с автосбором: во втором
+  // случае составы соберёт бот, а человеку по-прежнему надо нажать одну кнопку.
+  const alone = tournament.entryMode === 'solo' || tournament.autoTeams;
   const solo = tournament.entryMode === 'solo';
 
   const buttons = new ActionRowBuilder<ButtonBuilder>();
-  if (solo) {
+  if (alone) {
     buttons.addComponents(
       new ButtonBuilder().setCustomId(BTN_PANEL_SOLO).setLabel('Записаться').setStyle(ButtonStyle.Success),
     );
@@ -56,9 +59,17 @@ export function registrationPanel(tournament: TournamentRow): {
 
   const lines = [
     `## ${tournament.name}`,
-    `${game} · ${solo ? 'играем по одному' : `команды по ${tournament.teamSize} человек`} · до ${tournament.maxEntrants} участников`,
+    `${game} · ${solo ? 'играем по одному' : `команды по ${tournament.teamSize} человек`}${tournament.autoTeams ? ', составы собирает бот' : ''} · до ${tournament.maxEntrants} участников`,
     '',
-    solo
+    tournament.autoTeams
+      ? [
+          'Записывайся один, команду искать не надо.',
+          `**1.** Нажми **Записаться**, потом **Я готов**.`,
+          `**2.** В момент старта бот разделит всех отметившихся на составы по ${tournament.teamSize} человек — по силе, чтобы вышло ровно.`,
+          '**3.** Капитаном станет сильнейший в составе, название даст бот.',
+          `Кого не хватит на полный состав, тот в сетку не попадёт: играть втроём против пятерых не турнир.`,
+        ].join('\n')
+      : solo
       ? 'Нажми **Записаться** — этого достаточно. Перед стартом нажми **Я готов**.'
       : [
           'Дальше будет так:',

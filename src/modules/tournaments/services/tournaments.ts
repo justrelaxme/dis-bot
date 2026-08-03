@@ -17,6 +17,7 @@ import {
   type MatchPosition,
 } from '../bracket.js';
 import { scoreDisagrees, type MatchScore } from '../score.js';
+import { autoTeamName, formTeams, type Signup } from '../teams.js';
 import {
   tournamentEntrantMembers,
   tournamentEntrants,
@@ -51,6 +52,8 @@ export interface CreateTournamentInput {
    * прицел это отдельный случай. Выключенные способности означают турнир без драфта вовсе.
    */
   abilities?: boolean;
+  /** Собирает ли бот составы сам из записавшихся по одному. Только для командного турнира. */
+  autoTeams?: boolean;
   requireVerified: boolean;
   createdBy: string;
   announceChannelId?: string;
@@ -397,6 +400,8 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
           seeding: input.seeding,
           bestOf: input.bestOf,
           abilities: input.abilities ?? true,
+          // Автосбор только у командного турнира: в матче один на один делить нечего.
+          autoTeams: input.entryMode === 'team' && (input.autoTeams ?? false),
           requireVerified: input.requireVerified,
           createdBy: input.createdBy,
           ...(input.announceChannelId ? { announceChannelId: input.announceChannelId } : {}),
@@ -427,6 +432,78 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         .update(tournaments)
         .set({ state: 'registration', registrationClosesAt: closesAt, updatedAt: new Date() })
         .where(and(eq(tournaments.id, tournamentId), eq(tournaments.state, 'draft')));
+    },
+
+    /**
+     * Собирает составы из тех, кто записался по одному. Вызывается перед жеребьёвкой.
+     *
+     * Участник первого игрока становится составом и переименовывается, остальные переходят в
+     * него, а их прежние участники помечаются вышедшими. Так сделано вместо создания новых
+     * строк, чтобы не потерять отметку о готовности: она уже стоит у каждого, и переносить её
+     * на новую строку значило бы решать за человека, готов он или нет.
+     *
+     * Лишние (те, кого не хватило на полный состав) выходят из турнира. Это честнее, чем
+     * добрать команду до размера: место в неполном составе выглядит участием, а на деле им не
+     * является — против полной пятёрки такой состав проигрывает механически.
+     */
+    async assembleTeams(
+      tournamentId: number,
+      strengths: Map<number, number>,
+    ): Promise<{ teams: number; benched: string[] }> {
+      const tournament = await byId(tournamentId);
+      if (!tournament.autoTeams || tournament.entryMode !== 'team') return { teams: 0, benched: [] };
+
+      const ready = (await activeEntrants(tournamentId)).filter((entrant) => entrant.checkedInAt !== null);
+      const signups: Signup[] = [];
+      for (const entrant of ready) {
+        const members = await membersOf(entrant.id);
+        // Состав больше одного означает, что команду собрали руками. Такую не разбираем:
+        // люди пришли вместе, и разводить их по разным составам нельзя.
+        if (members.length !== 1) return { teams: 0, benched: [] };
+        signups.push({
+          entrantId: entrant.id,
+          userId: members[0] as string,
+          strength: strengths.get(entrant.id) ?? null,
+        });
+      }
+
+      const formation = formTeams(signups, tournament.teamSize);
+      if (formation.teams.length === 0) return { teams: 0, benched: [] };
+
+      const now = new Date();
+      for (const [index, team] of formation.teams.entries()) {
+        const captain = team.members[0] as Signup;
+        await db
+          .update(tournamentEntrants)
+          .set({ displayName: autoTeamName(index), captainUserId: captain.userId })
+          .where(eq(tournamentEntrants.id, captain.entrantId));
+        await db
+          .update(tournamentEntrantMembers)
+          .set({ role: 'captain' })
+          .where(eq(tournamentEntrantMembers.entrantId, captain.entrantId));
+
+        for (const member of team.members.slice(1)) {
+          // Сначала уводим человека, потом закрываем его прежнего участника: обратный порядок
+          // упёрся бы в уникальность «один человек — один участник в турнире».
+          await db
+            .update(tournamentEntrantMembers)
+            .set({ entrantId: captain.entrantId, role: 'player' })
+            .where(eq(tournamentEntrantMembers.entrantId, member.entrantId));
+          await db
+            .update(tournamentEntrants)
+            .set({ withdrawnAt: now })
+            .where(eq(tournamentEntrants.id, member.entrantId));
+        }
+      }
+
+      for (const spare of formation.benched) {
+        await db
+          .update(tournamentEntrants)
+          .set({ withdrawnAt: now })
+          .where(eq(tournamentEntrants.id, spare.entrantId));
+      }
+
+      return { teams: formation.teams.length, benched: formation.benched.map((spare) => spare.userId) };
     },
 
     /** Запоминает афишу турнира — событие Discord, которое её показывает. */

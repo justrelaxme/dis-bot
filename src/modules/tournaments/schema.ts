@@ -129,6 +129,17 @@ export const tournaments = pgTable(
      * отдельный случай, который организатор задаёт осознанно.
      */
     abilities: boolean('abilities').notNull().default(true),
+    /**
+     * Собирает ли бот составы сам из тех, кто записался по одному.
+     *
+     * Нужно там, где компании нет: человек хочет играть пять на пять, но своей четвёрки у него
+     * не наберётся. Раздача идёт по силе, чтобы составы вышли ровными, — случайная одинаково
+     * часто даёт и ровные, и пятёрку сильнейших против пятёрки слабейших, а второй случай это
+     * испорченный вечер для десяти человек.
+     *
+     * Смысл имеет только у командного турнира: в матче один на один делить нечего.
+     */
+    autoTeams: boolean('auto_teams').notNull().default(false),
     /** Требовать подтверждённую привязку по игре у каждого игрока состава. */
     requireVerified: boolean('require_verified').notNull().default(true),
     /**
@@ -386,6 +397,8 @@ export const tournamentSchedules = pgTable('tournament_schedules', {
   bestOf: integer('best_of').notNull().default(1),
   /** Играют ли со способностями. Выключены — драфта у турнира нет вовсе. */
   abilities: boolean('abilities').notNull().default(true),
+  /** Собирает ли бот составы сам из записавшихся по одному. */
+  autoTeams: boolean('auto_teams').notNull().default(false),
   requireVerified: boolean('require_verified').notNull().default(true),
   games: jsonb('games').$type<TournamentGame[]>().notNull(),
   announceChannelId: text('announce_channel_id'),

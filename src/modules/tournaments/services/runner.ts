@@ -329,7 +329,27 @@ async function runGuild(
     // Сила состава считается по рангам этапа 1: сервису турниров про ранги знать не надо,
     // поэтому мост получает базу напрямую.
     const tournament = await deps.tournaments.byId(cycle.tournamentId);
-    const strengths = await entrantStrengths(deps.db, cycle.tournamentId, tournament.game);
+    let strengths = await entrantStrengths(deps.db, cycle.tournamentId, tournament.game);
+
+    // Автосбор: одиночки превращаются в составы до жеребьёвки. Силу после этого считаем
+    // заново — она теперь у команд, а не у отдельных людей, и старая карта указывала бы на
+    // участников, которых больше нет.
+    if (tournament.autoTeams) {
+      const assembled = await deps.tournaments.assembleTeams(cycle.tournamentId, strengths);
+      if (assembled.teams > 0) {
+        strengths = await entrantStrengths(deps.db, cycle.tournamentId, tournament.game);
+        await channel?.send(
+          [
+            `Собрал ${assembled.teams} ${assembled.teams === 1 ? 'состав' : 'состава'} из тех, кто отметился. Раздача по силе, чтобы вышло ровно.`,
+            ...(assembled.benched.length > 0
+              ? [
+                  `Не хватило на полный состав: ${assembled.benched.map((id) => `<@${id}>`).join(', ')}. В сетку не попали — играть неполной командой против полной не турнир. В следующий раз приходите чуть раньше.`,
+                ]
+              : []),
+          ].join('\n'),
+        );
+      }
+    }
 
     const view = await deps.tournaments.start(cycle.tournamentId, strengths);
     await deps.cycles.updateCycle(cycle.id, { stage: 'running' });

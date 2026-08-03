@@ -443,6 +443,161 @@ describe('счёт матча', () => {
   });
 });
 
+/**
+ * Автосбор составов. Проверяется против настоящего Postgres, потому что перенос человека из
+ * одного участника в другого упирается в уникальность «один человек — один участник в турнире»,
+ * и порядок операций там существен: на заглушке это не проверяется вообще.
+ */
+describe('автосбор составов из одиночек', () => {
+  async function withSignups(count: number, teamSize: number) {
+    guildCounter += 1;
+    const guildId = `63000000000000${String(guildCounter).padStart(4, '0')}`;
+    const service = createTournamentsService({ db: pg.db });
+
+    const tournament = await service.create({
+      guildId,
+      name: `Автосбор ${guildCounter}`,
+      game: 'dota2',
+      format: 'single-elim',
+      entryMode: 'team',
+      teamSize,
+      maxEntrants: 64,
+      seeding: 'rank',
+      bestOf: 1,
+      autoTeams: true,
+      requireVerified: false,
+      createdBy: 'organizer',
+    });
+    await service.openRegistration(tournament.id, new Date(Date.now() + 3_600_000));
+
+    const strengths = new Map<number, number>();
+    for (let index = 0; index < count; index += 1) {
+      const user = `64${String(guildCounter).padStart(7, '0')}${String(index).padStart(7, '0')}`;
+      const entrant = await service.createEntrant(tournament.id, user, `Игрок ${index + 1}`);
+      await service.checkIn(tournament.id, user);
+      strengths.set(entrant.id, 5_000 - index * 100);
+    }
+
+    return { service, tournamentId: tournament.id, strengths };
+  }
+
+  it('десять одиночек становятся двумя составами по пять', async () => {
+    const { service, tournamentId, strengths } = await withSignups(10, 5);
+
+    const assembled = await service.assembleTeams(tournamentId, strengths);
+
+    expect(assembled.teams).toBe(2);
+    expect(assembled.benched).toEqual([]);
+
+    const entrants = await service.activeEntrants(tournamentId);
+    expect(entrants).toHaveLength(2);
+    for (const entrant of entrants) {
+      expect(await service.membersOf(entrant.id)).toHaveLength(5);
+      // Название даёт бот: капитана до раздачи нет, и назвать состав некому.
+      expect(entrant.displayName).not.toMatch(/^Игрок/);
+    }
+  });
+
+  /**
+   * Лишние выходят из турнира. Добрать состав до размера кем попало нельзя: место в неполной
+   * команде выглядит участием, а против полной пятёрки такой состав проигрывает механически.
+   */
+  it('лишние остаются вне сетки и названы по именам', async () => {
+    const { service, tournamentId, strengths } = await withSignups(12, 5);
+
+    const assembled = await service.assembleTeams(tournamentId, strengths);
+
+    expect(assembled.teams).toBe(2);
+    expect(assembled.benched).toHaveLength(2);
+    expect(await service.activeEntrants(tournamentId)).toHaveLength(2);
+  });
+
+  it('никто не оказывается в двух составах сразу', async () => {
+    const { service, tournamentId, strengths } = await withSignups(10, 5);
+    await service.assembleTeams(tournamentId, strengths);
+
+    const entrants = await service.activeEntrants(tournamentId);
+    const members = (await Promise.all(entrants.map((entrant) => service.membersOf(entrant.id)))).flat();
+
+    expect(new Set(members).size).toBe(members.length);
+    expect(members).toHaveLength(10);
+  });
+
+  it('меньше чем на один состав — не собираем никого', async () => {
+    const { service, tournamentId, strengths } = await withSignups(4, 5);
+
+    const assembled = await service.assembleTeams(tournamentId, strengths);
+
+    expect(assembled.teams).toBe(0);
+    // Никого не выкинули: турнир просто не состоится, и решать это будет старт.
+    expect(await service.activeEntrants(tournamentId)).toHaveLength(4);
+  });
+
+  /**
+   * Если хоть кто-то пришёл компанией, автосбор не вмешивается вовсе. Разводить по разным
+   * составам людей, которые записались вместе, нельзя: они за этим и собирались, а бот об их
+   * договорённости не знает ничего, кроме того, что она есть.
+   */
+  it('команды, собранные руками, не разбираются', async () => {
+    guildCounter += 1;
+    const guildId = `65000000000000${String(guildCounter).padStart(4, '0')}`;
+    const service = createTournamentsService({ db: pg.db });
+
+    const tournament = await service.create({
+      guildId,
+      name: `Смешанный ${guildCounter}`,
+      game: 'dota2',
+      format: 'single-elim',
+      entryMode: 'team',
+      teamSize: 2,
+      maxEntrants: 64,
+      seeding: 'rank',
+      bestOf: 1,
+      autoTeams: true,
+      requireVerified: false,
+      createdBy: 'organizer',
+    });
+    await service.openRegistration(tournament.id, new Date(Date.now() + 3_600_000));
+
+    const user = (index: number): string =>
+      `66${String(guildCounter).padStart(7, '0')}${String(index).padStart(7, '0')}`;
+
+    // Двое пришли вместе, двое записались по одному.
+    const pair = await service.createEntrant(tournament.id, user(0), 'Друзья');
+    await service.joinEntrant(pair.id, user(1));
+    await service.checkIn(tournament.id, user(0));
+    const alone1 = await service.createEntrant(tournament.id, user(2), 'Одиночка 1');
+    await service.checkIn(tournament.id, user(2));
+    const alone2 = await service.createEntrant(tournament.id, user(3), 'Одиночка 2');
+    await service.checkIn(tournament.id, user(3));
+
+    const assembled = await service.assembleTeams(
+      tournament.id,
+      new Map([
+        [pair.id, 5_000],
+        [alone1.id, 4_000],
+        [alone2.id, 3_000],
+      ]),
+    );
+
+    expect(assembled.teams, 'автосбор вмешался в собранную руками команду').toBe(0);
+    // Ничего не тронуто: все три участника на месте, «Друзья» по-прежнему вдвоём.
+    expect(await service.activeEntrants(tournament.id)).toHaveLength(3);
+    expect(await service.membersOf(pair.id)).toHaveLength(2);
+  });
+
+  it('после сбора сетка строится на составах, а не на людях', async () => {
+    const { service, tournamentId, strengths } = await withSignups(10, 5);
+    await service.assembleTeams(tournamentId, strengths);
+
+    const fresh = new Map((await service.activeEntrants(tournamentId)).map((entrant) => [entrant.id, 1_000]));
+    const view = await service.start(tournamentId, fresh);
+
+    expect(view.entrants.filter((entrant) => entrant.seed !== null)).toHaveLength(2);
+    expect(view.matches.filter((match) => match.state === 'ready')).toHaveLength(1);
+  });
+});
+
 describe('брошенный турнир', () => {
   it('распознаётся по отсутствию изменений и не трогает живой', async () => {
     const stale = await startTournament({ registered: 4 });
