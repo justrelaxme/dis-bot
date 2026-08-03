@@ -1,3 +1,4 @@
+import type { RankScale } from '../identity/schema.js';
 import { EVENT_SIZE_LABELS, eventSize } from '../tournaments/bracket.js';
 import { TOURNAMENT_GAME_LABELS } from '../tournaments/games.js';
 import { standingsOf } from '../tournaments/standings.js';
@@ -56,6 +57,26 @@ function tierColor(tier: string | null): string {
   return TIER_COLORS[tier.toUpperCase()] ?? 'var(--rule)';
 }
 
+/**
+ * Ранг строкой. У Бездны это «12-3»: этаж и зал через дефис, потому что по отдельности они
+ * ничего не значат, а через пробел выглядят как два разных числа.
+ */
+function formatEntryRank(entry: LeaderboardEntry): string {
+  if (entry.tier === null) return 'без ранга';
+  if (entry.scale === 'genshin-abyss') return `Бездна ${entry.tier}-${entry.division ?? '1'}`;
+  return [entry.tier, entry.division].filter(Boolean).join(' ');
+}
+
+/**
+ * Цвет плашки. У медалей и эмблем он свой — тот, что игроки знают наизусть. У этажей Бездны
+ * своего цвета нет: HoYoverse их не раскрашивает, и придумывать двенадцать оттенков значило
+ * бы выдумать шкалу, которой в игре нет. Поэтому берётся акцент дисциплины.
+ */
+function medalColor(entry: LeaderboardEntry): string {
+  if (entry.scale === 'genshin-abyss') return 'var(--accent)';
+  return tierColor(entry.tier);
+}
+
 const NAV = [
   { href: '/rules', label: 'Правила' },
   { href: '/hall', label: 'Зал славы' },
@@ -63,6 +84,7 @@ const NAV = [
   { href: '/leaderboard/valorant', label: 'Valorant' },
   { href: '/leaderboard/lol', label: 'LoL' },
   { href: '/leaderboard/tft', label: 'TFT' },
+  { href: '/leaderboard/genshin', label: 'Genshin' },
 ];
 
 export interface PageChrome {
@@ -484,6 +506,8 @@ ${rows
 export interface LeaderboardEntry {
   displayName: string;
   mode: string;
+  /** Нужна, чтобы понять, как ранг записать: «12-3» у Бездны и «Gold II» у остальных. */
+  scale: RankScale;
   tier: string | null;
   division: string | null;
   points: number | null;
@@ -511,7 +535,7 @@ export function renderLeaderboard(game: TournamentGame, entries: LeaderboardEntr
 
   const rows = entries
     .map((entry, index) => {
-      const rank = [entry.tier, entry.division].filter(Boolean).join(' ') || 'без ранга';
+      const rank = formatEntryRank(entry);
       const points = entry.points === null ? '' : String(entry.points);
       // Пометка обязательна: без неё заявленный ранг стоит в таблице как проверенный.
       const claimed = entry.claimed
@@ -520,7 +544,7 @@ export function renderLeaderboard(game: TournamentGame, entries: LeaderboardEntr
       return `<tr style="--delay:${index * 18}ms">
 <td class="pos">${index + 1}</td>
 <td class="acct">${escape(entry.displayName)}</td>
-<td><span class="medal" style="--tc:${tierColor(entry.tier)}">${escape(rank)}</span>${claimed}</td>
+<td><span class="medal" style="--tc:${medalColor(entry)}">${escape(rank)}</span>${claimed}</td>
 <td class="num">${escape(points)}</td>
 </tr>`;
     })

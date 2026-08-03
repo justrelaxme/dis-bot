@@ -82,6 +82,7 @@ export function createIdentityModule(deps: IdentityModuleDeps): BotModule {
   const steamClient = deps.fetchClientFor('steam');
   const openDotaClient = deps.fetchClientFor('opendota');
   const riotClient = deps.fetchClientFor('riot');
+  const enkaClient = deps.fetchClientFor('enka');
   const steamApiKey = deps.config.STEAM_API_KEY;
   const riotApiKey = deps.config.RIOT_API_KEY;
 
@@ -95,6 +96,7 @@ export function createIdentityModule(deps: IdentityModuleDeps): BotModule {
     steamClient,
     openDotaClient,
     riotClient,
+    enkaClient,
     rateLimiter: deps.rateLimiter,
     cache: deps.cache,
   });
@@ -109,6 +111,7 @@ export function createIdentityModule(deps: IdentityModuleDeps): BotModule {
     steamClient,
     openDotaClient,
     riotClient,
+    enkaClient,
     rateLimiter: deps.rateLimiter,
     cache: createPassthroughCache(),
   });

@@ -29,6 +29,45 @@ function catalogClient(payload: unknown): FetchClient {
   return { json: async <T>(): Promise<T> => payload as T };
 }
 
+/**
+ * Заглушка Enka: справочник персонажей собирается из двух файлов — игровые данные и словарь
+ * локализаций, — поэтому одного ответа тут мало и подмена смотрит на адрес.
+ */
+function enkaCatalogClient(roster: unknown, locales: unknown): FetchClient {
+  return { json: async <T>(url: string): Promise<T> => (url.includes('loc.json') ? locales : roster) as T };
+}
+
+/**
+ * Выгрузка Enka в миниатюре: двадцать обычных персонажей, оба Путешественника и пробная
+ * копия. Форма та же, что у настоящей, включая имена хэшами — они и есть причина, по которой
+ * справочник тянется двумя файлами.
+ */
+const genshinRoster: Record<string, Record<string, unknown>> = {
+  ...Object.fromEntries(
+    Array.from({ length: 20 }, (_, index) => [
+      String(10000100 + index),
+      { NameTextMapHash: 900 + index, SideIconName: `UI_AvatarIcon_Side_Hero${index}`, Element: 'Fire' },
+    ]),
+  ),
+  // Пробная копия: другой идентификатор, та же иконка. В пуле ей место одно, а не два.
+  '10000903': { NameTextMapHash: 900, SideIconName: 'UI_AvatarIcon_Side_Hero0', Element: 'Fire' },
+  // Путешественник: шестнадцать вариантов под двумя именами. Ни одному в пуле не место.
+  '10000005': { NameTextMapHash: 800, SideIconName: 'UI_AvatarIcon_Side_PlayerBoy', Element: 'Wind' },
+  '10000005-502': { NameTextMapHash: 800, SideIconName: 'UI_AvatarIcon_Side_PlayerBoy', Element: 'Fire' },
+  '10000007': { NameTextMapHash: 801, SideIconName: 'UI_AvatarIcon_Side_PlayerGirl', Element: 'Wind' },
+  // Строка без иконки: в настоящей выгрузке такие есть, и картинки для них не существует.
+  '10000098': { NameTextMapHash: 802 },
+};
+
+const genshinLocales = {
+  ru: {
+    ...Object.fromEntries(Array.from({ length: 20 }, (_, index) => [String(900 + index), `Персонаж ${index}`])),
+    '800': 'Путешественник',
+    '801': 'Путешественница',
+    '802': 'Без иконки',
+  },
+};
+
 const agents = {
   data: Array.from({ length: 20 }, (_, index) => ({
     uuid: `agent-${index}`,
@@ -45,7 +84,7 @@ const heroes = Array.from({ length: 30 }, (_, index) => ({
 }));
 
 async function makeMatch(options: {
-  game: 'dota2' | 'valorant';
+  game: 'dota2' | 'valorant' | 'genshin';
   solo: boolean;
   abilities?: boolean;
 }): Promise<{ tournament: TournamentRow; match: MatchRow }> {
@@ -106,10 +145,70 @@ function drafts() {
       logger,
       dotaClient: catalogClient(heroes),
       valorantClient: catalogClient(agents),
+      enkaClient: enkaCatalogClient(genshinRoster, genshinLocales),
     }),
     cache,
   };
 }
+
+describe('драфт персонажей Genshin', () => {
+  /**
+   * Пиков восемь, а не по одному на участника: этаж Бездны проходят двумя половинами по
+   * четыре, и четвёрка означала бы, что во вторую половину игрок выходит без команды.
+   */
+  it('восемь пиков на сторону и по три бана, сколько бы ни было участников', async () => {
+    const { tournament, match } = await makeMatch({ game: 'genshin', solo: true });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const steps = created?.draft.sequence ?? [];
+    expect(created?.draft.subject).toBe('characters');
+    expect(steps.every((step) => step.group === 'characters')).toBe(true);
+    expect(steps.filter((step) => step.kind === 'ban')).toHaveLength(6);
+    expect(steps.filter((step) => step.kind === 'pick' && step.side === 'a')).toHaveLength(8);
+    expect(steps.filter((step) => step.kind === 'pick' && step.side === 'b')).toHaveLength(8);
+  });
+
+  it('в пул попадают только настоящие персонажи: без Путешественника, без пробных копий, по одному разу', async () => {
+    const { tournament, match } = await makeMatch({ game: 'genshin', solo: true });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const pool = created?.draft.pool ?? [];
+    expect(pool).toHaveLength(20);
+    expect(pool.map((option) => option.label)).not.toContain('Путешественник');
+    expect(pool.map((option) => option.label)).not.toContain('Путешественница');
+    expect(pool.map((option) => option.label)).not.toContain('Без иконки');
+    expect(new Set(pool.map((option) => option.id)).size).toBe(pool.length);
+  });
+
+  it('портрет и мелкая иконка — разные картинки одного персонажа', async () => {
+    const { tournament, match } = await makeMatch({ game: 'genshin', solo: true });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const first = (created?.draft.pool ?? []).find((option) => option.label === 'Персонаж 0');
+    expect(first?.imageUrl).toBe('https://enka.network/ui/UI_AvatarIcon_Hero0.png');
+    expect(first?.iconUrl).toBe('https://enka.network/ui/UI_AvatarIcon_Side_Hero0.png');
+  });
+
+  it('имена идут по алфавиту, а не в порядке выгрузки', async () => {
+    const { tournament, match } = await makeMatch({ game: 'genshin', solo: true });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const labels = (created?.draft.pool ?? []).map((option) => option.label);
+    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b, 'ru')));
+  });
+});
 
 describe('какие фазы получает драфт', () => {
   it('Valorant 5×5 — карты, потом агенты', async () => {

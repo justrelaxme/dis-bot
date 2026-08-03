@@ -9,11 +9,13 @@ import {
 import {
   DOTA_DRAFT_SEQUENCE,
   VALORANT_MAPS,
+  GENSHIN_ROSTER,
   bansFor,
   draftSubject,
   mapVetoSequence,
   pickBanSequence,
   picksBlockOpponent,
+  picksFor,
   poolFits,
   survivorsAreResult,
   type DraftOption,
@@ -111,9 +113,10 @@ describe('последовательность драфта героев', () =>
 });
 
 describe('какие дисциплины драфтятся', () => {
-  it('Dota — герои, Valorant — карты, остальным не нужно', () => {
+  it('Dota — герои, Valorant — карты, Genshin — персонажи, остальным не нужно', () => {
     expect(draftSubject('dota2')).toBe('heroes');
     expect(draftSubject('valorant')).toBe('maps');
+    expect(draftSubject('genshin')).toBe('characters');
     expect(draftSubject('lol')).toBeNull();
     expect(draftSubject('tft')).toBeNull();
   });
@@ -274,6 +277,45 @@ describe('последовательность банов и пиков под �
   it('банов два в командном матче и один в одиночном', () => {
     expect(bansFor(5)).toBe(2);
     expect(bansFor(1)).toBe(1);
+  });
+
+  /**
+   * Число пиков задаёт то, что делят, а не размер состава. У персонажей Genshin это этаж
+   * Бездны: четыре на половину, а половин две. Считать их по размеру состава значило бы
+   * выдать участнику турнира один на один одного персонажа — и отправить его во вторую
+   * половину этажа вообще без команды.
+   */
+  it('персонажей Genshin берут восемь на сторону, сколько бы ни было участников', () => {
+    expect(picksFor('characters', 1)).toBe(GENSHIN_ROSTER);
+    expect(picksFor('characters', 5)).toBe(GENSHIN_ROSTER);
+    expect(GENSHIN_ROSTER).toBe(8);
+  });
+
+  it('у героев и агентов пиков столько же, сколько людей в команде', () => {
+    expect(picksFor('heroes', 5)).toBe(5);
+    expect(picksFor('agents', 1)).toBe(1);
+  });
+
+  /** Два бана из ста одиннадцати почти не меняли бы расклад, ради которого баны и заводились. */
+  it('у персонажей банов три: пул большой, а решают его единицы', () => {
+    expect(bansFor(GENSHIN_ROSTER, 'characters')).toBe(3);
+    expect(bansFor(1, 'characters')).toBe(3);
+  });
+
+  it('драфт персонажей укладывается в пул: шесть банов и по восемь пиков на сторону', () => {
+    const steps = pickBanSequence('characters', GENSHIN_ROSTER, bansFor(GENSHIN_ROSTER, 'characters'));
+
+    expect(steps).toHaveLength(6 + GENSHIN_ROSTER * 2);
+    expect(poolFits(111, steps, 'characters')).toBe(true);
+    // Худшая сторона: шесть общих банов плюс её восемь пиков. Тринадцати уже не хватает.
+    expect(poolFits(14, steps, 'characters')).toBe(true);
+    expect(poolFits(13, steps, 'characters')).toBe(false);
+  });
+
+  /** Персонаж, взятый соперником, у своего аккаунта не исчезает — пул зеркальный. */
+  it('пик персонажа не забирает его у соперника', () => {
+    expect(picksBlockOpponent('characters')).toBe(false);
+    expect(survivorsAreResult('characters')).toBe(false);
   });
 
   it('пул меньше нужного не подходит: банить было бы что, а выбирать нечего', () => {

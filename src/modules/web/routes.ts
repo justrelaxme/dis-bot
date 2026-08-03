@@ -35,6 +35,7 @@ const GAME_TO_PROVIDER: Record<TournamentGame, ProviderId> = {
   lol: 'riot-lol',
   tft: 'riot-tft',
   valorant: 'riot-valorant',
+  genshin: 'enka',
 };
 
 /**
@@ -230,6 +231,7 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
         .map((row) => ({
           displayName: row.display_name,
           mode: row.mode,
+          scale: row.scale,
           tier: row.tier,
           division: row.division,
           points: row.points,

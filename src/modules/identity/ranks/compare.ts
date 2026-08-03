@@ -1,5 +1,6 @@
 import type { RankInfo } from '../providers/provider.js';
 import { DOTA_MEDALS } from './dota.js';
+import { ABYSS_FLOORS } from './genshin.js';
 import { RIOT_TIERS, VALORANT_TIERS } from './riot.js';
 
 const DIVISION_ORDER: Record<string, number> = { IV: 0, III: 1, II: 2, I: 3, '1': 0, '2': 1, '3': 2, '4': 3, '5': 4 };
@@ -9,6 +10,16 @@ const DIVISION_POINTS = 100;
 
 function tierIndex(rank: RankInfo): number {
   if (!rank.tier) return -1;
+
+  // Этажи Бездны — своя линейка: «12» в ней двенадцатая ступень, а не тир Riot с таким
+  // названием (такого тира нет, и общий indexOf вернул бы -1, то есть «ранга нет» у того,
+  // кто прошёл всю Бездну). Считаются они от единицы, а не от нуля: позиция в списке дала бы
+  // первому этажу нуль, а нуль здесь означает именно отсутствие ранга — и прошедший 1-1
+  // оказался бы неотличим от того, кто Бездну не открывал.
+  if (rank.scale === 'genshin-abyss') {
+    const floor = ABYSS_FLOORS.indexOf(rank.tier as (typeof ABYSS_FLOORS)[number]);
+    return floor < 0 ? -1 : floor + 1;
+  }
 
   const scale = rank.scale === 'dota-mmr' ? DOTA_MEDALS :
                 rank.scale === 'valorant-tier' ? VALORANT_TIERS :

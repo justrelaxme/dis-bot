@@ -205,6 +205,7 @@ registerSteamCallback(http, {
     steamClient: fetchClientFor('steam'),
     openDotaClient: fetchClientFor('opendota'),
     riotClient: fetchClientFor('riot'),
+  enkaClient: fetchClientFor('enka'),
     rateLimiter,
     cache,
   }),

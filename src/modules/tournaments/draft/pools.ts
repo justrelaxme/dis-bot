@@ -29,7 +29,7 @@ export type DraftSide = 'a' | 'b';
  * восстанавливается из `subject` строки драфта. Так прошлые записи остаются читаемыми — а
  * они и есть то, ради чего драфт заводился.
  */
-export type DraftGroup = 'maps' | 'heroes' | 'agents';
+export type DraftGroup = 'maps' | 'heroes' | 'agents' | 'characters';
 
 export interface DraftStep {
   side: DraftSide;
@@ -76,6 +76,32 @@ export function survivorsAreResult(group: DraftGroup): boolean {
 export function picksBlockOpponent(group: DraftGroup): boolean {
   return group === 'maps';
 }
+
+/**
+ * Сколько вариантов берёт одна сторона.
+ *
+ * Число задаёт не размер состава, а то, что делят. У героев и агентов на игрока приходится один,
+ * поэтому пиков столько же, сколько людей в команде. У персонажей Genshin иначе: пики считаются
+ * от этажа Бездны, а не от числа участников. Считать их по размеру состава значило бы выдать
+ * участнику турнира один на один одного персонажа и отправить его на этаж без команды.
+ */
+export function picksFor(group: Exclude<DraftGroup, 'maps'>, teamSize: number): number {
+  if (group === 'characters') return GENSHIN_ROSTER;
+  return Math.max(1, teamSize);
+}
+
+/**
+ * Сколько персонажей нужно на этаж Бездны: четыре на половину, а половин две.
+ *
+ * Половины идут одна за другой и одним отрядом их не пройти — персонаж, отправленный в первую,
+ * во второй недоступен. Поэтому драфт делит восемь, а не четыре: четвёрка означала бы, что
+ * участник выходит во вторую половину вообще без команды. Это правило игры, а не настройка
+ * сервера, и менять его администратору незачем.
+ */
+export const GENSHIN_ROSTER = 8;
+
+/** Сколько персонажей в отряде одной половины. Восемь пиков делятся на два таких. */
+export const GENSHIN_HALF = 4;
 
 const VALORANT_MEDIA = 'https://media.valorant-api.com/maps';
 
@@ -203,8 +229,14 @@ export function pickBanSequence(
 /**
  * Сколько банов на сторону. Два в командном матче и один в одиночном: бан отнимает вариант
  * у обоих, и четыре бана при двух пиках оставили бы драфт без выбора.
+ *
+ * У персонажей Genshin банов три, и причина в размере пула: их сто с лишним, но решают этаж
+ * из них единицы. Два бана на сторону вычёркивали бы четверых из десятка сильнейших — то
+ * есть почти не меняли бы расклад, ради которого баны и заводились. Держать их больше можно
+ * как раз потому, что пул большой: шесть вычеркнутых из ста одиннадцати выбор не запирают.
  */
-export function bansFor(teamSize: number): number {
+export function bansFor(teamSize: number, group?: DraftGroup): number {
+  if (group === 'characters') return 3;
   return teamSize > 1 ? 2 : 1;
 }
 
@@ -233,17 +265,19 @@ export function poolFits(poolSize: number, steps: readonly DraftStep[], group: D
  * Для Valorant это первая фаза: карты. Агенты идут после них, и в последовательности они
  * помечены своим набором.
  */
-export function draftSubject(game: TournamentGame): 'heroes' | 'maps' | null {
+export function draftSubject(game: TournamentGame): 'heroes' | 'maps' | 'characters' | null {
   if (game === 'dota2') return 'heroes';
   if (game === 'valorant') return 'maps';
+  if (game === 'genshin') return 'characters';
   // LoL и TFT: у LoL свой драфт в клиенте и он обязателен, у TFT соперников восемь и
   // делить нечего. Обещать драфт там, где он не нужен, — лишняя кнопка.
   return null;
 }
 
-export const SUBJECT_LABELS: Record<'heroes' | 'maps', { one: string; many: string }> = {
+export const SUBJECT_LABELS: Record<'heroes' | 'maps' | 'characters', { one: string; many: string }> = {
   heroes: { one: 'герой', many: 'герои' },
   maps: { one: 'карта', many: 'карты' },
+  characters: { one: 'персонаж', many: 'персонажи' },
 };
 
 /** Как называть набор на странице. Родительный падеж — он нужен в «бан карты», «пик героя». */
@@ -251,4 +285,5 @@ export const GROUP_LABELS: Record<DraftGroup, { many: string; one: string; of: s
   maps: { many: 'Карты', one: 'карта', of: 'карту' },
   heroes: { many: 'Герои', one: 'герой', of: 'героя' },
   agents: { many: 'Агенты', one: 'агент', of: 'агента' },
+  characters: { many: 'Персонажи', one: 'персонаж', of: 'персонажа' },
 };

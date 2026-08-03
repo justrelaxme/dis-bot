@@ -18,6 +18,7 @@ import {
   draftSubject,
   mapVetoSequence,
   pickBanSequence,
+  picksFor,
   poolFits,
   type DraftOption,
   type DraftSide,
@@ -51,6 +52,22 @@ const HERO_IMAGE_BASE =
 const VALORANT_AGENTS_URL = 'https://valorant-api.com/v1/agents?isPlayableCharacter=true';
 const AGENT_CACHE_KEY = 'valorant:agents';
 
+/**
+ * Справочник персонажей Genshin. У HoYoverse публичного API нет вообще, поэтому берётся
+ * выгрузка Enka.Network: два файла, потому что имена в игровых данных лежат хэшами, а
+ * расшифровка хэшей — отдельным словарём локализаций. Русские имена есть только там.
+ */
+const ENKA_CHARACTERS_URL =
+  'https://raw.githubusercontent.com/EnkaNetwork/API-docs/master/store/characters.json';
+const ENKA_LOC_URL = 'https://raw.githubusercontent.com/EnkaNetwork/API-docs/master/store/loc.json';
+const CHARACTER_CACHE_KEY = 'genshin:characters';
+/**
+ * Картинки персонажей раздаёт та же Enka: у HoYoverse публичного CDN с портретами нет.
+ * Ссылка стоит здесь, а не берётся из витрины, потому что зависимость обратная — витрина
+ * импортирует пул карт отсюда, и импорт в другую сторону замкнул бы её на саму себя.
+ */
+const GENSHIN_IMAGE_BASE = 'https://enka.network/ui';
+
 interface OpenDotaHero {
   id: number;
   name: string;
@@ -62,6 +79,14 @@ interface ValorantAgent {
   displayName: string;
   killfeedPortrait: string | null;
   displayIcon: string | null;
+}
+
+interface EnkaCharacter {
+  NameTextMapHash: number;
+  /** Имя файла мелкой иконки, например `UI_AvatarIcon_Side_Ayaka`. Портрет — то же без `_Side`. */
+  SideIconName?: string;
+  Element?: string;
+  QualityType?: string;
 }
 
 export interface DraftState {
@@ -82,6 +107,8 @@ export function createDraftsService(deps: {
    * закрывать второй.
    */
   valorantClient?: FetchClient;
+  /** Клиент Enka.Network: нужен только для справочника персонажей Genshin. */
+  enkaClient?: FetchClient;
 }) {
   const { db, cache, logger } = deps;
 
@@ -152,6 +179,46 @@ export function createDraftsService(deps: {
     });
   }
 
+  /**
+   * Список персонажей Genshin: сто одиннадцать имён с портретами, по-русски.
+   *
+   * Путешественник выброшен намеренно. Он есть на каждом аккаунте по определению, поэтому
+   * банить его нечего — а элементных и половых вариантов у него шестнадцать, и все под двумя
+   * именами, так что в пуле они выглядели бы как шестнадцать одинаковых плиток.
+   *
+   * Пробные копии (у одного персонажа встречается второй идентификатор с той же иконкой)
+   * отбрасываются по имени файла иконки: одна плитка на персонажа, а не на строку в данных.
+   */
+  async function genshinCharacters(): Promise<DraftOption[] | null> {
+    return catalog(deps.enkaClient, CHARACTER_CACHE_KEY, 'справочник персонажей Genshin', async (client) => {
+      const [roster, locales] = await Promise.all([
+        client.json<Record<string, EnkaCharacter>>(ENKA_CHARACTERS_URL),
+        client.json<Record<string, Record<string, string>>>(ENKA_LOC_URL),
+      ]);
+      const names = locales.ru ?? locales.en ?? {};
+
+      const seen = new Set<string>();
+      const options: DraftOption[] = [];
+      for (const [id, entry] of Object.entries(roster)) {
+        const icon = entry.SideIconName;
+        if (!icon) continue;
+        if (icon.includes('PlayerBoy') || icon.includes('PlayerGirl')) continue;
+        if (seen.has(icon)) continue;
+        const label = names[String(entry.NameTextMapHash)];
+        if (!label) continue;
+        seen.add(icon);
+        options.push({
+          id,
+          label,
+          group: 'characters' as const,
+          imageUrl: `${GENSHIN_IMAGE_BASE}/${icon.replace('_Side_', '_')}.png`,
+          iconUrl: `${GENSHIN_IMAGE_BASE}/${icon}.png`,
+        });
+      }
+      return options.sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+    });
+  }
+
   async function choicesOf(draftId: number): Promise<DraftChoiceRow[]> {
     return db
       .select()
@@ -208,11 +275,11 @@ export function createDraftsService(deps: {
       if (subject === null) return null;
       if (match.entrantAId === null || match.entrantBId === null) return null;
 
-      // Пиков ровно столько, сколько нужно стороне: пятеро в командном матче, один в
-      // одиночном. Пока размер команды здесь не учитывался, турнир один на один выдавал
-      // игроку драфт на пятерых героев — то есть четырёх лишних.
-      const picksPerSide = Math.max(1, tournament.teamSize);
-      const bansPerSide = bansFor(picksPerSide);
+      // Пиков столько, сколько нужно стороне: по одному на игрока у героев и агентов, восемь
+      // у персонажей Genshin (этаж Бездны — две половины по четыре). Пока это не считалось,
+      // турнир один на один выдавал игроку драфт на пятерых героев, то есть четырёх лишних.
+      const picksPerSide = picksFor(subject === 'maps' ? 'agents' : subject, tournament.teamSize);
+      const bansPerSide = bansFor(picksPerSide, subject === 'maps' ? 'agents' : subject);
 
       const pool: DraftOption[] = [];
       const sequence: DraftStep[] = [];
@@ -231,12 +298,12 @@ export function createDraftsService(deps: {
           sequence.push(...agentSteps);
         }
       } else {
-        const heroes = await dotaHeroes();
-        if (!heroes) return null;
-        const heroSteps = pickBanSequence('heroes', picksPerSide, bansPerSide);
-        if (!poolFits(heroes.length, heroSteps, 'heroes')) return null;
-        pool.push(...heroes);
-        sequence.push(...heroSteps);
+        const options = subject === 'characters' ? await genshinCharacters() : await dotaHeroes();
+        if (!options) return null;
+        const steps = pickBanSequence(subject, picksPerSide, bansPerSide);
+        if (!poolFits(options.length, steps, subject)) return null;
+        pool.push(...options);
+        sequence.push(...steps);
       }
 
       if (pool.length < 2 || sequence.length === 0) return null;

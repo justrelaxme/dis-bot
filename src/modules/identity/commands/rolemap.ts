@@ -2,6 +2,7 @@ import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from 'discord.
 import { UserError } from '../../../core/errors.js';
 import type { CommandDefinition } from '../../../core/module.js';
 import { DOTA_MEDALS } from '../ranks/dota.js';
+import { ABYSS_FLOORS } from '../ranks/genshin.js';
 import { RIOT_TIERS, VALORANT_TIERS } from '../ranks/riot.js';
 import type { ProviderId } from '../schema.js';
 import type { RoleMappingService } from '../services/role-mapping.js';
@@ -11,6 +12,7 @@ const PROVIDER_CHOICES: Array<{ name: string; value: ProviderId }> = [
   { name: 'League of Legends', value: 'riot-lol' },
   { name: 'Teamfight Tactics', value: 'riot-tft' },
   { name: 'Valorant', value: 'riot-valorant' },
+  { name: 'Genshin Impact', value: 'enka' },
 ];
 
 const MODE_CHOICES = [
@@ -20,11 +22,15 @@ const MODE_CHOICES = [
   { name: 'TFT: двойной подъём', value: 'tft-double-up' },
   { name: 'Dota 2: медаль', value: 'dota-mmr' },
   { name: 'Valorant: соревновательный', value: 'val-competitive' },
+  { name: 'Genshin: Витая Бездна', value: 'genshin-abyss' },
 ];
 
 function tiersFor(provider: ProviderId): readonly string[] {
   if (provider === 'steam') return DOTA_MEDALS;
   if (provider === 'riot-valorant') return VALORANT_TIERS;
+  // У Genshin «тир» — это этаж Бездны, от первого до двенадцатого. Роль за него ставится так
+  // же, как за медаль: порог «с 11 этажа и выше» — то же самое, что «с Diamond и выше».
+  if (provider === 'enka') return ABYSS_FLOORS;
   return RIOT_TIERS;
 }
 
@@ -42,6 +48,9 @@ const MODES_BY_PROVIDER: Record<ProviderId, readonly string[]> = {
   'riot-lol': ['solo-duo', 'flex'],
   'riot-tft': ['tft-ranked', 'tft-double-up'],
   'riot-valorant': ['val-competitive'],
+  // У Genshin ранга в привычном смысле нет: место в лидерборде задаёт прогресс Бездны,
+  // и режим здесь один.
+  enka: ['genshin-abyss'],
 };
 
 function modesFor(provider: ProviderId): readonly string[] {

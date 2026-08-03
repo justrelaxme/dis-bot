@@ -24,7 +24,7 @@ import type { DraftGroup } from './draft/pools.js';
  * привязывать голосование по дисциплине к устройству модуля identity, которое
  * может меняться по совсем другим причинам.
  */
-export type TournamentGame = 'dota2' | 'lol' | 'tft' | 'valorant';
+export type TournamentGame = 'dota2' | 'lol' | 'tft' | 'valorant' | 'genshin';
 
 export const tournamentPolls = pgTable(
   'tournament_polls',
@@ -436,7 +436,7 @@ export const matchDrafts = pgTable(
      * Первая фаза драфта, она же набор по умолчанию для шагов без пометки. У Valorant после
      * карт идут агенты, и их шаги помечены своим набором в самой последовательности.
      */
-    subject: text('subject').$type<'heroes' | 'maps'>().notNull(),
+    subject: text('subject').$type<'heroes' | 'maps' | 'characters'>().notNull(),
     /** Снимок пула на момент создания: патч не должен переписывать прошлое. */
     pool: jsonb('pool')
       .$type<

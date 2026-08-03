@@ -19,6 +19,7 @@ const GAME_TO_PROVIDER: Record<TournamentGame, ProviderId | null> = {
   lol: 'riot-lol',
   tft: 'riot-tft',
   valorant: 'riot-valorant',
+  genshin: 'enka',
 };
 
 interface StrengthRow extends Record<string, unknown> {
@@ -66,6 +67,8 @@ export function linkCommandFor(game: TournamentGame): string {
       return '/link riot';
     case 'valorant':
       return '/link valorant';
+    case 'genshin':
+      return '/link genshin';
     default:
       return '/link';
   }

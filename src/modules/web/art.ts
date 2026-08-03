@@ -22,6 +22,16 @@ import type { TournamentGame } from '../tournaments/schema.js';
 const DOTA_CDN = 'https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes';
 const VALORANT_CDN = 'https://media.valorant-api.com/agents';
 const RIOT_CDN = 'https://ddragon.leagueoflegends.com/cdn/img/champion/loading';
+/**
+ * Портреты персонажей Genshin. Раздаёт Enka.Network: у HoYoverse публичного CDN с картинками
+ * персонажей нет, а Enka держит их рядом со справочником, из которого берётся и пул драфта.
+ */
+const GENSHIN_CDN = 'https://enka.network/ui';
+
+/** Портрет персонажа Genshin по имени иконки из справочника Enka. */
+export function genshinCharacterArt(icon: string): string {
+  return `${GENSHIN_CDN}/${icon}.png`;
+}
 
 /** Портрет героя Dota, 256×144. Тот же путь, что и в пуле драфта. */
 export function dotaHeroArt(slug: string): string {
@@ -100,6 +110,17 @@ export const GAME_IDENTITY: Record<TournamentGame, GameIdentity> = {
     accent: '#c8aa6e',
     band: ['Ahri', 'Jinx', 'Yasuo', 'LeeSin', 'Lux', 'Ekko'].map(riotChampionArt),
     credit: 'Портреты чемпионов — Riot Games, Data Dragon',
+  },
+  /**
+   * Нефритовая зелень. Не взята у интерфейса игры буквально: у Genshin он золотисто-белый, а
+   * на тёмном табло золото уже занято League. Зелень при этом её собственная, из Ли Юэ.
+   */
+  genshin: {
+    accent: '#3fbf8f',
+    band: ['Shougun', 'Hutao', 'Zhongli', 'Nahida', 'Furina', 'Ayaka'].map(
+      (name) => `${GENSHIN_CDN}/UI_AvatarIcon_${name}.png`,
+    ),
+    credit: 'Портреты персонажей — HoYoverse, через Enka.Network',
   },
   // Фиолетовый Конвергенции: TFT играется теми же чемпионами, и отличать её от League
   // приходится цветом, а не картинками.

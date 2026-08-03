@@ -103,14 +103,15 @@ const registryDeps: ProviderRegistryDeps = {
   steamClient: fetchClientStub,
   openDotaClient: fetchClientStub,
   riotClient: fetchClientStub,
+  enkaClient: fetchClientStub,
   rateLimiter: rateLimiterStub,
   cache: cacheStub,
 };
 
 describe('createProviderRegistry', () => {
-  it('собирает все четыре провайдера даже без ключей Steam/Riot — это законное состояние окружения', () => {
+  it('собирает всех провайдеров даже без ключей Steam/Riot — это законное состояние окружения', () => {
     const registry = createProviderRegistry(registryDeps);
-    expect([...registry.keys()].sort()).toEqual(['riot-lol', 'riot-tft', 'riot-valorant', 'steam'].sort());
+    expect([...registry.keys()].sort()).toEqual(['enka', 'riot-lol', 'riot-tft', 'riot-valorant', 'steam'].sort());
   });
 
   it('каждый провайдер зарегистрирован под собственным id', () => {

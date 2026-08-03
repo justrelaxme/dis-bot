@@ -75,10 +75,10 @@ const steamProvider: GameProvider = {
 };
 
 describe('/link', () => {
-  it('объявляет три подкоманды', () => {
+  it('объявляет подкоманду на каждый способ привязки', () => {
     const command = createLinkCommand(depsWith([]) as never);
     const json = command.builder.toJSON();
-    expect(json.options?.map((o) => o.name).sort()).toEqual(['riot', 'steam', 'valorant']);
+    expect(json.options?.map((o) => o.name).sort()).toEqual(['genshin', 'riot', 'steam', 'valorant']);
   });
 
   it('делает defer эфемерно — внутри сетевые вызовы', () => {

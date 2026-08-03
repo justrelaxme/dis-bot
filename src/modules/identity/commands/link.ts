@@ -80,6 +80,14 @@ export function createLinkCommand(deps: IdentityDeps): CommandDefinition {
           .addStringOption((option) =>
             option.setName('rank').setDescription('Например: Immortal 2 или Radiant').setRequired(true),
           ),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('genshin')
+          .setDescription('Привязать аккаунт Genshin Impact по UID')
+          .addStringOption((option) =>
+            option.setName('uid').setDescription('UID из правого нижнего угла игры').setRequired(true),
+          ),
       ),
 
     async execute(interaction, ctx) {
@@ -135,6 +143,55 @@ export function createLinkCommand(deps: IdentityDeps): CommandDefinition {
             `Valorant записан: **${profile.displayName}**, ранг ${rank.tier}${rank.division ? ` ${rank.division}` : ''}.\n` +
             `Подтвердить владение аккаунтом Valorant нечем, поэтому ранг помечен как заявленный тобой и авто-роль не даёт. ` +
             `При смене сезона обнови его этой же командой.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (subcommand === 'genshin') {
+        const uid = interaction.options.getString('uid', true);
+
+        const provider = requireProvider(deps, 'enka');
+        const { startVerification, completeVerification } = requireVerificationMethods(provider);
+        const pending = await deps.linking.pendingChallenge(userId, 'enka');
+
+        // Первый вызов выдаёт код, второй его проверяет — та же двухходовка, что у Riot.
+        // Иначе игроку пришлось бы держать код где-то у себя, пока он идёт в игру.
+        if (!pending) {
+          const challenge = await startVerification(userId);
+          await deps.linking.openChallenge(userId, 'enka', challenge);
+          await interaction.followUp({
+            content: challenge.instruction ?? 'Код не сформирован.',
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        await deps.linking.takeChallenge(pending.challenge);
+        const verified = await completeVerification(
+          { challenge: pending.challenge, expiresAt: new Date(Date.now() + 60_000), payload: pending.payload },
+          uid,
+        );
+
+        const accountId = await deps.linking.linkAccount(userId, 'enka', verified, true);
+        await deps.bus.emit('account.linked', {
+          guildId,
+          userId,
+          provider: 'enka',
+          externalId: verified.externalId,
+          verified: true,
+        });
+
+        const account = (await deps.linking.listAccounts(userId)).find((a) => a.id === accountId);
+        if (account) await deps.rankSync.syncAccount(account);
+
+        await interaction.followUp({
+          content:
+            `Готово: **${verified.displayName}** привязан и подтверждён. Подпись профиля можно вернуть какой была.
+` +
+            'Дальше бот сам читает прогресс Витой Бездны — он и идёт вместо ранга, потому что ' +
+            'соревновательного рейтинга в Genshin нет. А вот какие у тебя персонажи, бот узнать ' +
+            'не может: игра показывает наружу только витрину профиля, до восьми штук.',
           flags: MessageFlags.Ephemeral,
         });
         return;

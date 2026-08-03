@@ -1,10 +1,22 @@
 import { bigint, bigserial, index, integer, jsonb, pgTable, text, timestamp, unique } from 'drizzle-orm/pg-core';
 import { guilds, users } from '../../core/db/schema/core.js';
 
-export type ProviderId = 'steam' | 'riot-lol' | 'riot-tft' | 'riot-valorant';
-export type RankScale = 'riot-tier' | 'valorant-tier' | 'dota-mmr';
+/**
+ * Источник данных о ранге. `enka` это Enka.Network: единственный публичный способ прочитать
+ * профиль Genshin, потому что публичного API у HoYoverse нет вовсе.
+ */
+export type ProviderId = 'steam' | 'riot-lol' | 'riot-tft' | 'riot-valorant' | 'enka';
+export type RankScale = 'riot-tier' | 'valorant-tier' | 'dota-mmr' | 'genshin-abyss';
 export type RankSource = 'api' | 'manual';
-export type VerificationMethod = 'steam-openid' | 'riot-third-party-code' | 'manual';
+/**
+ * `genshin-signature`: игрок вписывает выданный код в подпись профиля Genshin. Подпись
+ * меняется только из игры, поэтому это настоящее доказательство владения, а не честное слово.
+ */
+export type VerificationMethod =
+  | 'steam-openid'
+  | 'riot-third-party-code'
+  | 'genshin-signature'
+  | 'manual';
 
 export const gameAccounts = pgTable(
   'game_accounts',

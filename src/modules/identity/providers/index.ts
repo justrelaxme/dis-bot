@@ -4,6 +4,7 @@ import type { FetchClient } from '../../../core/http/fetch-client.js';
 import type { RateLimiter } from '../../../core/rate-limit.js';
 import type { ProviderId } from '../schema.js';
 import type { GameProvider } from './provider.js';
+import { createEnkaProvider } from './enka.js';
 import { createRiotProvider } from './riot.js';
 import { createSteamProvider } from './steam.js';
 import { createValorantProvider } from './valorant.js';
@@ -16,6 +17,8 @@ export interface ProviderRegistryDeps {
   steamClient: FetchClient;
   openDotaClient: FetchClient;
   riotClient: FetchClient;
+  /** Enka.Network: единственный публичный источник по Genshin. Ключа не требует. */
+  enkaClient: FetchClient;
   rateLimiter: RateLimiter;
   cache: Cache;
 }
@@ -54,6 +57,7 @@ export function createProviderRegistry(deps: ProviderRegistryDeps): Map<Provider
       rateLimiter: deps.rateLimiter,
     }),
     createValorantProvider(),
+    createEnkaProvider({ client: deps.enkaClient, rateLimiter: deps.rateLimiter }),
   ];
 
   return new Map(providers.map((provider) => [provider.id, withCache(provider, deps.cache)]));

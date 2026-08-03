@@ -1,6 +1,7 @@
 import { ContainerBuilder, SeparatorBuilder, TextDisplayBuilder } from 'discord.js';
 import type { RankInfo } from '../providers/provider.js';
 import { hasRankChanged, rankScore } from '../ranks/compare.js';
+import { formatAbyss } from '../ranks/genshin.js';
 import type { GameAccountRow } from '../services/linking.js';
 
 /** Предел Discord: контейнер вмещает не более 10 компонентов. */
@@ -11,6 +12,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   'riot-lol': 'League of Legends',
   'riot-tft': 'Teamfight Tactics',
   'riot-valorant': 'Valorant',
+  enka: 'Genshin Impact',
 };
 
 export interface ProfileEntry {
@@ -32,6 +34,10 @@ function titleCase(value: string): string {
 
 export function formatRank(rank: RankInfo): string {
   if (!rank.tier) return 'без ранга';
+
+  // Бездна пишется этажом и залом через дефис, как её и называют игроки: «12-3». Через
+  // пробел это читалось бы как два разных числа, а titleCase над цифрой ничего не даёт.
+  if (rank.scale === 'genshin-abyss') return `Бездна ${formatAbyss(rank)}`;
 
   const parts = [titleCase(rank.tier)];
   if (rank.division) parts.push(rank.division);

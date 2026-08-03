@@ -24,6 +24,9 @@ const ALLOWED_HOSTS = [
   'cdn.cloudflare.steamstatic.com',
   'media.valorant-api.com',
   'ddragon.leagueoflegends.com',
+  // Портреты Genshin: у HoYoverse публичного CDN с картинками персонажей нет вовсе, их
+  // раздаёт Enka — оттуда же берётся и справочник, из которого собирается пул драфта.
+  'enka.network',
 ];
 
 function hostsOf(urls: readonly string[]): string[] {

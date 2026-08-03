@@ -10,6 +10,7 @@ const PROVIDER_CHOICES: Array<{ name: string; value: ProviderId }> = [
   { name: 'League of Legends', value: 'riot-lol' },
   { name: 'Teamfight Tactics', value: 'riot-tft' },
   { name: 'Valorant', value: 'riot-valorant' },
+  { name: 'Genshin Impact', value: 'enka' },
 ];
 
 const PROVIDER_LABELS: Record<ProviderId, string> = {
@@ -17,6 +18,7 @@ const PROVIDER_LABELS: Record<ProviderId, string> = {
   'riot-lol': 'League of Legends',
   'riot-tft': 'Teamfight Tactics',
   'riot-valorant': 'Valorant',
+  enka: 'Genshin Impact',
 };
 
 /**
