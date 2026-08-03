@@ -31,7 +31,7 @@ export const DRAFT_STYLE = `
    чей ход, видно раньше, чем прочитан текст. */
 .duel { display:grid; grid-template-columns:1fr minmax(10.5rem,13rem) 1fr; gap:.7rem; align-items:stretch;
   margin:0 0 1rem; animation:enter .45s var(--ease) .1s both; }
-.team { position:relative; border:1px solid var(--rule); border-radius:3px; padding:.6rem .85rem .65rem;
+.team { position:relative; border:1px solid var(--rule); clip-path:var(--panel); padding:.6rem .85rem .65rem;
   background:var(--sheet); overflow:hidden; transition:border-color .25s, box-shadow .25s; }
 .team.ta { --who:var(--side-a); }
 .team.tb { --who:var(--side-b); text-align:right; }
@@ -48,7 +48,7 @@ export const DRAFT_STYLE = `
 /* Полоса взятого: лица тех, кого команда уже забрала. Она и есть ответ на «что у них». */
 .team .tp { display:flex; gap:.25rem; flex-wrap:wrap; margin-top:.5rem; min-height:1.7rem; }
 .team.tb .tp { justify-content:flex-end; }
-.team .tp img { width:28px; height:28px; border-radius:2px; object-fit:cover;
+.team .tp img { width:28px; height:28px; object-fit:cover;
   border:1px solid var(--who); background:var(--sheet-2);
   animation:enter .3s var(--ease) both; }
 .team .tp .none { font-family:var(--mono); font-size:.68rem; color:var(--rule); }
@@ -56,7 +56,7 @@ export const DRAFT_STYLE = `
 .clash { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.4rem; }
 .turn { position:relative; width:100%; text-align:center; overflow:hidden;
   font-family:var(--mono); font-size:.76rem; letter-spacing:.06em;
-  border:1px solid var(--rule); border-radius:3px; padding:.45rem .7rem .5rem;
+  border:1px solid var(--rule); padding:.45rem .7rem .5rem;
   transition:border-color .25s, color .25s; }
 .turn.mine { border-color:var(--accent); color:var(--accent); }
 .turn.over { border-color:var(--ember); color:var(--ember); }
@@ -66,7 +66,7 @@ export const DRAFT_STYLE = `
   transform-origin:left; transition:transform 1s linear; }
 .turn.over .fuse { background:var(--ember); }
 .skip { background:none; border:1px solid var(--rule); color:var(--dim); font-family:var(--mono);
-  font-size:.72rem; border-radius:3px; padding:.32rem .6rem; cursor:pointer; }
+  font-size:.72rem; padding:.32rem .6rem; cursor:pointer; }
 .skip:hover:not([disabled]) { border-color:var(--bone); color:var(--bone); }
 .skip[disabled] { opacity:.4; cursor:default; }
 @media (max-width:640px) {
@@ -96,7 +96,7 @@ export const DRAFT_STYLE = `
    гаснут, а занятые остаются видны — они и есть её содержание. */
 .phase:not(.act) .tile.free { opacity:.3; }
 .filter { width:100%; max-width:22rem; background:var(--sheet); color:var(--bone); font-family:var(--mono);
-  font-size:.85rem; border:1px solid var(--rule); border-radius:3px; padding:.5rem .7rem; margin-bottom:.8rem; }
+  font-size:.85rem; border:1px solid var(--rule); padding:.5rem .7rem; margin-bottom:.8rem; }
 .filter:focus { outline:none; border-color:var(--accent); }
 
 /* ── Плитка ─────────────────────────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ export const DRAFT_STYLE = `
 .phase[data-group="heroes"] .board { grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); }
 
 .tile { position:relative; display:block; width:100%; padding:0; text-align:left; overflow:hidden;
-  background:var(--sheet); border:1px solid var(--rule); border-radius:3px; color:inherit;
+  background:var(--sheet); border:1px solid var(--rule); clip-path:var(--panel); color:inherit;
   font:inherit; cursor:default;
   animation:enter .3s var(--ease) both; animation-delay:var(--delay,0ms);
   transition:border-color .2s, transform .2s, opacity .35s, box-shadow .25s; }
@@ -137,7 +137,7 @@ export const DRAFT_STYLE = `
 .tile.banned .art img { filter:grayscale(1) brightness(.4) contrast(1.1); }
 .tile.banned .tl { color:var(--dim); text-decoration:line-through; }
 .tile.banned .art::after { content:''; position:absolute; left:-12%; right:-12%; top:calc(50% - 1px);
-  height:2px; background:var(--ember); rotate:-13deg; transform-origin:left;
+  height:2px; background:color-mix(in srgb, var(--bone) 72%, transparent); rotate:-13deg; transform-origin:left;
   animation:strike .34s cubic-bezier(.2,.8,.2,1) both; }
 @keyframes strike { from { transform:scaleX(0); } to { transform:scaleX(1); } }
 
@@ -230,7 +230,7 @@ export function draftShell(state: DraftShellState): string {
           : '';
 
       return `<section class="phase" data-group="${phase.group}" id="ph-${phase.group}">
-<h2><span class="num">${order + 1}</span> ${escape(labels.many)} <span class="pm" data-pm="${phase.group}"></span></h2>
+<h2><span class="num">Фаза ${order + 1}</span> ${escape(labels.many)} <span class="pm" data-pm="${phase.group}"></span></h2>
 <p class="lede">${PHASE_LEAD[phase.group]}</p>
 ${search}
 <div class="board" data-board="${phase.group}">${options.map(tile).join('')}</div>

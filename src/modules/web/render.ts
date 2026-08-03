@@ -155,8 +155,7 @@ function plural(count: number, one: string, few: string, many: string): string {
 
 export function renderTournamentList(rows: (TournamentRow & { entrantCount: number })[]): string {
   if (rows.length === 0) {
-    return `<p class="eyebrow">Турниры сервера</p>
-<h1>Пока пусто</h1>
+    return `<h1>Пока пусто</h1>
 <p class="lede">Бот объявляет турнир каждый день: сначала голосование по дисциплине, потом регистрация. Как только объявит — сетка появится здесь.</p>
 <div class="empty"><p>Привязать игровой аккаунт можно уже сейчас — командой <code>/link</code> в Discord.</p>
 <p>Тогда к первому турниру жеребьёвка разведёт фаворитов по разным половинам сетки.</p></div>`;
@@ -172,11 +171,14 @@ export function renderTournamentList(rows: (TournamentRow & { entrantCount: numb
           : `<span class="chip">${escape(STATE_LABELS[row.state] ?? row.state)}</span>`;
       const roster = row.entryMode === 'team' ? `по ${row.teamSize} в команде` : 'одиночки';
       const art = sigil(row.game);
-      // Акцент у каждой карточки свой — её дисциплины. Список турниров не про одну игру, и
-      // латунь на всех подряд стёрла бы единственное, чем они здесь различаются на глаз.
-      const accent = GAME_IDENTITY[row.game]?.accent;
+      /**
+       * Цвет дисциплины стоит только на метке слева, а не подменяет акцент всей карточки.
+       * Акцент на странице один — иначе список рассыпается на разноцветные плитки, и глазу
+       * не за что зацепиться. Метка при этом отвечает «какая игра» до чтения подписи.
+       */
+      const mark = GAME_IDENTITY[row.game]?.accent;
       // Лестница задержек: карточки появляются сверху вниз, как будто список наливается.
-      return `<a class="card" href="/t/${row.id}" style="--delay:${index * 45}ms${accent ? `;--accent:${accent}` : ''}">
+      return `<a class="card" href="/t/${row.id}" style="--delay:${index * 45}ms${mark ? `;--mark:${mark}` : ''}">
   <span class="sig">${art ? `<img src="${escape(art)}" alt="" loading="lazy" decoding="async">` : ''}</span>
   <span>
     <span class="name">${escape(row.name)}</span>
@@ -193,8 +195,7 @@ export function renderTournamentList(rows: (TournamentRow & { entrantCount: numb
       ? `Сейчас ${plural(live, 'идёт', 'идут', 'идут')} ${live} ${plural(live, 'турнир', 'турнира', 'турниров')}. Сетки обновляются по ходу вечера.`
       : 'Сетки, составы и результаты. Обновляется по ходу вечера.';
 
-  return `<p class="eyebrow">Турниры сервера</p>
-<h1>Турниры</h1>
+  return `<h1>Турниры</h1>
 <p class="lede">${escape(lede)}</p>
 ${cards}`;
 }
@@ -517,8 +518,7 @@ export function renderHall(
   titles: { name: string; titles: number }[],
 ): string {
   if (finished.length === 0) {
-    return `<p class="eyebrow">Летопись сервера</p>
-<h1>Зал славы</h1>
+    return `<h1>Зал славы</h1>
 <p class="lede">Здесь остаётся то, что уже сыграно: чемпионы, даты, число участников.</p>
 <div class="empty"><p>Ни один турнир пока не доигран до конца.</p>
 <p>После первого финала эта страница перестанет быть пустой — и дальше будет только расти.</p></div>`;
@@ -555,8 +555,7 @@ export function renderHall(
     )
     .join('\n');
 
-  return `<p class="eyebrow">Летопись сервера</p>
-<h1>Зал славы</h1>
+  return `<h1>Зал славы</h1>
 <p class="lede">Что уже сыграно. Личные цифры — команда <code>/stats</code> в Discord.</p>
 <div class="scroll"><table>
 <thead><tr><th>Турнир</th><th>Игра</th><th>Чемпион</th><th class="num">Финал</th><th class="num">Уч.</th><th class="num">Матчей</th><th class="num">Когда</th></tr></thead>

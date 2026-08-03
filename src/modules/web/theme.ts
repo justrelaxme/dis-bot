@@ -1,10 +1,14 @@
 /**
  * Оформление витрины: токены и правила целиком, одним листом.
  *
- * Визуальный язык взят из двух мест. Первое — ранговые медали: отсюда латунный акцент вместо
- * кислотного, тёплый цвет текста поверх холодного фона и моноширинный шрифт для всего, что
- * является данными. Второе — графика турнирной трансляции: полоса игрового арта над
- * заголовком, надзаголовок над именем и акцентная риска под ним.
+ * Направление — интерфейс игрового клиента. Отсюда три решения. Панели со срезанным углом
+ * вместо скруглений: одна система формы на весь сайт, и она же подпись оформления. Холодная
+ * сине-стальная гамма: тёплая пара «латунь плюс сливочный» ушла намеренно — это набор, который
+ * выдаёт машинная вёрстка, а не выбор под задачу. Моноширинный шрифт для всего, что является
+ * данными: имена в сетке выстраиваются в колонки, как на настоящем турнирном листе.
+ *
+ * Плотность здесь высокая осознанно. Это табло, а не афиша: сто двадцать семь плиток героев,
+ * сетка на восемь команд и таблица рангов должны быть видны, а не разложены по экранам.
  *
  * **Акцент задаёт дисциплина, а не таблица стилей.** На корне страницы стоит `--accent`, и от
  * него зависит всё выделенное: рамки, риски, полосы, ссылки. Одна переменная вместо четырёх
@@ -30,17 +34,31 @@ export const LINK_W = 44;
 
 export const STYLE = `
 :root {
-  --ink:#131119; --ink-2:#0c0a10; --sheet:#1b1922; --sheet-2:#232029; --rule:#332e42;
-  --bone:#ece7dd; --dim:#9b93a8; --brass:#d9a544; --ember:#e2543a;
-  /* Акцент дисциплины. Латунь — значение для страниц, которые не про одну игру. */
-  --accent:#d9a544;
-  /* Две стороны драфта: тёплая и холодная. Различимы и по цвету, и по светлоте — на одном
-     тоне их не различил бы человек, который не различает красное и зелёное. */
-  --side-a:#d9a544; --side-b:#59a5d8;
+  /* Холодная гамма. Тёплая пара «латунь плюс сливочный» ушла намеренно: это ровно тот набор,
+     который выдаёт машинная вёрстка, а не выбор под задачу. Здесь табло игрового сервера, и
+     холодный сине-стальной ряд ему честнее — он же и не спорит с цветами самих игр. */
+  --ink:#101319; --ink-2:#090b0f; --sheet:#171b23; --sheet-2:#1e232d; --rule:#2b3342;
+  --bone:#e6ebf2; --dim:#8d97a8; --ember:#e2543a;
+  /**
+   * Акцент дисциплины. Холодная бирюза — значение для страниц, которые не про одну игру.
+   * Цвета самих игр (красный Valorant, оранжевый Dota, золото LoL) остаются их собственными:
+   * это опознавательные знаки, а не палитра, выбранная за них.
+   */
+  --accent:#3fd4e8;
+  /* Две стороны драфта. Различимы и по цвету, и по светлоте — на одном тоне их не различил бы
+     человек, который не различает красное и зелёное. */
+  --side-a:#f0a93c; --side-b:#59a5d8;
   --mono: ui-monospace,'SF Mono','Cascadia Mono','JetBrains Mono',Consolas,'Liberation Mono',monospace;
   --sans: ui-sans-serif,system-ui,-apple-system,'Segoe UI Variable Display','Segoe UI',Roboto,sans-serif;
   --match-h:${MATCH_H}px; --pitch:${PITCH}px; --col-w:${COL_W}px; --link-w:${LINK_W}px;
   --ease:cubic-bezier(.2,.7,.3,1);
+  /**
+   * Одна система углов на весь сайт: прямые углы со срезом наискось. Это и есть подпись
+   * оформления, взятая у интерфейсов самих игр, — и она же закрывает требование единой формы,
+   * потому что скруглений здесь нет вообще, а не «где 2 пикселя, где 3».
+   */
+  --cut:10px;
+  --panel: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
 }
 * { box-sizing:border-box; }
 html { -webkit-text-size-adjust:100%; }
@@ -123,26 +141,27 @@ h3 { margin:0 0 .2rem; font-size:1.45rem; letter-spacing:-.02em; text-transform:
 @keyframes pulse { 70%{box-shadow:0 0 0 9px rgba(226,84,58,0);} 100%{box-shadow:0 0 0 0 rgba(226,84,58,0);} }
 
 .chip { display:inline-block; font-family:var(--mono); font-size:.68rem; letter-spacing:.14em;
-  text-transform:uppercase; color:var(--dim); border:1px solid var(--rule);
-  border-radius:2px; padding:.2rem .5rem; }
+  text-transform:uppercase; color:var(--dim); border:1px solid var(--rule); padding:.2rem .5rem; }
 
 /* ── Карточка турнира ───────────────────────────────────────────────────────────────────
    Слева картинка дисциплины, справа данные. Акцентная риска у края уезжает вниз при
    наведении: карточка отвечает на курсор, но не подпрыгивает. */
 .card { position:relative; display:grid; grid-template-columns:auto 1fr; align-items:center; gap:1rem;
-  background:var(--sheet); border:1px solid var(--rule); border-radius:3px; overflow:hidden;
+  background:var(--sheet); border:1px solid var(--rule); clip-path:var(--panel); overflow:hidden;
   padding:.85rem 1.15rem .85rem 1.25rem; margin-bottom:.7rem;
   transition:border-color .2s, transform .2s;
   animation:enter .42s var(--ease) both; animation-delay:var(--delay,0ms); }
+/* Метка дисциплины: её цвет, а не акцент страницы. Растёт при наведении. */
 .card::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
-  background:var(--accent); transform:scaleY(.28); transform-origin:top; transition:transform .28s ease; }
+  background:var(--mark,var(--accent)); transform:scaleY(.28); transform-origin:top;
+  transition:transform .28s ease; }
 .card:hover, .card:focus-visible { border-color:var(--accent); transform:translateX(2px); }
 .card:hover::before, .card:focus-visible::before { transform:scaleY(1); }
-.card .sig { width:58px; height:58px; border-radius:2px; overflow:hidden; flex:0 0 auto;
+.card .sig { width:58px; height:58px; overflow:hidden; flex:0 0 auto;
   background:var(--sheet-2); isolation:isolate; position:relative; }
 .card .sig img { width:100%; height:100%; object-fit:cover; filter:grayscale(1) brightness(.72) contrast(1.1);
   transition:filter .3s, transform .4s var(--ease); }
-.card .sig::after { content:''; position:absolute; inset:0; background:var(--accent);
+.card .sig::after { content:''; position:absolute; inset:0; background:var(--mark,var(--accent));
   mix-blend-mode:color; opacity:.5; transition:opacity .3s; }
 /* Наведение возвращает картинке цвет: карточка становится тем, куда ведёт. */
 .card:hover .sig img { filter:none; transform:scale(1.08); }
@@ -169,11 +188,11 @@ h3 { margin:0 0 .2rem; font-size:1.45rem; letter-spacing:-.02em; text-transform:
 @keyframes draw { to { stroke-dashoffset:0; } }
 
 .m { position:absolute; left:0; width:100%; height:var(--match-h);
-  background:var(--sheet); border:1px solid var(--rule); border-radius:3px; overflow:hidden;
+  background:var(--sheet); border:1px solid var(--rule); clip-path:var(--panel); overflow:hidden;
   opacity:0; transform:translateY(6px); animation:rise .42s ease-out forwards;
   animation-delay:var(--delay); transition:border-color .18s, box-shadow .18s; }
 @keyframes rise { to { opacity:1; transform:none; } }
-.m:hover { border-color:var(--accent); box-shadow:0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent); }
+.m:hover { border-color:var(--accent); }
 .m.live-m { border-color:rgba(226,84,58,.5); }
 /* Матч, который не состоится: место под проигравшего, которого не случилось. Оставлен
    в сетке нарочно — без него в ней была бы дыра, а дыра читается как ошибка. */
@@ -205,8 +224,8 @@ td.pos { color:var(--dim); text-align:right; width:3rem; font-size:1.05rem;
 tbody tr:nth-child(-n+3) td.pos { color:var(--accent); }
 td.acct { font-family:var(--sans); font-weight:600; }
 .medal { display:inline-flex; align-items:center; gap:.5rem; white-space:nowrap; }
-.medal::before { content:''; width:9px; height:9px; border-radius:2px; transform:rotate(45deg);
-  background:var(--tc); box-shadow:0 0 8px -1px var(--tc); flex:0 0 auto; }
+.medal::before { content:''; width:9px; height:9px; transform:rotate(45deg);
+  background:var(--tc); flex:0 0 auto; }
 td.num { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
 td.acct a { border-bottom:1px solid transparent; transition:color .18s, border-color .18s; }
 td.acct a:hover, td.acct a:focus-visible { color:var(--accent); border-color:var(--accent); }
@@ -214,7 +233,7 @@ td.acct a:hover, td.acct a:focus-visible { color:var(--accent); border-color:var
 td.champ { color:var(--accent); font-weight:600; }
 /* «Заявлено» намеренно тихое: это оговорка к рангу, а не его часть. */
 .claimed { font-family:var(--mono); font-size:.62rem; letter-spacing:.1em; text-transform:uppercase;
-  color:var(--dim); border:1px solid var(--rule); border-radius:2px; padding:.1rem .3rem;
+  color:var(--dim); border:1px solid var(--rule); padding:.1rem .3rem;
   margin-left:.45rem; white-space:nowrap; }
 
 /* ── Пьедестал ──────────────────────────────────────────────────────────────────────────
@@ -225,9 +244,9 @@ td.champ { color:var(--accent); font-weight:600; }
   margin-bottom:.5rem; }
 .pl { position:relative; display:grid; grid-template-columns:auto 1fr; grid-template-rows:auto auto;
   gap:.05rem .85rem; align-items:center; background:var(--sheet); border:1px solid var(--rule);
-  border-radius:3px; padding:.95rem 1.1rem; overflow:hidden;
+  clip-path:var(--panel); padding:.95rem 1.1rem; overflow:hidden;
   animation:enter .45s var(--ease) both; animation-delay:var(--delay,0ms); }
-.pl.first { border-color:var(--accent); box-shadow:0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent); }
+.pl.first { border-color:var(--accent); }
 .pl .mk { grid-row:1 / span 2; font-family:var(--mono); font-size:2.4rem; line-height:.85;
   font-weight:700; color:var(--rule); font-variant-numeric:tabular-nums; }
 .pl.first .mk { color:var(--accent); font-size:3rem; }
@@ -237,7 +256,7 @@ td.champ { color:var(--accent); font-weight:600; }
 .pl .pn { font-family:var(--mono); font-size:.66rem; letter-spacing:.18em; text-transform:uppercase;
   color:var(--dim); }
 
-.empty { border:1px dashed var(--rule); border-radius:3px; padding:2rem 1.25rem; text-align:center; }
+.empty { border:1px dashed var(--rule); padding:2rem 1.25rem; text-align:center; }
 .empty p { margin:.35rem 0; color:var(--dim); }
 .empty code, code.k { font-family:var(--mono); color:var(--accent); }
 

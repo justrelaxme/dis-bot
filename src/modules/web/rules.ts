@@ -18,7 +18,7 @@ import { escape } from './render.js';
 export const RULES_STYLE = `
 .formats { display:grid; gap:1rem; grid-template-columns:repeat(auto-fit,minmax(min(100%,19rem),1fr));
   margin-bottom:2rem; }
-.fmt { position:relative; background:var(--sheet); border:1px solid var(--rule); border-radius:3px;
+.fmt { position:relative; background:var(--sheet); border:1px solid var(--rule); clip-path:var(--panel);
   padding:1.35rem 1.35rem 1.5rem; overflow:hidden;
   opacity:0; transform:translateY(10px); animation:rise .5s ease-out forwards; animation-delay:var(--delay); }
 .fmt::after { content:''; position:absolute; inset:0 0 auto; height:2px; background:var(--accent);
@@ -49,7 +49,7 @@ export const RULES_STYLE = `
 @media (max-width:560px) { .rule { grid-template-columns:1fr; gap:.15rem; } }
 
 .clock-line { display:flex; gap:.5rem; align-items:stretch; flex-wrap:wrap; margin:.5rem 0 2rem; }
-.slot { flex:1 1 8rem; background:var(--sheet); border:1px solid var(--rule); border-radius:3px;
+.slot { flex:1 1 8rem; background:var(--sheet); border:1px solid var(--rule); clip-path:var(--panel);
   padding:.8rem .9rem; opacity:0; animation:rise .45s ease-out forwards; animation-delay:var(--delay); }
 .slot .t { font-family:var(--mono); font-size:1.15rem; color:var(--accent); }
 .slot .d { color:var(--dim); font-size:.85rem; margin-top:.2rem; }
@@ -57,13 +57,12 @@ export const RULES_STYLE = `
 /* Что делят перед матчем. Цветные картинки: страница объясняет именно их. */
 .divide { display:grid; gap:1rem; grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr));
   margin:.5rem 0 2rem; }
-.pile { background:var(--sheet); border:1px solid var(--rule); border-radius:3px; padding:.9rem 1rem 1rem;
+.pile { background:var(--sheet); border:1px solid var(--rule); clip-path:var(--panel); padding:.9rem 1rem 1rem;
   opacity:0; animation:rise .45s ease-out forwards; animation-delay:var(--delay); }
-.pile .h { font-family:var(--mono); font-size:.7rem; letter-spacing:.18em; text-transform:uppercase;
-  color:var(--accent); }
+.pile .h { font-weight:700; font-size:1.02rem; letter-spacing:-.01em; color:var(--bone); }
 .pile .d { color:var(--dim); font-size:.86rem; margin:.3rem 0 .7rem; }
 .pile .row { display:flex; gap:.3rem; flex-wrap:wrap; }
-.pile img { height:44px; width:auto; max-width:76px; object-fit:cover; border-radius:2px;
+.pile img { height:44px; width:auto; max-width:76px; object-fit:cover;
   border:1px solid var(--rule); background:var(--sheet-2);
   transition:transform .3s var(--ease), border-color .3s; }
 .pile img:hover { transform:translateY(-3px) scale(1.04); border-color:var(--accent); }
@@ -113,8 +112,7 @@ export function renderRules(): string {
     { t: '20:00', d: 'Регистрация закрыта, сетка построена' },
   ];
 
-  return `<p class="eyebrow">Как это работает</p>
-<h1>Правила</h1>
+  return `<h1>Правила</h1>
 <p class="lede">Всё, что бот делает сам, и всё, что он ждёт от вас. Времена — по настройке сервера,
 здесь показаны значения по умолчанию.</p>
 
