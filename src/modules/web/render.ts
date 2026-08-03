@@ -2,27 +2,21 @@ import { EVENT_SIZE_LABELS, eventSize } from '../tournaments/bracket.js';
 import { TOURNAMENT_GAME_LABELS } from '../tournaments/games.js';
 import { standingsOf } from '../tournaments/standings.js';
 import type { EntrantRow, MatchRow, TournamentGame, TournamentRow } from '../tournaments/schema.js';
+import { GAME_IDENTITY, SERVER_BAND, SERVER_CREDIT } from './art.js';
+import { LINK_W, MATCH_H, PITCH, STYLE } from './theme.js';
 
 /**
  * Витрина отдаёт готовый HTML с сервера, без SPA и без сборки фронтенда: на страницах,
  * где нечего нажимать, одностраничное приложение — лишний слой, лишний шаг сборки и
  * лишний способ сломаться.
  *
- * Визуальный язык взят из мира самих игр — из ранговых медалей. Отсюда латунный акцент
- * вместо кислотного, тёплый цвет текста (как у бумажного листа сетки, приколотого к стене
- * на LAN) поверх холодного фона и моноширинный шрифт для всего, что является данными:
- * имена в сетке выстраиваются в колонки, как на настоящем турнирном листе.
+ * Подпись страницы турнира — сама сетка. Линии связей считаются на сервере по точной
+ * геометрии (высота матча и шаг круга известны) и прорисовываются слева направо при
+ * загрузке, сходясь к финалу. Это и есть главное, что здесь есть: сетка — дерево
+ * последствий. Всё остальное на странице ей уступает.
  *
- * Подпись страницы — сама сетка. Линии связей считаются на сервере по точной геометрии
- * (высота матча и шаг круга известны) и прорисовываются слева направо при загрузке,
- * сходясь к финалу. Это и есть главное, что здесь есть: сетка — дерево последствий.
+ * Оформление и объяснение выбранного языка — в `theme.ts`, ссылки на игровой арт — в `art.ts`.
  */
-
-const MATCH_H = 58;
-const V_GAP = 12;
-const PITCH = MATCH_H + V_GAP;
-const COL_W = 208;
-const LINK_W = 44;
 
 export function escape(value: string): string {
   return value
@@ -62,171 +56,50 @@ function tierColor(tier: string | null): string {
   return TIER_COLORS[tier.toUpperCase()] ?? 'var(--rule)';
 }
 
-const STYLE = `
-:root {
-  --ink:#14121a; --sheet:#1c1a24; --sheet-2:#221f2c; --rule:#332e42;
-  --bone:#ece7dd; --dim:#9b93a8; --gold:#d9a544; --ember:#e2543a;
-  --mono: ui-monospace,'SF Mono','Cascadia Mono','JetBrains Mono',Consolas,'Liberation Mono',monospace;
-  --sans: ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
-  --match-h:${MATCH_H}px; --pitch:${PITCH}px; --col-w:${COL_W}px; --link-w:${LINK_W}px;
+const NAV = [
+  { href: '/rules', label: 'Правила' },
+  { href: '/hall', label: 'Зал славы' },
+  { href: '/leaderboard/dota2', label: 'Dota 2' },
+  { href: '/leaderboard/valorant', label: 'Valorant' },
+  { href: '/leaderboard/lol', label: 'LoL' },
+  { href: '/leaderboard/tft', label: 'TFT' },
+];
+
+export interface PageChrome {
+  /**
+   * Дисциплина страницы. Задаёт акцентный цвет и полосу арта — по ним видно, чья это
+   * страница, до чтения заголовка. Без дисциплины берутся цвета сервера и смешанная полоса:
+   * список турниров и зал славы не про одну игру, и назначать им главную было бы неверно.
+   */
+  game?: TournamentGame;
+  /** Стиль конкретной страницы: правил, драфта. */
+  head?: string;
+  /** Какая ссылка в навигации сейчас открыта. */
+  current?: string;
 }
-* { box-sizing:border-box; }
-html { -webkit-text-size-adjust:100%; }
-body {
-  margin:0; background:var(--ink); color:var(--bone); font-family:var(--sans);
-  font-size:16px; line-height:1.5;
-  background-image:
-    radial-gradient(1100px 420px at 82% -8%, rgba(217,165,68,.10), transparent 62%),
-    radial-gradient(760px 380px at 8% 104%, rgba(226,84,58,.07), transparent 60%);
-  background-attachment:fixed;
+
+/** Полоса игрового арта. Только для глаз — в дерево доступности не попадает. */
+function band(images: readonly string[]): string {
+  const panels = images
+    .slice(0, 6)
+    .map(
+      (src, index) =>
+        `<figure style="--delay:${index * 55}ms"><img src="${escape(src)}" alt="" loading="${
+          index === 0 ? 'eager' : 'lazy'
+        }" decoding="async"></figure>`,
+    )
+    .join('');
+  return `<div class="band" aria-hidden="true">${panels}</div>`;
 }
-a { color:inherit; text-decoration:none; }
-.wrap { max-width:74rem; margin:0 auto; padding:1.5rem 1.15rem 4rem; }
 
-/* Шапка: полоса состояния, а не украшение — она показывает, что происходит сейчас. */
-.top { display:flex; align-items:baseline; gap:1.25rem; flex-wrap:wrap; padding-bottom:1rem;
-  border-bottom:1px solid var(--rule); margin-bottom:1.75rem; }
-.mark { font-family:var(--mono); font-size:.72rem; letter-spacing:.24em; text-transform:uppercase;
-  color:var(--gold); }
-.top nav { display:flex; gap:1.1rem; margin-left:auto; font-family:var(--mono); font-size:.76rem;
-  letter-spacing:.1em; text-transform:uppercase; color:var(--dim); flex-wrap:wrap; }
-.top nav a { padding-bottom:2px; border-bottom:1px solid transparent; transition:color .18s, border-color .18s; }
-.top nav a:hover, .top nav a:focus-visible { color:var(--bone); border-color:var(--gold); }
+export function page(title: string, body: string, chrome: PageChrome = {}): string {
+  const identity = chrome.game ? GAME_IDENTITY[chrome.game] : null;
+  const accent = identity?.accent;
+  const nav = NAV.map(
+    (item) =>
+      `<a href="${item.href}"${chrome.current === item.href ? ' aria-current="page"' : ''}>${escape(item.label)}</a>`,
+  ).join('');
 
-/* Вход элементов на страницу. Одно движение, короткое и в одну сторону: страница должна
-   собираться на глазах, а не устраивать представление. Главный движок здесь — линии сетки,
-   и всё остальное обязано ему уступать. */
-@keyframes enter { from { opacity:0; transform:translateY(9px); } to { opacity:1; transform:none; } }
-
-h1 { font-size:clamp(1.85rem,5.5vw,2.9rem); line-height:1.02; margin:0 0 .5rem;
-  font-weight:800; letter-spacing:-.03em; text-transform:uppercase;
-  animation:enter .5s cubic-bezier(.2,.7,.3,1) both; }
-h2 { font-family:var(--mono); font-size:.76rem; letter-spacing:.22em; text-transform:uppercase;
-  color:var(--dim); font-weight:500; margin:2.5rem 0 .9rem;
-  animation:enter .45s cubic-bezier(.2,.7,.3,1) both; }
-/* Латунная риска у заголовка раздела уезжает вправо: раздел начинается, а не просто есть. */
-h2::after { content:''; display:block; width:2.2rem; height:1px; background:var(--gold); margin-top:.5rem;
-  transform-origin:left; animation:swipe .55s cubic-bezier(.2,.7,.3,1) both; animation-delay:.1s; }
-@keyframes swipe { from { transform:scaleX(0); } to { transform:scaleX(1); } }
-.lede { color:var(--dim); font-size:.95rem; margin:0 0 1.5rem;
-  animation:enter .5s cubic-bezier(.2,.7,.3,1) .06s both; }
-.mono { font-family:var(--mono); }
-
-/* Точка «идёт сейчас» пульсирует — единственный постоянный движок на странице. */
-.live { display:inline-flex; align-items:center; gap:.45rem; font-family:var(--mono);
-  font-size:.7rem; letter-spacing:.16em; text-transform:uppercase; color:var(--ember); }
-.live::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--ember);
-  box-shadow:0 0 0 0 rgba(226,84,58,.55); animation:pulse 2s ease-out infinite; }
-@keyframes pulse { 70%{box-shadow:0 0 0 9px rgba(226,84,58,0);} 100%{box-shadow:0 0 0 0 rgba(226,84,58,0);} }
-
-.chip { display:inline-block; font-family:var(--mono); font-size:.68rem; letter-spacing:.14em;
-  text-transform:uppercase; color:var(--dim); border:1px solid var(--rule);
-  border-radius:2px; padding:.2rem .5rem; }
-
-/* Карточка турнира: латунная риска слева уезжает вправо при наведении. */
-.card { position:relative; display:block; background:var(--sheet); border:1px solid var(--rule);
-  border-radius:3px; padding:1rem 1.15rem 1rem 1.35rem; margin-bottom:.7rem; overflow:hidden;
-  transition:border-color .2s, transform .2s;
-  animation:enter .42s cubic-bezier(.2,.7,.3,1) both; animation-delay:var(--delay,0ms); }
-.card::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
-  background:var(--gold); transform:scaleY(.28); transform-origin:top; transition:transform .28s ease; }
-.card:hover, .card:focus-visible { border-color:var(--gold); transform:translateX(2px); }
-.card:hover::before, .card:focus-visible::before { transform:scaleY(1); }
-.card .name { font-size:1.12rem; font-weight:700; letter-spacing:-.01em; }
-.card .meta { color:var(--dim); font-size:.85rem; margin-top:.25rem; font-family:var(--mono); }
-
-/* Сетка. Колонки и связи позиционируются по точной геометрии, посчитанной на сервере. */
-.bracket { overflow-x:auto; overflow-y:hidden; padding:.25rem 0 1rem; -webkit-overflow-scrolling:touch; }
-.grid { position:relative; display:flex; align-items:stretch; }
-.col { position:relative; flex:0 0 var(--col-w); width:var(--col-w); }
-.col > .rlabel { position:absolute; top:-1.55rem; left:0; font-family:var(--mono); font-size:.68rem;
-  letter-spacing:.2em; text-transform:uppercase; color:var(--dim); }
-.links { position:relative; flex:0 0 var(--link-w); width:var(--link-w); }
-.links svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
-.links path { fill:none; stroke:var(--rule); stroke-width:1.5;
-  stroke-dasharray:var(--len); stroke-dashoffset:var(--len);
-  animation:draw .55s ease-out forwards; animation-delay:var(--delay); }
-@keyframes draw { to { stroke-dashoffset:0; } }
-
-.m { position:absolute; left:0; width:100%; height:var(--match-h);
-  background:var(--sheet); border:1px solid var(--rule); border-radius:3px; overflow:hidden;
-  opacity:0; transform:translateY(6px); animation:rise .42s ease-out forwards;
-  animation-delay:var(--delay); transition:border-color .18s, box-shadow .18s; }
-@keyframes rise { to { opacity:1; transform:none; } }
-.m:hover { border-color:var(--gold); box-shadow:0 0 0 1px rgba(217,165,68,.25); }
-.m.live-m { border-color:rgba(226,84,58,.5); }
-/* Матч, который не состоится: место под проигравшего, которого не случилось. Оставлен
-   в сетке нарочно — без него в ней была бы дыра, а дыра читается как ошибка. */
-.m.dead-m { opacity:.32; border-style:dashed; }
-.m .s { display:flex; align-items:center; justify-content:space-between; gap:.5rem;
-  height:calc(var(--match-h)/2 - 1px); padding:0 .6rem; font-family:var(--mono); font-size:.82rem; }
-.m .s + .s { border-top:1px solid var(--rule); }
-.m .s .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.m .s .sd { color:var(--dim); font-size:.7rem; }
-.m .s.won { color:var(--gold); }
-.m .s.won .sd { color:var(--gold); }
-.m .s.tbd { color:var(--dim); }
-.m .seed { color:var(--dim); font-size:.68rem; margin-right:.4rem; }
-
-/* Лидерборд: медальная плашка слева — тот же язык, что и в игре. */
-table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:.88rem; }
-thead th { text-align:left; padding:.5rem .5rem .6rem; border-bottom:1px solid var(--rule);
-  color:var(--dim); font-weight:500; font-size:.68rem; letter-spacing:.16em; text-transform:uppercase; }
-tbody td { padding:.62rem .5rem; border-bottom:1px solid rgba(51,46,66,.6); }
-tbody tr { animation:rise .3s ease-out backwards; animation-delay:var(--delay); }
-tbody tr:hover td { background:var(--sheet-2); }
-td.pos { color:var(--dim); text-align:right; width:2.6rem; font-size:.8rem; }
-td.acct { font-family:var(--sans); font-weight:600; }
-.medal { display:inline-flex; align-items:center; gap:.5rem; }
-.medal::before { content:''; width:9px; height:9px; border-radius:2px; transform:rotate(45deg);
-  background:var(--tc); box-shadow:0 0 8px -1px var(--tc); flex:0 0 auto; }
-td.num { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
-td.acct a { border-bottom:1px solid transparent; transition:color .18s, border-color .18s; }
-td.acct a:hover, td.acct a:focus-visible { color:var(--gold); border-color:var(--gold); }
-/* Чемпион — единственная строка таблицы, которой позволено быть латунной. */
-td.champ { color:var(--gold); font-weight:600; }
-.dim { color:var(--dim); }
-
-/* Пьедестал: чемпион крупнее и латунный, остальные — ровно настолько, чтобы читались как
-   места, а не как утешение. Появляются по очереди сверху вниз. */
-.podium { display:grid; gap:.5rem; grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr));
-  margin-bottom:.5rem; }
-.pl { display:grid; grid-template-columns:auto 1fr; grid-template-rows:auto auto; gap:.1rem .7rem;
-  align-items:center; background:var(--sheet); border:1px solid var(--rule); border-radius:3px;
-  padding:.9rem 1rem; animation:enter .45s cubic-bezier(.2,.7,.3,1) both; animation-delay:var(--delay,0ms); }
-.pl.first { border-color:var(--gold); box-shadow:0 0 0 1px rgba(217,165,68,.18); }
-.pl .mk { grid-row:1 / span 2; font-size:1.7rem; line-height:1; }
-.pl .who { font-weight:700; font-size:1.05rem; letter-spacing:-.01em; overflow:hidden;
-  text-overflow:ellipsis; white-space:nowrap; }
-.pl.first .who { color:var(--gold); font-size:1.2rem; }
-.pl .pn { font-family:var(--mono); font-size:.68rem; letter-spacing:.16em; text-transform:uppercase;
-  color:var(--dim); }
-/* «Заявлено» намеренно тихое: это оговорка к рангу, а не его часть. */
-.claimed { font-family:var(--mono); font-size:.62rem; letter-spacing:.1em; text-transform:uppercase;
-  color:var(--dim); border:1px solid var(--rule); border-radius:2px; padding:.1rem .3rem;
-  margin-left:.45rem; white-space:nowrap; }
-
-.empty { border:1px dashed var(--rule); border-radius:3px; padding:2rem 1.25rem; text-align:center; }
-.empty p { margin:.35rem 0; color:var(--dim); }
-.empty code { font-family:var(--mono); color:var(--gold); }
-
-footer { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--rule);
-  color:var(--dim); font-size:.78rem; font-family:var(--mono); }
-
-:focus-visible { outline:2px solid var(--gold); outline-offset:2px; }
-@media (max-width:640px) { :root { --col-w:170px; --link-w:30px; } .wrap { padding:1.15rem .85rem 3rem; } }
-@media (prefers-reduced-motion:reduce) {
-  .links path { animation:none; stroke-dashoffset:0; }
-  /* Всё, что появляется движением, обязано просто быть — иначе анимация станет условием
-     видимости, и человек с выключенным движением увидит пустую страницу. */
-  .m, tbody tr, h1, h2, .lede, .card, .fmt, .slot { animation:none; opacity:1; transform:none; }
-  h2::after { animation:none; transform:none; }
-  .live::before { animation:none; }
-  * { transition:none !important; }
-}
-`;
-
-export function page(title: string, body: string, extraHead = ''): string {
   return `<!doctype html>
 <html lang="ru">
 <head>
@@ -235,23 +108,20 @@ export function page(title: string, body: string, extraHead = ''): string {
 <meta name="color-scheme" content="dark">
 <title>${escape(title)}</title>
 <style>${STYLE}</style>
-${extraHead}
+${chrome.head ?? ''}
 </head>
-<body>
+<body${accent ? ` style="--accent:${accent}"` : ''}>
+${band(identity?.band ?? SERVER_BAND)}
 <div class="wrap">
   <header class="top">
     <a href="/" class="mark">Турниры сервера</a>
-    <nav>
-      <a href="/rules">Правила</a>
-      <a href="/hall">Зал славы</a>
-      <a href="/leaderboard/dota2">Dota 2</a>
-      <a href="/leaderboard/lol">LoL</a>
-      <a href="/leaderboard/tft">TFT</a>
-      <a href="/leaderboard/valorant">Valorant</a>
-    </nav>
+    <nav>${nav}</nav>
   </header>
 ${body}
-  <footer>Ранги приходят из API игр и обновляются каждые полчаса. Показаны только подтверждённые привязки.</footer>
+  <footer>
+    <p>Ранги приходят из API игр и обновляются каждые полчаса. Показаны только подтверждённые привязки.</p>
+    <p class="credit">${escape(identity?.credit ?? SERVER_CREDIT)}</p>
+  </footer>
 </div>
 </body>
 </html>`;
@@ -265,9 +135,28 @@ const STATE_LABELS: Record<string, string> = {
   cancelled: 'отменён',
 };
 
+/** Картинка дисциплины для карточки: первая из её полосы, чтобы список и шапка были из одного мира. */
+function sigil(game: TournamentGame): string {
+  return GAME_IDENTITY[game]?.band[0] ?? '';
+}
+
+/**
+ * Согласование числительного с существительным. Без него получается «идёт 8 турнира» — та
+ * мелочь, из-за которой страница читается как машинный перевод.
+ */
+function plural(count: number, one: string, few: string, many: string): string {
+  const mod100 = count % 100;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  const mod10 = count % 10;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
+}
+
 export function renderTournamentList(rows: (TournamentRow & { entrantCount: number })[]): string {
   if (rows.length === 0) {
-    return `<h1>Пока пусто</h1>
+    return `<p class="eyebrow">Турниры сервера</p>
+<h1>Пока пусто</h1>
 <p class="lede">Бот объявляет турнир каждый день: сначала голосование по дисциплине, потом регистрация. Как только объявит — сетка появится здесь.</p>
 <div class="empty"><p>Привязать игровой аккаунт можно уже сейчас — командой <code>/link</code> в Discord.</p>
 <p>Тогда к первому турниру жеребьёвка разведёт фаворитов по разным половинам сетки.</p></div>`;
@@ -282,17 +171,31 @@ export function renderTournamentList(rows: (TournamentRow & { entrantCount: numb
           ? '<span class="live">идёт</span>'
           : `<span class="chip">${escape(STATE_LABELS[row.state] ?? row.state)}</span>`;
       const roster = row.entryMode === 'team' ? `по ${row.teamSize} в команде` : 'одиночки';
+      const art = sigil(row.game);
+      // Акцент у каждой карточки свой — её дисциплины. Список турниров не про одну игру, и
+      // латунь на всех подряд стёрла бы единственное, чем они здесь различаются на глаз.
+      const accent = GAME_IDENTITY[row.game]?.accent;
       // Лестница задержек: карточки появляются сверху вниз, как будто список наливается.
-      return `<a class="card" href="/t/${row.id}" style="--delay:${index * 45}ms">
-  <div class="name">${escape(row.name)}</div>
-  <div class="meta">${escape(TOURNAMENT_GAME_LABELS[row.game] ?? row.game)} · ${escape(kind)} · ${row.entrantCount} уч. · ${escape(roster)}</div>
-  <div style="margin-top:.55rem">${status}</div>
+      return `<a class="card" href="/t/${row.id}" style="--delay:${index * 45}ms${accent ? `;--accent:${accent}` : ''}">
+  <span class="sig">${art ? `<img src="${escape(art)}" alt="" loading="lazy" decoding="async">` : ''}</span>
+  <span>
+    <span class="name">${escape(row.name)}</span>
+    <span class="meta">${escape(TOURNAMENT_GAME_LABELS[row.game] ?? row.game)} · ${escape(kind)} · ${row.entrantCount} уч. · ${escape(roster)}</span>
+    <span class="tail">${status}</span>
+  </span>
 </a>`;
     })
     .join('\n');
 
-  return `<h1>Турниры</h1>
-<p class="lede">Сетки, составы и результаты. Обновляется по ходу вечера.</p>
+  const live = rows.filter((row) => row.state === 'running').length;
+  const lede =
+    live > 0
+      ? `Сейчас ${plural(live, 'идёт', 'идут', 'идут')} ${live} ${plural(live, 'турнир', 'турнира', 'турниров')}. Сетки обновляются по ходу вечера.`
+      : 'Сетки, составы и результаты. Обновляется по ходу вечера.';
+
+  return `<p class="eyebrow">Турниры сервера</p>
+<h1>Турниры</h1>
+<p class="lede">${escape(lede)}</p>
 ${cards}`;
 }
 
@@ -338,14 +241,18 @@ export function renderBracket(view: {
       ? '<span class="live">идёт</span>'
       : `<span class="chip">${escape(STATE_LABELS[view.tournament.state] ?? view.tournament.state)}</span>`;
 
-  const head = `<h1>${escape(view.tournament.name)}</h1>
-<p class="lede">${escape(TOURNAMENT_GAME_LABELS[view.tournament.game] ?? view.tournament.game)} · ${escape(EVENT_SIZE_LABELS[size])} · ${active.length} участников · ${status}</p>`;
+  const roster =
+    view.tournament.entryMode === 'team' ? `по ${view.tournament.teamSize} в команде` : 'один на один';
+
+  const head = `<p class="eyebrow">${escape(TOURNAMENT_GAME_LABELS[view.tournament.game] ?? view.tournament.game)} · ${escape(roster)}</p>
+<h1>${escape(view.tournament.name)}</h1>
+<p class="lede">${escape(EVENT_SIZE_LABELS[size])} · ${active.length} участников · ${status}</p>`;
 
   if (view.matches.length === 0) {
     const list = active
       .map(
-        (entrant) => `<div class="card"><div class="name">${escape(entrant.displayName)}</div>
-<div class="meta">${entrant.checkedInAt ? 'состав отмечен' : 'ждём отметки капитана'}</div></div>`,
+        (entrant) => `<div class="card"><span><span class="name">${escape(entrant.displayName)}</span>
+<span class="meta">${entrant.checkedInAt ? 'состав отмечен' : 'ждём отметки капитана'}</span></span></div>`,
       )
       .join('\n');
     return `${head}<h2>Участники</h2>
@@ -491,12 +398,12 @@ function renderPodium(
     id === null ? '—' : (names.get(id)?.name ?? `#${id}`);
 
   const rows = [
-    { mark: '🥇', place: 'Чемпион', who: nameOf(places.championId), top: true },
+    { mark: '1', place: 'Чемпион', who: nameOf(places.championId), top: true },
     ...(places.runnerUpId !== null
-      ? [{ mark: '🥈', place: 'Второе место', who: nameOf(places.runnerUpId), top: false }]
+      ? [{ mark: '2', place: 'Второе место', who: nameOf(places.runnerUpId), top: false }]
       : []),
     ...(places.thirdId !== null
-      ? [{ mark: '🥉', place: 'Третье место', who: nameOf(places.thirdId), top: false }]
+      ? [{ mark: '3', place: 'Третье место', who: nameOf(places.thirdId), top: false }]
       : []),
   ];
 
@@ -543,7 +450,8 @@ export function renderLeaderboard(game: TournamentGame, entries: LeaderboardEntr
   const label = TOURNAMENT_GAME_LABELS[game] ?? game;
 
   if (entries.length === 0) {
-    return `<h1>${escape(label)}</h1>
+    return `<p class="eyebrow">Лидерборд</p>
+<h1>${escape(label)}</h1>
 <p class="lede">Таблица собирается из подтверждённых привязок.</p>
 <div class="empty"><p>Пока ни одной привязки этой игры — или ранги ещё не подтянулись.</p>
 <p>Привязка делается командой <code>/link</code> в Discord, дальше ранг обновляется сам.</p></div>`;
@@ -566,12 +474,13 @@ export function renderLeaderboard(game: TournamentGame, entries: LeaderboardEntr
     })
     .join('\n');
 
-  return `<h1>${escape(label)}</h1>
+  return `<p class="eyebrow">Лидерборд</p>
+<h1>${escape(label)}</h1>
 <p class="lede">Только подтверждённые привязки. Обновляется автоматически каждые полчаса.</p>
-<table>
+<div class="scroll"><table>
 <thead><tr><th class="pos">#</th><th>Аккаунт</th><th>Ранг</th><th class="num">Очки</th></tr></thead>
 <tbody>${rows}</tbody>
-</table>`;
+</table></div>`;
 }
 
 /**
@@ -593,7 +502,8 @@ export function renderHall(
   titles: { name: string; titles: number }[],
 ): string {
   if (finished.length === 0) {
-    return `<h1>Зал славы</h1>
+    return `<p class="eyebrow">Летопись сервера</p>
+<h1>Зал славы</h1>
 <p class="lede">Здесь остаётся то, что уже сыграно: чемпионы, даты, число участников.</p>
 <div class="empty"><p>Ни один турнир пока не доигран до конца.</p>
 <p>После первого финала эта страница перестанет быть пустой — и дальше будет только расти.</p></div>`;
@@ -609,7 +519,7 @@ export function renderHall(
       return `<tr style="--delay:${index * 18}ms">
 <td class="acct"><a href="/t/${row.id}">${escape(row.name)}</a></td>
 <td>${escape(TOURNAMENT_GAME_LABELS[row.game] ?? row.game)}</td>
-<td class="champ">🏆 ${champion}</td>
+<td class="champ">${champion}</td>
 <td class="num">${row.entrants}</td>
 <td class="num">${row.matches}</td>
 <td class="num">${escape(when)}</td>
@@ -627,20 +537,21 @@ export function renderHall(
     )
     .join('\n');
 
-  return `<h1>Зал славы</h1>
+  return `<p class="eyebrow">Летопись сервера</p>
+<h1>Зал славы</h1>
 <p class="lede">Что уже сыграно. Личные цифры — команда <code>/stats</code> в Discord.</p>
-<table>
+<div class="scroll"><table>
 <thead><tr><th>Турнир</th><th>Игра</th><th>Чемпион</th><th class="num">Уч.</th><th class="num">Матчей</th><th class="num">Когда</th></tr></thead>
 <tbody>${rows}</tbody>
-</table>
+</table></div>
 ${
   board
     ? `<h2>Больше всех титулов</h2>
 <p class="lede">По названию команды: состав собирается заново каждый раз, а название люди переносят из недели в неделю.</p>
-<table>
+<div class="scroll"><table>
 <thead><tr><th class="pos">#</th><th>Команда</th><th class="num">Титулов</th></tr></thead>
 <tbody>${board}</tbody>
-</table>`
+</table></div>`
     : ''
 }`;
 }

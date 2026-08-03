@@ -9,8 +9,12 @@ import {
 import {
   DOTA_DRAFT_SEQUENCE,
   VALORANT_MAPS,
+  bansFor,
   draftSubject,
   mapVetoSequence,
+  pickBanSequence,
+  poolFits,
+  survivorsAreResult,
   type DraftOption,
   type DraftStep,
 } from '../../../src/modules/tournaments/draft/pools.js';
@@ -46,10 +50,10 @@ describe('последовательность вето карт', () => {
     const sequence = mapVetoSequence(7, 3);
 
     expect(sequence.slice(0, 4)).toEqual([
-      { side: 'a', kind: 'ban' },
-      { side: 'b', kind: 'ban' },
-      { side: 'a', kind: 'pick' },
-      { side: 'b', kind: 'pick' },
+      { side: 'a', kind: 'ban', group: 'maps' },
+      { side: 'b', kind: 'ban', group: 'maps' },
+      { side: 'a', kind: 'pick', group: 'maps' },
+      { side: 'b', kind: 'pick', group: 'maps' },
     ]);
     // После двух банов и двух пиков осталось три — добиваем до одной решающей.
     expect(sequence).toHaveLength(6);
@@ -121,7 +125,7 @@ describe('состояние драфта', () => {
     const view = draftView(pool, sequence, []);
 
     expect(view.step).toBe(0);
-    expect(view.current).toEqual({ side: 'a', kind: 'ban' });
+    expect(view.current).toEqual({ side: 'a', kind: 'ban', group: 'maps' });
     expect(view.done).toBe(false);
     expect(view.available).toHaveLength(4);
     expect(view.result).toEqual([]);
@@ -132,7 +136,7 @@ describe('состояние драфта', () => {
 
     expect(view.banned).toEqual(['a']);
     expect(view.available.map((option) => option.id)).toEqual(['b', 'c', 'd']);
-    expect(view.current).toEqual({ side: 'b', kind: 'ban' });
+    expect(view.current).toEqual({ side: 'b', kind: 'ban', group: 'maps' });
   });
 
   it('пропущенный бан продвигает ход, но ничего не занимает', () => {
@@ -223,6 +227,170 @@ describe('ход за того, кто не успел', () => {
   it('в законченном драфте выбирать нечего', () => {
     const done = draftView(pool, sequence, choose(sequence, ['a', 'b', 'c', 'd']));
     expect(autoChoice(done)).toBeNull();
+  });
+});
+
+describe('последовательность банов и пиков под формат', () => {
+  /**
+   * Змейка обязана уравнивать стороны при любом числе пиков, а не только при пяти. Проверяем
+   * свойство на всём разумном диапазоне: размер команды — настройка, и однажды кто-то
+   * поставит три.
+   */
+  it('стороны получают равно пиков при любом размере команды', () => {
+    for (let perSide = 1; perSide <= 8; perSide += 1) {
+      const picks = pickBanSequence('heroes', perSide, 2).filter((step) => step.kind === 'pick');
+
+      expect(picks.filter((step) => step.side === 'a'), `пиков A при ${perSide}`).toHaveLength(perSide);
+      expect(picks.filter((step) => step.side === 'b'), `пиков B при ${perSide}`).toHaveLength(perSide);
+    }
+  });
+
+  it('никто не выбирает трижды подряд при любом размере команды', () => {
+    for (let perSide = 2; perSide <= 8; perSide += 1) {
+      const sides = pickBanSequence('agents', perSide, 1)
+        .filter((step) => step.kind === 'pick')
+        .map((step) => step.side);
+
+      for (let index = 0; index + 2 < sides.length; index += 1) {
+        expect(new Set(sides.slice(index, index + 3)).size, `три подряд при ${perSide}`).toBeGreaterThan(1);
+      }
+    }
+  });
+
+  /**
+   * Драфт на пятерых в матче один на один выдавал бы игроку четырёх лишних героев. Размер
+   * команды — то, откуда берётся число пиков, и это ровно та ошибка, которую тест держит.
+   */
+  it('в одиночном матче по одному пику и по одному бану', () => {
+    expect(pickBanSequence('agents', 1, bansFor(1))).toEqual([
+      { side: 'a', kind: 'ban', group: 'agents' },
+      { side: 'b', kind: 'ban', group: 'agents' },
+      { side: 'a', kind: 'pick', group: 'agents' },
+      { side: 'b', kind: 'pick', group: 'agents' },
+    ]);
+  });
+
+  it('банов два в командном матче и один в одиночном', () => {
+    expect(bansFor(5)).toBe(2);
+    expect(bansFor(1)).toBe(1);
+  });
+
+  it('пул меньше нужного не подходит: банить было бы что, а выбирать нечего', () => {
+    const steps = pickBanSequence('agents', 5, 2);
+
+    expect(poolFits(29, steps, 'agents')).toBe(true);
+    expect(poolFits(13, steps, 'agents')).toBe(false);
+  });
+
+  it('пятёрка Dota осталась тем же порядком, что и была', () => {
+    expect(DOTA_DRAFT_SEQUENCE).toEqual(pickBanSequence('heroes', 5, 2));
+  });
+});
+
+describe('итог фазы', () => {
+  it('у карт уцелевшая считается итогом, у героев и агентов — нет', () => {
+    expect(survivorsAreResult('maps')).toBe(true);
+    expect(survivorsAreResult('heroes')).toBe(false);
+    expect(survivorsAreResult('agents')).toBe(false);
+  });
+
+  /**
+   * Забанили одного из шести, взяли двоих — «итогом» остальные три не являются ни в каком
+   * смысле. Пока итог считался как «выбранное плюс уцелевшее» для всех наборов, законченный
+   * драфт Dota показывал сто тринадцать посторонних героев.
+   */
+  it('у героев итог — только выбранное, без всех незабаненных', () => {
+    const heroes: DraftOption[] = ['axe', 'lina', 'pudge', 'sniper', 'lion', 'tiny'].map((id) => ({
+      id,
+      label: id,
+      group: 'heroes',
+    }));
+    const sequence = pickBanSequence('heroes', 1, 1);
+
+    const view = draftView(heroes, sequence, choose(sequence, ['axe', 'lina', 'pudge', 'sniper']), 'heroes');
+
+    expect(view.done).toBe(true);
+    expect(view.result.map((option) => option.id)).toEqual(['pudge', 'sniper']);
+  });
+});
+
+describe('две фазы: сначала карты, потом агенты', () => {
+  const maps: DraftOption[] = ['ascent', 'bind', 'haven'].map((id) => ({ id, label: id, group: 'maps' }));
+  const agents: DraftOption[] = ['jett', 'sage', 'omen', 'sova'].map((id) => ({
+    id,
+    label: id,
+    group: 'agents',
+  }));
+  const pool = [...maps, ...agents];
+  const sequence = [...mapVetoSequence(maps.length, 1), ...pickBanSequence('agents', 1, 1)];
+
+  it('на фазе карт предлагают только карты', () => {
+    const view = draftView(pool, sequence, [], 'maps');
+
+    expect(view.group).toBe('maps');
+    expect(view.available.map((option) => option.id)).toEqual(['ascent', 'bind', 'haven']);
+  });
+
+  /**
+   * Карту надо знать до того, как выберут агентов: агентов выбирают под карту, и держать её
+   * в секрете до самого конца драфта означало бы отобрать смысл у второй фазы.
+   */
+  it('решающая карта видна, пока агентов ещё выбирают', () => {
+    const afterVeto = draftView(pool, sequence, choose(sequence, ['ascent', 'bind']), 'maps');
+
+    expect(afterVeto.done).toBe(false);
+    expect(afterVeto.group).toBe('agents');
+    expect(afterVeto.result.map((option) => option.id)).toEqual(['haven']);
+    // Карты кончились — теперь предлагают агентов, и карту забанить уже нельзя.
+    expect(afterVeto.available.map((option) => option.id)).toEqual(['jett', 'sage', 'omen', 'sova']);
+    expect(canChoose(afterVeto, 'a', 'haven')).toEqual({ ok: false, reason: 'Этот вариант уже занят.' });
+  });
+
+  it('фазы отчитываются каждая за себя', () => {
+    const afterVeto = draftView(pool, sequence, choose(sequence, ['ascent', 'bind']), 'maps');
+
+    expect(afterVeto.phases.map((phase) => ({ group: phase.group, total: phase.total, done: phase.done }))).toEqual([
+      { group: 'maps', total: 2, done: 2 },
+      { group: 'agents', total: 4, done: 0 },
+    ]);
+  });
+
+  it('в итоге и карта, и взятые агенты', () => {
+    const full = draftView(pool, sequence, choose(sequence, ['ascent', 'bind', 'jett', 'sage', 'omen', 'sova']), 'maps');
+
+    expect(full.done).toBe(true);
+    // Карта из остатка, агенты — только выбранные: забаненные Jett и Sage в итог не попали.
+    expect(full.result.map((option) => option.id)).toEqual(['haven', 'omen', 'sova']);
+  });
+
+  it('автоход на фазе агентов берёт агента, а не карту', () => {
+    const atAgentPick = draftView(pool, sequence, choose(sequence, ['ascent', 'bind', 'jett', 'sage']), 'maps');
+
+    expect(atAgentPick.current?.kind).toBe('pick');
+    expect(autoChoice(atAgentPick)).toBe('omen');
+  });
+});
+
+describe('драфты, заведённые до появления фаз', () => {
+  /**
+   * У старых записей набора нет ни у шагов, ни у вариантов. Они обязаны читаться — запись и
+   * есть то, ради чего драфт заводился, и потерять её при обновлении кода недопустимо.
+   */
+  it('читаются по subject: шаг без набора берёт его у драфта', () => {
+    const oldPool: DraftOption[] = [
+      { id: 'ascent', label: 'Ascent' },
+      { id: 'bind', label: 'Bind' },
+      { id: 'haven', label: 'Haven' },
+    ];
+    const oldSequence: DraftStep[] = [
+      { side: 'a', kind: 'ban' },
+      { side: 'b', kind: 'ban' },
+    ];
+
+    const view = draftView(oldPool, oldSequence, choose(oldSequence, ['ascent', 'bind']), 'maps');
+
+    expect(view.done).toBe(true);
+    expect(view.result.map((option) => option.id)).toEqual(['haven']);
   });
 });
 

@@ -142,7 +142,7 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
    */
   server.get('/rules', async (_request, reply) => {
     const html = await cached('web:rules', async () =>
-      page('Правила', renderRules(), `<style>${RULES_STYLE}</style>`),
+      page('Правила', renderRules(), { head: `<style>${RULES_STYLE}</style>`, current: '/rules' }),
     );
     return reply.type('text/html; charset=utf-8').send(html);
   });
@@ -153,7 +153,7 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
         finishedTournaments(db, deps.guildId, HALL_LIMIT),
         titlesByTeam(db, deps.guildId, TITLES_LIMIT),
       ]);
-      return page('Зал славы', renderHall(finished, titles));
+      return page('Зал славы', renderHall(finished, titles), { current: '/hall' });
     });
 
     return reply.type('text/html; charset=utf-8').send(html);
@@ -182,7 +182,11 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
           .orderBy(tournamentMatches.round, tournamentMatches.slot),
       ]);
 
-      return page(tournament.name, renderBracket({ tournament, entrants, matches }));
+      // Дисциплина турнира задаёт акцент и полосу арта: страница выглядит той игрой, о
+      // которой она.
+      return page(tournament.name, renderBracket({ tournament, entrants, matches }), {
+        game: tournament.game,
+      });
     });
 
     if (html === '') {
@@ -245,7 +249,10 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
         .sort((a, b) => b.score - a.score || a.displayName.localeCompare(b.displayName, 'ru'))
         .slice(0, LEADERBOARD_LIMIT);
 
-      return page(`Лидерборд ${game}`, renderLeaderboard(game, entries));
+      return page(`Лидерборд ${game}`, renderLeaderboard(game, entries), {
+        game,
+        current: `/leaderboard/${game}`,
+      });
     });
 
     return reply.type('text/html; charset=utf-8').send(html);

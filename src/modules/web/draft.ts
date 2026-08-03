@@ -5,14 +5,14 @@ import type { Database } from '../../core/db/client.js';
 import { describeForUser } from '../../core/errors.js';
 import type { Logger } from '../../core/logger.js';
 import { draftProgress } from '../tournaments/draft/engine.js';
-import { SUBJECT_LABELS, type DraftOption } from '../tournaments/draft/pools.js';
-import { tournamentEntrants, tournamentMatches, tournaments } from '../tournaments/schema.js';
+import type { DraftGroup, DraftOption } from '../tournaments/draft/pools.js';
+import { tournamentEntrants, tournamentMatches, tournaments, type TournamentGame } from '../tournaments/schema.js';
 import { createDraftsService } from '../tournaments/services/drafts.js';
 import { page, renderNotFound } from './render.js';
 import { DRAFT_STYLE, draftShell } from './draft-page.js';
 
 /**
- * Драфт на витрине: вето карт Valorant и баны с пиками героев Dota перед матчем.
+ * Драфт на витрине: вето карт и пики с банами агентов в Valorant, баны и пики героев в Dota.
  *
  * Право действовать даёт **ссылка**, а не вход на сайт. Витрина по устройству анонимна и
  * только для чтения, а драфт требует знать, кто нажимает: банить за команду может лишь её
@@ -27,32 +27,58 @@ export interface DraftRoutesDeps {
   logger: Logger;
 }
 
+/** Кто занял вариант. Свободных в карте нет — отсутствие ключа и означает «свободен». */
+type OptionState = 'banned' | 'a' | 'b';
+
+interface DraftPhaseView {
+  /**
+   * Всегда заполнен: у драфтов, заведённых до появления фаз, набора у шагов нет, и здесь
+   * подставляется `subject` самого драфта. Странице нужен конкретный набор — от него зависит
+   * и размер плиток, и то, какие варианты попадают в эту фазу.
+   */
+  group: DraftGroup;
+  total: number;
+  done: number;
+  /** Итог фазы идентификаторами: сам вариант страница найдёт в пуле, который у неё уже есть. */
+  resultIds: string[];
+}
+
 interface DraftPayload {
   matchId: number;
   tournamentName: string;
-  subject: 'heroes' | 'maps';
-  subjectLabel: string;
+  game: TournamentGame;
   teams: { a: string; b: string };
   /** Сторона, за которую можно действовать. null — только смотреть. */
   you: 'a' | 'b' | null;
   step: number;
   total: number;
-  current: { side: 'a' | 'b'; kind: 'ban' | 'pick' } | null;
+  current: { side: 'a' | 'b'; kind: 'ban' | 'pick'; group: DraftGroup } | null;
   done: boolean;
   deadlineAt: string | null;
-  banned: DraftOption[];
-  picks: { a: DraftOption[]; b: DraftOption[] };
-  available: DraftOption[];
-  result: DraftOption[];
+  /**
+   * Полный пул. Приходит один раз — вместе со страницей, — и в ответах опроса его нет:
+   * снимок пула не меняется за время драфта, а сто двадцать семь героев каждые две секунды
+   * это тридцать килобайт на пустом месте.
+   */
+  pool?: DraftOption[];
+  states: Record<string, OptionState>;
+  /** Порядок банов и пиков: он нужен плашкам, а по состояниям порядок не восстановить. */
+  banned: string[];
+  picks: { a: string[]; b: string[] };
+  phases: DraftPhaseView[];
 }
 
 export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDeps): void {
   const { db } = deps;
   // Сервис здесь только читает и применяет ходы: создаёт драфты бот, когда появляются
-  // комнаты матчей, и справочник героев нужен только там.
+  // комнаты матчей, и справочники нужны только там.
   const drafts = createDraftsService({ db, cache: deps.cache, logger: deps.logger });
 
-  async function payload(matchId: number, token: string | undefined): Promise<DraftPayload | null> {
+  async function payload(
+    matchId: number,
+    token: string | undefined,
+    options: { withPool: boolean },
+  ): Promise<DraftPayload | null> {
     const draft = await drafts.byMatch(matchId);
     if (!draft) return null;
 
@@ -69,28 +95,41 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
     const nameOf = (id: number | null): string =>
       entrants.find((entrant) => entrant.id === id)?.displayName ?? '—';
 
-    const byId = new Map(draft.pool.map((option) => [option.id, option]));
-    const resolve = (ids: string[]): DraftOption[] =>
-      ids.map((id) => byId.get(id) ?? { id, label: id });
+    const states: Record<string, OptionState> = {};
+    for (const id of state.view.banned) states[id] = 'banned';
+    for (const id of state.view.pickedA) states[id] = 'a';
+    for (const id of state.view.pickedB) states[id] = 'b';
 
-    const { total, done } = draftProgress(draft.sequence, state.choices);
+    const { total } = draftProgress(draft.sequence, state.choices);
+    // Набор для шагов без пометки — `subject` драфта: так странице всегда достаётся
+    // конкретный набор, включая записи, заведённые до появления фаз.
+    const groupOf = (group: DraftGroup | undefined): DraftGroup => group ?? draft.subject;
 
     return {
       matchId,
       tournamentName: tournament?.name ?? 'Турнир',
-      subject: draft.subject,
-      subjectLabel: SUBJECT_LABELS[draft.subject].many,
+      game: tournament?.game ?? 'valorant',
       teams: { a: nameOf(match.entrantAId), b: nameOf(match.entrantBId) },
       you: drafts.sideOfToken(draft, token),
-      step: done,
+      step: state.view.step,
       total,
-      current: state.view.current,
+      current: state.view.current
+        ? { ...state.view.current, group: groupOf(state.view.current.group) }
+        : null,
       done: state.view.done,
       deadlineAt: state.view.done ? null : (draft.deadlineAt?.toISOString() ?? null),
-      banned: resolve(state.view.banned),
-      picks: { a: resolve(state.view.pickedA), b: resolve(state.view.pickedB) },
-      available: state.view.available,
-      result: state.view.result,
+      ...(options.withPool
+        ? { pool: draft.pool.map((option) => ({ ...option, group: groupOf(option.group) })) }
+        : {}),
+      states,
+      banned: state.view.banned,
+      picks: { a: state.view.pickedA, b: state.view.pickedB },
+      phases: state.view.phases.map((phase) => ({
+        group: groupOf(phase.group),
+        total: phase.total,
+        done: phase.done,
+        resultIds: phase.result.map((option) => option.id),
+      })),
     };
   }
 
@@ -110,7 +149,7 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
           .send(page('Не найдено', renderNotFound('Такого матча нет.')));
       }
 
-      const state = await payload(matchId, request.query.as);
+      const state = await payload(matchId, request.query.as, { withPool: true });
       if (!state) {
         return reply
           .code(404)
@@ -128,11 +167,10 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
         .header('cache-control', 'no-store')
         .type('text/html; charset=utf-8')
         .send(
-          page(
-            `Драфт — ${state.tournamentName}`,
-            draftShell(state),
-            `<style>${DRAFT_STYLE}</style>`,
-          ),
+          page(`Драфт — ${state.tournamentName}`, draftShell(state), {
+            game: state.game,
+            head: `<style>${DRAFT_STYLE}</style>`,
+          }),
         );
     },
   );
@@ -141,7 +179,7 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
     '/api/draft/:matchId',
     async (request, reply) => {
       const matchId = parseId(request.params.matchId);
-      const state = matchId === null ? null : await payload(matchId, request.query.as);
+      const state = matchId === null ? null : await payload(matchId, request.query.as, { withPool: false });
       if (!state) return reply.code(404).send({ error: 'Драфт не найден.' });
       return reply.header('cache-control', 'no-store').send(state);
     },
@@ -175,7 +213,7 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
       return reply.code(409).send({ error: described.text });
     }
 
-    const state = await payload(matchId, request.body?.token);
+    const state = await payload(matchId, request.body?.token, { withPool: false });
     return reply.header('cache-control', 'no-store').send(state);
   });
 }

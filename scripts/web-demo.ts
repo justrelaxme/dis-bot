@@ -12,6 +12,7 @@ import { createCache } from '../src/core/cache.js';
 import type { Config } from '../src/core/config.js';
 import { createDatabase } from '../src/core/db/client.js';
 import { guilds, users } from '../src/core/db/schema/core.js';
+import { createFetchClient } from '../src/core/http/fetch-client.js';
 import { createLogger } from '../src/core/logger.js';
 import { gameAccounts, rankSnapshots } from '../src/modules/identity/schema.js';
 import { tournaments } from '../src/modules/tournaments/schema.js';
@@ -63,6 +64,8 @@ async function runTournament(
     teams: string[];
     matchesToPlay: number | null;
     captainOffset: number;
+    /** Одиночный формат: размер «команды» единица, и драфт становится короче. */
+    solo?: boolean;
   },
 ): Promise<number> {
   const service = createTournamentsService({ db });
@@ -74,8 +77,8 @@ async function runTournament(
       name: options.name,
       game: options.game,
       format: options.format,
-      entryMode: 'team',
-      teamSize: 5,
+      entryMode: options.solo ? 'solo' : 'team',
+      teamSize: options.solo ? 1 : 5,
       maxEntrants: 16,
       state: 'registration',
       createdBy: GUILD,
@@ -125,7 +128,7 @@ async function runTournament(
 
 async function seed(
   db: Awaited<ReturnType<typeof createDatabase>>['db'],
-): Promise<{ tournamentId: number; vetoId: number }> {
+): Promise<{ tournamentId: number; vetoId: number; heroesId: number; duelId: number }> {
   await db.insert(guilds).values({ id: GUILD }).onConflictDoNothing();
 
   // Два доигранных турнира — чтобы зал славы был не пустой страницей с объяснением,
@@ -156,8 +159,8 @@ async function seed(
     captainOffset: 300,
   });
 
-  // Отдельный турнир по Valorant — ради драфта: вето карт не требует внешнего справочника,
-  // в отличие от списка героев Dota, и его можно посмотреть без сети.
+  // Три турнира ради драфта: командный Valorant (карты плюс агенты), командная Dota (герои)
+  // и дуэль один на один — у неё драфт короче, по одному бану и пику.
   const vetoId = await runTournament(db, {
     name: 'Кубок по Valorant',
     game: 'valorant',
@@ -165,6 +168,25 @@ async function seed(
     teams: ['Ястребы', 'Пантеры', 'Кобры', 'Осы'],
     matchesToPlay: 0,
     captainOffset: 400,
+  });
+
+  const heroesId = await runTournament(db, {
+    name: 'Кубок по Dota 2',
+    game: 'dota2',
+    format: 'single-elim',
+    teams: ['Грифоны', 'Мамонты', 'Пираньи', 'Скорпионы'],
+    matchesToPlay: 0,
+    captainOffset: 500,
+  });
+
+  const duelId = await runTournament(db, {
+    name: 'Дуэли по Valorant',
+    game: 'valorant',
+    format: 'single-elim',
+    teams: ['Ланцет', 'Кремень', 'Вихрь', 'Обух'],
+    matchesToPlay: 0,
+    captainOffset: 600,
+    solo: true,
   });
 
   // Лидерборд: подтверждённые привязки Steam с рангами Dota.
@@ -200,7 +222,7 @@ async function seed(
     });
   }
 
-  return { tournamentId, vetoId };
+  return { tournamentId, vetoId, heroesId, duelId };
 }
 
 async function main(): Promise<void> {
@@ -216,17 +238,42 @@ async function main(): Promise<void> {
   registerWebRoutes(server, { db, cache, logger, guildId: GUILD });
   registerDraftRoutes(server, { db, cache, logger });
 
-  const { tournamentId, vetoId } = await seed(db);
+  const { tournamentId, vetoId, heroesId, duelId } = await seed(db);
 
-  // Драфт для первого готового матча Valorant: смотреть его надо по ссылке с токеном,
-  // иначе страница откроется только для просмотра — как у зрителя.
-  const drafts = createDraftsService({ db, cache, logger });
+  // Справочники героев и агентов тянутся из сети: без них у драфта была бы только фаза карт,
+  // и посмотреть полотно агентов не вышло бы. Отказ сети здесь не ломает витрину — драфт
+  // просто окажется короче, ровно как в бою.
+  const drafts = createDraftsService({
+    db,
+    cache,
+    logger,
+    dotaClient: createFetchClient({ provider: 'opendota', logger }),
+    valorantClient: createFetchClient({ provider: 'valorant-api', logger }),
+  });
   const bracketService = createTournamentsService({ db });
-  const veto = await bracketService.bracket(vetoId);
-  const first = veto.matches.find((match) => match.state === 'ready');
-  const draft = first
-    ? await drafts.ensureForMatch(veto.tournament, first)
-    : null;
+
+  /** Заводит драфт для первого готового матча турнира и отдаёт ссылки на него. */
+  const draftLinks = async (
+    tournamentId: number,
+    label: string,
+  ): Promise<Record<string, string>> => {
+    const view = await bracketService.bracket(tournamentId);
+    const match = view.matches.find((row) => row.state === 'ready');
+    if (!match) return {};
+    const draft = await drafts.ensureForMatch(view.tournament, match);
+    if (!draft) return {};
+    return {
+      [`${label}_капитан_1`]: `http://localhost:${PORT}/draft/${match.id}?as=${draft.draft.tokenA}`,
+      [`${label}_капитан_2`]: `http://localhost:${PORT}/draft/${match.id}?as=${draft.draft.tokenB}`,
+      [`${label}_зритель`]: `http://localhost:${PORT}/draft/${match.id}`,
+    };
+  };
+
+  const links = {
+    ...(await draftLinks(vetoId, 'valorant_5x5')),
+    ...(await draftLinks(heroesId, 'dota_5x5')),
+    ...(await draftLinks(duelId, 'valorant_1x1')),
+  };
 
   await server.listen({ port: PORT, host: '0.0.0.0' });
 
@@ -237,13 +284,7 @@ async function main(): Promise<void> {
       сетка: `http://localhost:${PORT}/t/${tournamentId}`,
       зал_славы: `http://localhost:${PORT}/hall`,
       лидерборд: `http://localhost:${PORT}/leaderboard/dota2`,
-      ...(draft && first
-        ? {
-            драфт_капитан_1: `http://localhost:${PORT}/draft/${first.id}?as=${draft.draft.tokenA}`,
-            драфт_капитан_2: `http://localhost:${PORT}/draft/${first.id}?as=${draft.draft.tokenB}`,
-            драфт_зритель: `http://localhost:${PORT}/draft/${first.id}`,
-          }
-        : {}),
+      ...links,
     },
     'витрина поднята, Ctrl+C останавливает и убирает демонстрационные данные',
   );

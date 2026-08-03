@@ -11,6 +11,9 @@ import {
   unique,
 } from 'drizzle-orm/pg-core';
 import type { BracketFormat, MatchBracket } from './bracket.js';
+// Только тип: на выполнении импорт стирается, поэтому взаимная ссылка с pools.ts кольца
+// в модулях не образует.
+import type { DraftGroup } from './draft/pools.js';
 
 /**
  * Игра турнира — самостоятельный тип модуля, а не ProviderId из identity: турнир
@@ -345,10 +348,20 @@ export const matchDrafts = pgTable(
     tournamentId: integer('tournament_id')
       .notNull()
       .references(() => tournaments.id, { onDelete: 'cascade' }),
+    /**
+     * Первая фаза драфта, она же набор по умолчанию для шагов без пометки. У Valorant после
+     * карт идут агенты, и их шаги помечены своим набором в самой последовательности.
+     */
     subject: text('subject').$type<'heroes' | 'maps'>().notNull(),
     /** Снимок пула на момент создания: патч не должен переписывать прошлое. */
-    pool: jsonb('pool').$type<{ id: string; label: string; imageUrl?: string }[]>().notNull(),
-    sequence: jsonb('sequence').$type<{ side: 'a' | 'b'; kind: 'ban' | 'pick' }[]>().notNull(),
+    pool: jsonb('pool')
+      .$type<
+        { id: string; label: string; imageUrl?: string; iconUrl?: string; group?: DraftGroup }[]
+      >()
+      .notNull(),
+    sequence: jsonb('sequence')
+      .$type<{ side: 'a' | 'b'; kind: 'ban' | 'pick'; group?: DraftGroup }[]>()
+      .notNull(),
     tokenA: text('token_a').notNull(),
     tokenB: text('token_b').notNull(),
     /** Докуда ждём текущий ход. Пустой дедлайн — драфт ещё не начали или уже закончили. */

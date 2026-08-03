@@ -104,7 +104,14 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
     db: deps.db,
     cache: deps.cache,
     logger: deps.logger,
-    ...(deps.fetchClientFor ? { heroClient: deps.fetchClientFor('opendota') } : {}),
+    // Два справочника — два клиента: у каждого свой предохранитель, и недоступный OpenDota
+    // не должен закрывать список агентов Valorant вместе с собой.
+    ...(deps.fetchClientFor
+      ? {
+          dotaClient: deps.fetchClientFor('opendota'),
+          valorantClient: deps.fetchClientFor('valorant-api'),
+        }
+      : {}),
   });
 
   const play = {

@@ -13,10 +13,12 @@ import {
   type DraftView,
 } from '../draft/engine.js';
 import {
-  DOTA_DRAFT_SEQUENCE,
   VALORANT_MAPS,
+  bansFor,
   draftSubject,
   mapVetoSequence,
+  pickBanSequence,
+  poolFits,
   type DraftOption,
   type DraftSide,
   type DraftStep,
@@ -36,14 +38,30 @@ export const STEP_TIMEOUT_MS = 60_000;
 
 const OPENDOTA_HEROES = 'https://api.opendota.com/api/heroes';
 const HERO_CACHE_KEY = 'dota:heroes';
-const HERO_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
+/** Сутки: списки меняются с патчем, а патчи выходят не чаще. */
+const CATALOG_TTL_MS = 24 * 60 * 60 * 1_000;
+/**
+ * Портреты героев с CDN Valve. Путь `dota_react` — единственный, который есть у всех героев:
+ * старые вертикальные портреты (`heroes/<slug>_vert.jpg`) Valve перестал публиковать для
+ * добавленных после 2021 года, и Marci с Muerta там просто нет. Проверено по всему списку.
+ */
 const HERO_IMAGE_BASE =
   'https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes';
+
+const VALORANT_AGENTS_URL = 'https://valorant-api.com/v1/agents?isPlayableCharacter=true';
+const AGENT_CACHE_KEY = 'valorant:agents';
 
 interface OpenDotaHero {
   id: number;
   name: string;
   localized_name: string;
+}
+
+interface ValorantAgent {
+  uuid: string;
+  displayName: string;
+  killfeedPortrait: string | null;
+  displayIcon: string | null;
 }
 
 export interface DraftState {
@@ -57,41 +75,81 @@ export function createDraftsService(deps: {
   cache: Cache;
   logger: Logger;
   /** Клиент OpenDota: нужен только для списка героев Dota. */
-  heroClient?: FetchClient;
+  dotaClient?: FetchClient;
+  /**
+   * Клиент valorant-api: нужен только для списка агентов. Отдельный от Dota намеренно —
+   * у каждого клиента свой предохранитель, и падение одного справочника не должно
+   * закрывать второй.
+   */
+  valorantClient?: FetchClient;
 }) {
   const { db, cache, logger } = deps;
 
   /**
-   * Список героев. Тянется из OpenDota и лежит в кэше сутки: он меняется с патчем, и
-   * захардкоженные сто двадцать шесть имён устарели бы к первому же обновлению игры.
-   *
-   * Отказ здесь не ошибка, а отсутствие драфта: матч сыграется без него, как играл до сих
-   * пор. Ронять матч из-за недоступного справочника было бы несоразмерно.
+   * Справочник в кэше на сутки. Отказ здесь не ошибка, а отсутствие фазы драфта: матч
+   * сыграется без неё, как играл до сих пор. Ронять матч из-за недоступного справочника было
+   * бы несоразмерно, поэтому наверх уходит `null`, а в лог — предупреждение.
    */
-  async function dotaHeroes(): Promise<DraftOption[] | null> {
-    if (!deps.heroClient) return null;
-    const client = deps.heroClient;
-
+  async function catalog(
+    client: FetchClient | undefined,
+    key: string,
+    what: string,
+    load: (client: FetchClient) => Promise<DraftOption[]>,
+  ): Promise<DraftOption[] | null> {
+    if (!client) return null;
     try {
-      const cached = await cache.swr<DraftOption[]>(HERO_CACHE_KEY, {
-        ttlMs: HERO_CACHE_TTL_MS,
-        staleMs: 7 * HERO_CACHE_TTL_MS,
-        load: async () => {
-          const heroes = await client.json<OpenDotaHero[]>(OPENDOTA_HEROES);
-          return heroes
-            .map((hero) => ({
-              id: hero.name.replace('npc_dota_hero_', ''),
-              label: hero.localized_name,
-              imageUrl: `${HERO_IMAGE_BASE}/${hero.name.replace('npc_dota_hero_', '')}.png`,
-            }))
-            .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
-        },
+      const cached = await cache.swr<DraftOption[]>(key, {
+        ttlMs: CATALOG_TTL_MS,
+        staleMs: 7 * CATALOG_TTL_MS,
+        load: () => load(client),
       });
       return cached.value.length > 0 ? cached.value : null;
     } catch (error) {
-      logger.warn({ err: error }, 'список героев Dota недоступен — матч пройдёт без драфта');
+      logger.warn({ err: error }, `${what} недоступен — эта фаза драфта пройдена не будет`);
       return null;
     }
+  }
+
+  /**
+   * Список героев Dota. Тянется из OpenDota, а не лежит константой: он меняется с патчем, и
+   * захардкоженные сто двадцать семь имён устарели бы к первому же обновлению игры.
+   */
+  async function dotaHeroes(): Promise<DraftOption[] | null> {
+    return catalog(deps.dotaClient, HERO_CACHE_KEY, 'список героев Dota', async (client) => {
+      const heroes = await client.json<OpenDotaHero[]>(OPENDOTA_HEROES);
+      return heroes
+        .map((hero) => {
+          const slug = hero.name.replace('npc_dota_hero_', '');
+          return {
+            id: slug,
+            label: hero.localized_name,
+            group: 'heroes' as const,
+            imageUrl: `${HERO_IMAGE_BASE}/${slug}.png`,
+            iconUrl: `${HERO_IMAGE_BASE}/icons/${slug}.png`,
+          };
+        })
+        .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+    });
+  }
+
+  /**
+   * Список агентов Valorant. Картинкой берётся портрет из килл-фида (9 КБ), а не крупная
+   * иконка (400 КБ): агентов двадцать девять, и полотно драфта на крупных иконках весило бы
+   * одиннадцать мегабайт. Килл-фид игрок и так видит каждый раунд, так что лицо узнаваемое.
+   */
+  async function valorantAgents(): Promise<DraftOption[] | null> {
+    return catalog(deps.valorantClient, AGENT_CACHE_KEY, 'список агентов Valorant', async (client) => {
+      const body = await client.json<{ data: ValorantAgent[] }>(VALORANT_AGENTS_URL);
+      return body.data
+        .map((agent) => ({
+          id: agent.uuid,
+          label: agent.displayName,
+          group: 'agents' as const,
+          ...(agent.killfeedPortrait ? { imageUrl: agent.killfeedPortrait } : {}),
+          ...(agent.killfeedPortrait ? { iconUrl: agent.killfeedPortrait } : {}),
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+    });
   }
 
   async function choicesOf(draftId: number): Promise<DraftChoiceRow[]> {
@@ -109,7 +167,8 @@ export function createDraftsService(deps: {
       kind: row.kind,
       optionId: row.optionId,
     }));
-    return draftView(draft.pool, draft.sequence as DraftStep[], choices);
+    // `subject` — набор для шагов без пометки: так читаются драфты, заведённые до фаз.
+    return draftView(draft.pool, draft.sequence as DraftStep[], choices, draft.subject);
   }
 
   async function stateOf(draft: MatchDraftRow): Promise<DraftState> {
@@ -145,12 +204,38 @@ export function createDraftsService(deps: {
       if (subject === null) return null;
       if (match.entrantAId === null || match.entrantBId === null) return null;
 
-      const pool = subject === 'maps' ? [...VALORANT_MAPS] : await dotaHeroes();
-      if (!pool || pool.length < 2) return null;
+      // Пиков ровно столько, сколько нужно стороне: пятеро в командном матче, один в
+      // одиночном. Пока размер команды здесь не учитывался, турнир один на один выдавал
+      // игроку драфт на пятерых героев — то есть четырёх лишних.
+      const picksPerSide = Math.max(1, tournament.teamSize);
+      const bansPerSide = bansFor(picksPerSide);
 
-      const sequence =
-        subject === 'maps' ? mapVetoSequence(pool.length, tournament.bestOf) : [...DOTA_DRAFT_SEQUENCE];
-      if (sequence.length === 0) return null;
+      const pool: DraftOption[] = [];
+      const sequence: DraftStep[] = [];
+
+      if (subject === 'maps') {
+        pool.push(...VALORANT_MAPS);
+        sequence.push(...mapVetoSequence(VALORANT_MAPS.length, tournament.bestOf));
+
+        // Вторая фаза — агенты. Правило сервера, а не Riot: в самой игре агентов не делят.
+        // Справочник недоступен — матч пройдёт с одним вето карт, и это лучше, чем не дать
+        // капитанам поделить хотя бы карты.
+        const agents = await valorantAgents();
+        const agentSteps = pickBanSequence('agents', picksPerSide, bansPerSide);
+        if (agents && poolFits(agents.length, agentSteps, 'agents')) {
+          pool.push(...agents);
+          sequence.push(...agentSteps);
+        }
+      } else {
+        const heroes = await dotaHeroes();
+        if (!heroes) return null;
+        const heroSteps = pickBanSequence('heroes', picksPerSide, bansPerSide);
+        if (!poolFits(heroes.length, heroSteps, 'heroes')) return null;
+        pool.push(...heroes);
+        sequence.push(...heroSteps);
+      }
+
+      if (pool.length < 2 || sequence.length === 0) return null;
 
       const [created] = await db
         .insert(matchDrafts)

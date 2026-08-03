@@ -1,4 +1,11 @@
-import type { DraftKind, DraftOption, DraftSide, DraftStep } from './pools.js';
+import {
+  survivorsAreResult,
+  type DraftGroup,
+  type DraftKind,
+  type DraftOption,
+  type DraftSide,
+  type DraftStep,
+} from './pools.js';
 
 /**
  * Движок драфта: чистая логика поверх последовательности шагов и уже сделанных выборов.
@@ -9,6 +16,10 @@ import type { DraftKind, DraftOption, DraftSide, DraftStep } from './pools.js';
  * отдельно «чей ход» значило бы держать второй источник истины рядом с самими выборами —
  * и однажды они разошлись бы, а разойдясь, оставили бы драфт в состоянии, из которого нет
  * выхода. Журнал плюс последовательность дают ход однозначно.
+ *
+ * Драфт идёт **фазами** — у Valorant сначала карты, потом агенты. Фаза кончается сама,
+ * когда кончаются её шаги, и её итог виден сразу: карту надо знать до того, как выберут
+ * агентов, иначе выбирать агентов не под что.
  */
 
 export interface DraftChoice {
@@ -19,29 +30,56 @@ export interface DraftChoice {
   optionId: string | null;
 }
 
+export interface DraftPhase {
+  group: DraftGroup | undefined;
+  /** Сколько шагов в фазе и сколько из них пройдено. */
+  total: number;
+  done: number;
+  /** Итог фазы. Пуст, пока фаза не закончена. */
+  result: DraftOption[];
+}
+
 export interface DraftView {
   /** Номер текущего шага, с нуля. Равен числу сделанных выборов. */
   step: number;
   /** Текущий шаг или null, если драфт закончен. */
   current: DraftStep | null;
+  /** Из какого набора выбирают сейчас. null — драфт закончен. */
+  group: DraftGroup | undefined;
   done: boolean;
   banned: string[];
   pickedA: string[];
   pickedB: string[];
-  /** Что ещё можно выбрать. */
+  /** Что ещё можно выбрать — только из набора текущей фазы. */
   available: DraftOption[];
+  phases: DraftPhase[];
   /**
-   * Итог: то, что осталось после всех банов и было выбрано. Для карт с одним матчем это
-   * единственная оставшаяся карта, для трёх — выбранные плюс решающая.
+   * Итог законченных фаз: выбранное командами плюс уцелевшее там, где уцелевшее считается
+   * итогом. Для карт с одним матчем это единственная оставшаяся карта, для трёх — выбранные
+   * плюс решающая, для героев и агентов — только выбранное.
    */
   result: DraftOption[];
+}
+
+/**
+ * Относится ли вариант к набору. Вариант без набора относится к любому, и шаг без набора
+ * выбирает из всего: так читаются драфты, заведённые до появления фаз, — а прошлые записи
+ * и есть то, ради чего драфт заводился.
+ */
+function inGroup(option: DraftOption, group: DraftGroup | undefined): boolean {
+  if (group === undefined || option.group === undefined) return true;
+  return option.group === group;
 }
 
 export function draftView(
   pool: readonly DraftOption[],
   sequence: readonly DraftStep[],
   choices: readonly DraftChoice[],
+  /** Набор для шагов без пометки: `subject` строки драфта. */
+  fallbackGroup?: DraftGroup,
 ): DraftView {
+  const groupOf = (step: DraftStep): DraftGroup | undefined => step.group ?? fallbackGroup;
+
   const banned = choices.filter((c) => c.kind === 'ban' && c.optionId !== null).map((c) => c.optionId as string);
   const pickedA = choices
     .filter((c) => c.kind === 'pick' && c.side === 'a' && c.optionId !== null)
@@ -51,20 +89,54 @@ export function draftView(
     .map((c) => c.optionId as string);
 
   const taken = new Set([...banned, ...pickedA, ...pickedB]);
-  const available = pool.filter((option) => !taken.has(option.id));
 
   const step = choices.length;
   const current = step < sequence.length ? (sequence[step] ?? null) : null;
   const done = current === null;
+  const group = current === null ? undefined : groupOf(current);
 
-  // Итог: выбранное командами плюс то, что уцелело после всех банов. Уцелевшее — это и
-  // есть решающая карта, и её никто не выбирал, поэтому она вне спора.
-  const chosen = [...pickedA, ...pickedB];
-  const result = done
-    ? pool.filter((option) => chosen.includes(option.id) || !taken.has(option.id))
-    : [];
+  const available = pool.filter((option) => !taken.has(option.id) && inGroup(option, group));
 
-  return { step, current, done, banned, pickedA, pickedB, available, result };
+  // Фазы идут подряд: шаги одного набора не перемешаны с шагами другого. Поэтому пройденное
+  // в фазе — это просто число сделанных выборов минус то, что осталось за её началом.
+  const chosen = new Set([...pickedA, ...pickedB]);
+  const phases: DraftPhase[] = [];
+  let offset = 0;
+  while (offset < sequence.length) {
+    const phaseGroup = groupOf(sequence[offset] as DraftStep);
+    let end = offset;
+    while (end < sequence.length && groupOf(sequence[end] as DraftStep) === phaseGroup) end += 1;
+
+    const total = end - offset;
+    const phaseDone = Math.min(Math.max(step - offset, 0), total);
+    const finished = phaseDone === total;
+
+    // Итог фазы виден только когда фаза закончена: половина вето — это ещё не карта.
+    const result = finished
+      ? pool.filter(
+          (option) =>
+            inGroup(option, phaseGroup) &&
+            (chosen.has(option.id) ||
+              (phaseGroup !== undefined && survivorsAreResult(phaseGroup) && !taken.has(option.id))),
+        )
+      : [];
+
+    phases.push({ group: phaseGroup, total, done: phaseDone, result });
+    offset = end;
+  }
+
+  return {
+    step,
+    current,
+    group,
+    done,
+    banned,
+    pickedA,
+    pickedB,
+    available,
+    phases,
+    result: phases.flatMap((phase) => phase.result),
+  };
 }
 
 export type DraftRefusal =
@@ -73,8 +145,8 @@ export type DraftRefusal =
 
 /**
  * Можно ли этой стороне сделать этот выбор прямо сейчас. Проверок три, и все обязательны:
- * драфт не закончен, ход этой стороны, вариант ещё свободен. Без проверки хода капитан
- * мог бы забанить за соперника, а это хуже отсутствия драфта.
+ * драфт не закончен, ход этой стороны, вариант ещё свободен и из нужного набора. Без
+ * проверки хода капитан мог бы забанить за соперника, а это хуже отсутствия драфта.
  */
 export function canChoose(
   view: DraftView,
