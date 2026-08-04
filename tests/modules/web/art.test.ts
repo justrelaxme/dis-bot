@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TOURNAMENT_GAMES } from '../../../src/modules/tournaments/games.js';
+import { KNOWN_TOURNAMENT_GAMES } from '../../../src/modules/tournaments/games.js';
 import {
   GAME_IDENTITY,
   SERVER_BAND,
@@ -33,9 +33,14 @@ function hostsOf(urls: readonly string[]): string[] {
   return urls.map((url) => new URL(url).host);
 }
 
+/**
+ * Проверяется весь реестр, а не только играемые дисциплины: страницы прошлых турниров по LoL
+ * и TFT никуда не делись, и арт им нужен ровно такой же. Сузить проверку до трёх значило бы
+ * перестать замечать, что у старой страницы отвалилась полоса.
+ */
 describe('реестр игрового арта', () => {
   it('у каждой дисциплины есть акцент, полоса и подпись', () => {
-    for (const game of TOURNAMENT_GAMES) {
+    for (const game of KNOWN_TOURNAMENT_GAMES) {
       const identity = GAME_IDENTITY[game];
 
       expect(identity, `нет опознавательных знаков у ${game}`).toBeDefined();
@@ -50,14 +55,14 @@ describe('реестр игрового арта', () => {
    * не выглядела страницей Valorant. Два одинаковых значения делают её бессмысленной.
    */
   it('акценты дисциплин не повторяются', () => {
-    const accents = TOURNAMENT_GAMES.map((game) => GAME_IDENTITY[game].accent);
+    const accents = KNOWN_TOURNAMENT_GAMES.map((game) => GAME_IDENTITY[game].accent);
 
     expect(new Set(accents).size).toBe(accents.length);
   });
 
   it('все картинки — с CDN игр и только по https', () => {
     const all = [
-      ...TOURNAMENT_GAMES.flatMap((game) => GAME_IDENTITY[game].band),
+      ...KNOWN_TOURNAMENT_GAMES.flatMap((game) => GAME_IDENTITY[game].band),
       ...SERVER_BAND,
       ...VALORANT_AGENT_FACES,
       dotaHeroArt('pudge'),
@@ -68,7 +73,7 @@ describe('реестр игрового арта', () => {
   });
 
   it('в полосе нет пустых ссылок', () => {
-    const all = [...TOURNAMENT_GAMES.flatMap((game) => GAME_IDENTITY[game].band), ...SERVER_BAND];
+    const all = [...KNOWN_TOURNAMENT_GAMES.flatMap((game) => GAME_IDENTITY[game].band), ...SERVER_BAND];
 
     expect(all.filter((url) => url === '')).toEqual([]);
   });

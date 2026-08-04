@@ -1,12 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { TOURNAMENT_GAME_LABELS, TOURNAMENT_GAMES } from '../../../src/modules/tournaments/games.js';
+import {
+  KNOWN_TOURNAMENT_GAMES,
+  TOURNAMENT_GAME_LABELS,
+  TOURNAMENT_GAMES,
+} from '../../../src/modules/tournaments/games.js';
 
 describe('TOURNAMENT_GAMES', () => {
-  // Порядок здесь — не косметика: индекс дисциплины в этом списке совпадает с номером
-  // ответа в голосовании Discord. Новая дисциплина поэтому дописывается в конец, иначе
-  // уже поданные голоса начали бы значить другое.
-  it('перечисляет дисциплины в фиксированном порядке, новые — в конце', () => {
-    expect(TOURNAMENT_GAMES).toEqual(['dota2', 'lol', 'tft', 'valorant', 'genshin']);
+  it('предлагает только те дисциплины, по которым играют сейчас', () => {
+    expect(TOURNAMENT_GAMES).toEqual(['dota2', 'valorant', 'genshin']);
+  });
+
+  /**
+   * Понимаемых дисциплин больше, чем предлагаемых, и это главное свойство пары списков.
+   * В базе лежат прошлые турниры по LoL и TFT, у игроков подтверждённые привязки, в зале
+   * славы титулы. Убрать их из понимаемых значит превратить прошлое сервера в «неизвестная
+   * дисциплина» — а бот заводился ровно ради того, чтобы это прошлое было.
+   */
+  it('понимает и те дисциплины, по которым больше не играют', () => {
+    for (const game of TOURNAMENT_GAMES) expect(KNOWN_TOURNAMENT_GAMES).toContain(game);
+    expect(KNOWN_TOURNAMENT_GAMES).toContain('lol');
+    expect(KNOWN_TOURNAMENT_GAMES).toContain('tft');
   });
 
   it('даёт человеческую подпись каждой дисциплине', () => {
@@ -17,8 +30,10 @@ describe('TOURNAMENT_GAMES', () => {
     expect(TOURNAMENT_GAME_LABELS.genshin).toBe('Genshin Impact');
   });
 
-  it('содержит подпись ровно для каждой дисциплины из списка', () => {
+  /** Подпись нужна каждой понимаемой, а не каждой предлагаемой: страницу старого турнира
+   * тоже надо чем-то подписать. */
+  it('содержит подпись ровно для каждой понимаемой дисциплины', () => {
     const labelKeys = Object.keys(TOURNAMENT_GAME_LABELS).sort();
-    expect(labelKeys).toEqual([...TOURNAMENT_GAMES].sort());
+    expect(labelKeys).toEqual([...KNOWN_TOURNAMENT_GAMES].sort());
   });
 });

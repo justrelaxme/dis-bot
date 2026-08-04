@@ -82,10 +82,11 @@ const NAV = [
   { href: '/hall', label: 'Зал славы' },
   { href: '/leaderboard/dota2', label: 'Dota 2' },
   { href: '/leaderboard/valorant', label: 'Valorant' },
-  { href: '/leaderboard/lol', label: 'LoL' },
-  { href: '/leaderboard/tft', label: 'TFT' },
   { href: '/leaderboard/genshin', label: 'Genshin' },
 ];
+// LoL и TFT в навигации нет, а маршруты у них остались рабочими нарочно: ссылки на эти
+// лидерборды разошлись по чатам, и 404 на месте живой страницы — худший способ сказать
+// «этой дисциплиной больше не занимаемся».
 
 export interface PageChrome {
   /**

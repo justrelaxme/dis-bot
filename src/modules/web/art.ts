@@ -139,10 +139,11 @@ export const GAME_IDENTITY: Record<TournamentGame, GameIdentity> = {
 export const SERVER_BAND: readonly string[] = [
   dotaHeroArt('pudge'),
   VALORANT_MAPS[0]?.imageUrl ?? '',
-  riotChampionArt('Ahri'),
+  `${GENSHIN_CDN}/UI_AvatarIcon_Hutao.png`,
   dotaHeroArt('invoker'),
   VALORANT_MAPS[2]?.imageUrl ?? '',
-  riotChampionArt('Jinx'),
+  `${GENSHIN_CDN}/UI_AvatarIcon_Furina.png`,
 ].filter(Boolean);
 
-export const SERVER_CREDIT = 'Изображения — Valve и Riot Games, с их публичных CDN';
+export const SERVER_CREDIT =
+  'Изображения — Valve, Riot Games и HoYoverse, с публичных CDN и через Enka.Network';

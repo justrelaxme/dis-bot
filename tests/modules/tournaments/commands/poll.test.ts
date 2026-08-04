@@ -106,7 +106,7 @@ describe('/tournament poll', () => {
     expect(command.defer).toEqual({ ephemeral: false });
   });
 
-  it('превращает отложенный ответ в нативное голосование со всеми дисциплинами и заданной длительностью', async () => {
+  it('превращает отложенный ответ в нативное голосование с играемыми дисциплинами и заданной длительностью', async () => {
     const command = createTournamentPollCommand({ polls: fakePolls() as never });
     const { interaction, editReply } = interactionWith({ hours: 5 });
 
@@ -115,13 +115,7 @@ describe('/tournament poll', () => {
     expect(editReply).toHaveBeenCalledTimes(1);
     const payload = editReply.mock.calls[0]?.[0];
     expect(payload?.poll.question.text).toBe('По какой дисциплине проводим турнир?');
-    expect(payload?.poll.answers.map((a) => a.text)).toEqual([
-      'Dota 2',
-      'League of Legends',
-      'Teamfight Tactics',
-      'Valorant',
-      'Genshin Impact',
-    ]);
+    expect(payload?.poll.answers.map((a) => a.text)).toEqual(['Dota 2', 'Valorant', 'Genshin Impact']);
     expect(payload?.poll.duration).toBe(5);
     expect(payload?.poll.allowMultiselect).toBe(false);
   });
@@ -140,7 +134,7 @@ describe('/tournament poll', () => {
       guildId: '111111111111111111',
       channelId: 'chan-7',
       messageId: 'msg-42',
-      options: ['dota2', 'lol', 'tft', 'valorant', 'genshin'],
+      options: ['dota2', 'valorant', 'genshin'],
       closesAt: new Date('2026-07-28T23:00:00.000Z'),
       createdBy: '222222222222222222',
     });
