@@ -611,21 +611,42 @@ export async function createTournamentRooms(deps: PlayDeps, guild: Guild, tourna
  * убирать за собой так же, как обработчик команды. Пока уборка жила только здесь, турнир,
  * доигранный без подтверждения, оставлял все голосовые комнаты на сервере.
  */
+export interface CleanupReport {
+  /** Сколько комнат было и сколько из них удалось удалить. Разница — это отказы Discord. */
+  rooms: { found: number; removed: number };
+  threads: { found: number; removed: number };
+  messages: number;
+}
+
 export async function closeTournamentRooms(
   deps: Pick<PlayDeps, 'tournaments' | 'channels'> & { messages?: MessagesService },
   guild: Guild,
   tournamentId: number,
   logger: Logger,
-): Promise<void> {
-  const entrants = await deps.tournaments.activeEntrants(tournamentId);
-  for (const entrant of entrants) {
-    if (entrant.voiceChannelId) await deps.channels.deleteChannel(guild, entrant.voiceChannelId);
+  /**
+   * Что делать с ветками матчей. `archive` для доигранного турнира: в переписке остались
+   * договорённости, и она нужна, если кто-то придёт спорить о закрытом результате. `delete`
+   * для отменённого: результата у него нет, спорить не о чем, а архив всё равно остаётся
+   * висеть в списке веток.
+   */
+  threads: 'archive' | 'delete' = 'archive',
+): Promise<CleanupReport> {
+  // Все комнаты турнира, а не комнаты играющих. Вышедший участник свою комнату не забирает,
+  // и пока уборка ходила по активным, каждый снявшийся оставлял её на сервере навсегда.
+  const rooms = await deps.tournaments.tournamentVoiceRooms(tournamentId);
+  let removedRooms = 0;
+  for (const channelId of rooms) {
+    if (await deps.channels.deleteChannel(guild, channelId)) removedRooms += 1;
   }
 
-  // Ветки не удаляем, а архивируем: в них осталась переписка о матче, и она может
-  // понадобиться, если кто-то придёт спорить об уже закрытом результате.
-  for (const threadId of await deps.tournaments.closedThreads(tournamentId)) {
-    await deps.channels.archiveThread(guild, threadId);
+  const threadIds = await deps.tournaments.closedThreads(tournamentId);
+  let removedThreads = 0;
+  for (const threadId of threadIds) {
+    if (threads === 'delete') {
+      if (await deps.channels.deleteThread(guild, threadId)) removedThreads += 1;
+    } else {
+      await deps.channels.archiveThread(guild, threadId);
+    }
   }
 
   // Сор за собой: панель регистрации с живыми кнопками, напоминание, голосование. Пары
@@ -641,7 +662,13 @@ export async function closeTournamentRooms(
     }
   }
 
-  logger.info({ tournamentId, swept }, 'комнаты и сообщения турнира убраны');
+  const report: CleanupReport = {
+    rooms: { found: rooms.length, removed: removedRooms },
+    threads: { found: threadIds.length, removed: threads === 'delete' ? removedThreads : threadIds.length },
+    messages: swept,
+  };
+  logger.info({ tournamentId, ...report, threads }, 'комнаты и сообщения турнира убраны');
+  return report;
 }
 
 async function cleanup(deps: PlayDeps, guild: Guild, tournamentId: number, ctx: ModuleContext): Promise<void> {

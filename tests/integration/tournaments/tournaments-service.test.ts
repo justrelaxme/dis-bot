@@ -630,3 +630,54 @@ describe('брошенный турнир', () => {
     expect(found.map((row) => row.tournament.id)).not.toContain(tournamentId);
   });
 });
+
+/**
+ * Комнаты турнира для уборки. Отдельный запрос от «активных участников», и это как раз то,
+ * из-за чего комнаты оставались на сервере: снявшийся участник свою комнату не забирает, а
+ * уборка ходила по активным и его не видела.
+ */
+describe('комнаты турнира для уборки', () => {
+  it('в список попадают комнаты и снявшихся участников', async () => {
+    const { service, tournamentId, entrantIds } = await startTournament({ registered: 4 });
+    const [first, second] = entrantIds;
+    if (first === undefined || second === undefined) throw new Error('участники не создались');
+
+    await service.attachVoice(first, 'voice-остался');
+    await service.attachVoice(second, 'voice-снялся');
+    // Снятие руками организатора — обычный путь, по которому комната и «терялась».
+    await pg.db.execute(
+      sql`update tournament_entrants set withdrawn_at = now() where id = ${second}`,
+    );
+
+    const rooms = await service.tournamentVoiceRooms(tournamentId);
+
+    expect(rooms).toContain('voice-остался');
+    expect(rooms).toContain('voice-снялся');
+    expect(await service.activeEntrants(tournamentId)).not.toContainEqual(
+      expect.objectContaining({ id: second }),
+    );
+  });
+
+  it('участник без комнаты в список не попадает', async () => {
+    const { service, tournamentId, entrantIds } = await startTournament({ registered: 2 });
+    const [first] = entrantIds;
+    if (first === undefined) throw new Error('участник не создался');
+
+    await service.attachVoice(first, 'voice-один');
+
+    expect(await service.tournamentVoiceRooms(tournamentId)).toEqual(['voice-один']);
+  });
+
+  it('чужие турниры не попадают', async () => {
+    const mine = await startTournament({ registered: 2 });
+    const other = await startTournament({ registered: 2 });
+    const [myFirst] = mine.entrantIds;
+    const [otherFirst] = other.entrantIds;
+    if (myFirst === undefined || otherFirst === undefined) throw new Error('участники не создались');
+
+    await mine.service.attachVoice(myFirst, 'voice-мой');
+    await other.service.attachVoice(otherFirst, 'voice-чужой');
+
+    expect(await mine.service.tournamentVoiceRooms(mine.tournamentId)).toEqual(['voice-мой']);
+  });
+});

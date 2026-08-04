@@ -196,6 +196,9 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
               onStarted: async (guild, tournamentId) => {
                 await createTournamentRooms(play, guild, tournamentId);
               },
+              onCancelled: async (guild, tournamentId) => {
+                await closeTournamentRooms(play, guild, tournamentId, ctx.logger, 'delete');
+              },
             },
             ctx.client,
             ctx.logger,
@@ -288,15 +291,20 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
               continue;
             }
 
-            const entrants = await tournaments.activeEntrants(tournament.id);
-            await tournaments.cancel(tournament.id);
-
             const guild = ctx.client.guilds.cache.get(tournament.guildId);
+            // Уборка до смены состояния и общая со всеми остальными путями: брошенный турнир
+            // оставляет за собой то же самое, что отменённый. Ветки удаляются — результат
+            // так и не был отмечен, спорить о нём не о чем, а архив копился бы вечно.
             if (guild) {
-              for (const entrant of entrants) {
-                if (entrant.voiceChannelId) await channels.deleteChannel(guild, entrant.voiceChannelId);
-              }
+              await closeTournamentRooms(
+                { tournaments, channels, messages },
+                guild,
+                tournament.id,
+                ctx.logger,
+                'delete',
+              );
             }
+            await tournaments.cancel(tournament.id);
 
             ctx.logger.warn(
               { tournamentId: tournament.id, openMatches, hours: ABANDON_AFTER_MS / 3_600_000 },

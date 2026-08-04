@@ -291,7 +291,11 @@ describe('драфт персонажей Genshin', () => {
     expect(new Set(pool.map((option) => option.id)).size).toBe(pool.length);
   });
 
-  it('портрет и мелкая иконка — разные картинки одного персонажа', async () => {
+  /**
+   * Обе картинки — мелкая иконка. Крупный портрет весит 76 КБ против 14, и на сто с лишним
+   * плиток это восемь мегабайт на один экран.
+   */
+  it('картинкой берётся мелкая иконка, а не крупный портрет', async () => {
     const { tournament, match } = await makeMatch({ game: 'genshin', solo: true });
     const { service, cache } = drafts();
 
@@ -299,7 +303,7 @@ describe('драфт персонажей Genshin', () => {
     await cache.close();
 
     const first = (created?.draft.pool ?? []).find((option) => option.label === 'Персонаж 0');
-    expect(first?.imageUrl).toBe('https://enka.network/ui/UI_AvatarIcon_Hero0.png');
+    expect(first?.imageUrl).toBe('https://enka.network/ui/UI_AvatarIcon_Side_Hero0.png');
     expect(first?.iconUrl).toBe('https://enka.network/ui/UI_AvatarIcon_Side_Hero0.png');
   });
 

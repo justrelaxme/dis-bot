@@ -119,6 +119,23 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       .orderBy(asc(tournamentEntrants.id));
   }
 
+  /**
+   * Все комнаты турнира — включая комнаты вышедших участников.
+   *
+   * Отдельно от `activeEntrants` намеренно. Уборка отвечает не на вопрос «кто играет», а на
+   * вопрос «что было создано»: у вышедшего участника голосовой канал остаётся ровно там же,
+   * где был, и `withdrawnAt` его не удаляет. Пока уборка ходила по активным, каждый снявшийся
+   * с турнира оставлял на сервере комнату навсегда — и на отменённом турнире это была уже
+   * половина комнат, потому что снятие как раз и есть обычная причина отмены.
+   */
+  async function tournamentVoiceRooms(tournamentId: number): Promise<string[]> {
+    const rows = await db
+      .select({ voiceChannelId: tournamentEntrants.voiceChannelId })
+      .from(tournamentEntrants)
+      .where(eq(tournamentEntrants.tournamentId, tournamentId));
+    return rows.map((row) => row.voiceChannelId).filter((id): id is string => id !== null);
+  }
+
   /** Участник, за которого играет этот человек, или null. Ограничение БД гарантирует, что он один. */
   async function entrantOfUser(tournamentId: number, userId: string): Promise<EntrantRow | null> {
     const [row] = await db
@@ -414,6 +431,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
 
     byId,
     activeEntrants,
+    tournamentVoiceRooms,
     entrantOfUser,
     membersOf,
 

@@ -1,14 +1,14 @@
-import { PermissionFlagsBits, SlashCommandBuilder, type Guild } from 'discord.js';
+import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type Guild } from 'discord.js';
 import { UserError } from '../../../core/errors.js';
 import type { CommandDefinition, ModuleContext } from '../../../core/module.js';
 import { BRACKET_FORMAT_LABELS, EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
-import { createTournamentRooms } from './play.js';
+import { closeTournamentRooms, createTournamentRooms, type CleanupReport } from './play.js';
 import type { ChannelsGateway } from '../discord/channels.js';
 import { registrationPanel } from '../discord/onboarding.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentFormat, TournamentGame } from '../schema.js';
 import { parseClock, type CycleService } from '../services/cycle.js';
-import type { TournamentEventsGateway } from '../discord/events.js';
+import { explainAnnounceFailure, type TournamentEventsGateway } from '../discord/events.js';
 import type { MessagesService } from '../services/messages.js';
 import { entrantStrengths } from '../services/strength.js';
 import type { TournamentsService } from '../services/tournaments.js';
@@ -184,7 +184,7 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
         return;
       }
       if (subcommand === 'cancel') {
-        await cancel(interaction, guild, deps);
+        await cancel(interaction, guild, deps, ctx);
         return;
       }
       if (subcommand === 'info') {
@@ -258,15 +258,23 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
     components: panel.components,
   });
 
-  // Афиша во вкладке «События»: сама напомнит подписавшимся и покажет отсчёт.
+  // Афиша во вкладке «События»: сама напомнит подписавшимся и покажет отсчёт. О неудаче
+  // организатор узнаёт здесь же — он и есть тот, кто может выдать боту право.
   if (deps.events) {
-    const eventId = await deps.events.announce(
+    const billboard = await deps.events.announce(
       guild,
       tournament,
       closesAt,
       `${deps.publicBaseUrl}/t/${tournament.id}`,
     );
-    if (eventId) await deps.tournaments.attachScheduledEvent(tournament.id, eventId);
+    if (billboard.ok) {
+      await deps.tournaments.attachScheduledEvent(tournament.id, billboard.eventId);
+    } else {
+      await interaction.followUp({
+        content: explainAnnounceFailure(billboard.reason),
+        flags: MessageFlags.Ephemeral,
+      });
+    }
   }
 
   // Панель с живыми кнопками — сор, и самый вредный: по ней нажимают через сутки. Запись
@@ -358,22 +366,56 @@ async function start(interaction: Interaction, guild: Guild, deps: ManageDeps, c
   });
 }
 
-async function cancel(interaction: Interaction, guild: Guild, deps: ManageDeps): Promise<void> {
+/**
+ * Отмена турнира. Уборка здесь ровно та же, что и после доигранного, и это не совпадение:
+ * отменённый турнир оставляет за собой то же самое — комнаты, ветки, панель с живыми
+ * кнопками. Пока отмена чистила только голосовые каналы играющих, всё остальное оставалось
+ * на сервере: ветки матчей, панель регистрации, напоминания, а с ними и комнаты вышедших.
+ *
+ * Ветки при отмене удаляются, а не архивируются: результата у турнира нет, спорить не о чем,
+ * а архив продолжает висеть в списке.
+ */
+async function cancel(
+  interaction: Interaction,
+  guild: Guild,
+  deps: ManageDeps,
+  ctx: ModuleContext,
+): Promise<void> {
   const tournament = await deps.tournaments.current(guild.id);
   if (!tournament) throw new UserError('Сейчас нет турнира, который можно отменить.');
 
-  const entrants = await deps.tournaments.activeEntrants(tournament.id);
   // Афишу снимаем до отмены: после неё турнир уже не найти по «текущему».
   if (deps.events && tournament.scheduledEventId) {
     await deps.events.cancel(guild, tournament.scheduledEventId);
   }
+
+  // Уборка идёт до смены состояния: она читает участников турнира, и делать это надо, пока
+  // турнир ещё считается текущим — иначе порядок начинает иметь значение молча.
+  const report = await closeTournamentRooms(deps, guild, tournament.id, ctx.logger, 'delete');
   await deps.tournaments.cancel(tournament.id);
 
-  for (const entrant of entrants) {
-    if (entrant.voiceChannelId) await deps.channels.deleteChannel(guild, entrant.voiceChannelId);
-  }
+  await interaction.editReply({ content: `Турнир «${tournament.name}» отменён. ${describeCleanup(report)}` });
+}
 
-  await interaction.editReply({ content: `Турнир «${tournament.name}» отменён, комнаты убраны.` });
+/**
+ * Отчёт об уборке словами. Раньше здесь стояло «комнаты убраны» независимо от того, убралось
+ * ли что-нибудь: боту не хватало права «Управление каналами», а организатор видел бодрый
+ * отчёт и комнаты на своих местах. Врать про сделанное хуже, чем признаться в отказе.
+ */
+function describeCleanup(report: CleanupReport): string {
+  const parts: string[] = [];
+  if (report.rooms.found > 0) parts.push(`комнат убрано ${report.rooms.removed} из ${report.rooms.found}`);
+  if (report.threads.found > 0) parts.push(`веток ${report.threads.removed} из ${report.threads.found}`);
+  if (report.messages > 0) parts.push(`сообщений ${report.messages}`);
+  if (parts.length === 0) return 'Убирать было нечего: ни комнат, ни веток он не успел завести.';
+
+  const failed =
+    report.rooms.found - report.rooms.removed + (report.threads.found - report.threads.removed);
+  const tail =
+    failed > 0
+      ? ' Остальное Discord удалить не дал — чаще всего это отсутствующее право «Управление каналами».'
+      : '';
+  return `Убрано: ${parts.join(', ')}.${tail}`;
 }
 
 /**

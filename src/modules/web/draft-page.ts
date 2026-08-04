@@ -102,20 +102,27 @@ export const DRAFT_STYLE = `
 /* ── Плитка ─────────────────────────────────────────────────────────────────────────────
    Картинка честного цвета: по ней принимают решение, а обесцвеченная карта не узнаётся.
    Обесцвечивание здесь означает ровно одно — этот вариант выбыл. */
-.board { display:grid; gap:.5rem; }
+/* Размер плитки и пропорция картинки заданы здесь **по умолчанию**, а не только у каждого
+   набора по отдельности. Это не аккуратность, а предохранитель: пока правило было лишь
+   персональным, новый набор оставался вообще без сетки и без пропорции — то есть одна плитка
+   на всю ширину, а картинка в свой натуральный размер. Именно так и вышли гигантские портреты
+   персонажей Genshin. Теперь набор без своего правила выглядит просто как остальные. */
+.board { display:grid; gap:.5rem; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); }
 .phase[data-group="maps"] .board { grid-template-columns:repeat(auto-fill,minmax(148px,1fr)); }
 .phase[data-group="agents"] .board { grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); }
-.phase[data-group="heroes"] .board { grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); }
+/* Персонажей больше сотни, и плитка им нужна мельче: иначе полотно уезжает на три экрана. */
+.phase[data-group="characters"] .board { grid-template-columns:repeat(auto-fill,minmax(82px,1fr)); }
 
 .tile { position:relative; display:block; width:100%; padding:0; text-align:left; overflow:hidden;
   background:var(--sheet); border:1px solid var(--rule); clip-path:var(--panel); color:inherit;
   font:inherit; cursor:default;
   animation:enter .3s var(--ease) both; animation-delay:var(--delay,0ms);
   transition:border-color .2s, transform .2s, opacity .35s, box-shadow .25s; }
-.tile .art { position:relative; display:block; overflow:hidden; background:var(--sheet-2); }
-.phase[data-group="maps"] .tile .art { aspect-ratio:16/9; }
+.tile .art { position:relative; display:block; overflow:hidden; background:var(--sheet-2);
+  aspect-ratio:16/9; }
 .phase[data-group="agents"] .tile .art { aspect-ratio:2/1; }
-.phase[data-group="heroes"] .tile .art { aspect-ratio:16/9; }
+/* Иконки персонажей Genshin квадратные — 256×256 у портрета и 128×128 у мелкой. */
+.phase[data-group="characters"] .tile .art { aspect-ratio:1/1; }
 .tile .art img { display:block; width:100%; height:100%; object-fit:cover;
   transition:filter .4s, transform .4s var(--ease), opacity .3s; }
 /* Схема карты открывается по наведению. Это не украшение: по планировке карту и выбирают. */

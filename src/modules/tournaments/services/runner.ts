@@ -29,6 +29,13 @@ export interface RunnerDeps {
   events?: TournamentEventsGateway;
   /** Создание комнат: голосовые командам и ветки матчам. */
   onStarted(guild: Guild, tournamentId: number): Promise<void>;
+  /**
+   * Уборка за отменённым турниром. Отдельным колбэком, как и создание комнат: цикл не знает
+   * ни про Discord-каналы, ни про сообщения, и знать не должен.
+   *
+   * Необязателен только потому, что необязателен и весь остальной Discord в тестах цикла.
+   */
+  onCancelled?(guild: Guild, tournamentId: number): Promise<void>;
 }
 
 const POLL_QUESTION = 'По какой дисциплине проводим турнир сегодня?';
@@ -250,13 +257,19 @@ async function runGuild(
     // Афиша во вкладке «События»: она сама напомнит подписавшимся и покажет отсчёт. Ставится
     // вместе с открытием регистрации — именно до старта её и надо видеть.
     if (deps.events) {
-      const eventId = await deps.events.announce(
+      const billboard = await deps.events.announce(
         guild,
         tournament,
         startsAt,
         `${deps.publicBaseUrl}/t/${tournament.id}`,
       );
-      if (eventId) await deps.tournaments.attachScheduledEvent(tournament.id, eventId);
+      if (billboard.ok) {
+        await deps.tournaments.attachScheduledEvent(tournament.id, billboard.eventId);
+      } else {
+        // Автомат работает без человека, поэтому сказать некому — но в логе причина нужна:
+        // «афиш нет уже неделю» иначе не отследить вообще ничем.
+        logger.warn({ tournamentId: tournament.id, reason: billboard.reason }, 'афиши турнира не будет');
+      }
     }
 
     const channel = await announceChannel(client, schedule);
@@ -313,6 +326,10 @@ async function runGuild(
       if (deps.events && doomed.scheduledEventId) {
         await deps.events.cancel(guild, doomed.scheduledEventId);
       }
+      // Комнат тут ещё нет — их заводит жеребьёвка, — но панель регистрации с живыми
+      // кнопками есть, и она остаётся висеть до следующего дня, приглашая записаться в
+      // турнир, которого уже нет.
+      await deps.onCancelled?.(guild, cycle.tournamentId);
       await deps.tournaments.cancel(cycle.tournamentId);
       await deps.cycles.skipDay(cycle.id, `отметилось ${ready.length}`);
       const empty = await deps.cycles.bumpEmptyDays(schedule.guildId, true);

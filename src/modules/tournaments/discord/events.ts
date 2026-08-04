@@ -27,8 +27,24 @@ import type { TournamentRow } from '../schema.js';
 /** Сколько длится событие. Discord требует конец у внешнего события, а турнир идёт вечер. */
 const EVENT_HOURS = 4;
 
-function canManage(guild: Guild): boolean {
-  return guild.members.me?.permissions.has(PermissionFlagsBits.ManageEvents) ?? false;
+/**
+ * Есть ли у бота право заводить события.
+ *
+ * Берётся `fetchMe()`, а не `guild.members.me`. Разница не косметическая: `members.me` — это
+ * кэш, и он пуст, пока участник-бот в него не попал. Ни одно из событий, на которые подписан
+ * бот, его туда не кладёт само, поэтому право «Управление событиями» могло быть выдано, а
+ * проверка всё равно отвечала «нет» — и афиши не появлялось ни у кого, молча. `fetchMe`
+ * спрашивает Discord и запоминает ответ.
+ */
+async function canManage(guild: Guild): Promise<boolean> {
+  try {
+    const me = await guild.members.fetchMe();
+    return me.permissions.has(PermissionFlagsBits.ManageEvents);
+  } catch {
+    // Не удалось спросить — считаем, что права нет: лучше не обещать афишу, чем обещать и
+    // не сделать.
+    return false;
+  }
 }
 
 function describe(tournament: TournamentRow, bracketUrl: string): string {
@@ -49,14 +65,26 @@ function describe(tournament: TournamentRow, bracketUrl: string): string {
   ].join('\n');
 }
 
+/**
+ * Что вышло с афишей. Раньше здесь был просто `null`, и это оказалось мало: организатор,
+ * у которого бот молча не завёл событие, видит ровно то же самое, что и организатор, у
+ * которого всё получилось. Он идёт спрашивать, почему не работает, — и правильно идёт.
+ *
+ * Причина нужна ему, чтобы понять, чинить ли ему что-то самому: «нет права» он поправит за
+ * десять секунд, а «Discord не ответил» ждёт сам.
+ */
+export type AnnounceResult =
+  | { ok: true; eventId: string }
+  | { ok: false; reason: 'no-permission' | 'failed' };
+
 export interface TournamentEventsGateway {
-  /** Создаёт афишу и возвращает её идентификатор. `null` — не получилось, и это не ошибка. */
+  /** Создаёт афишу. Неудача — не ошибка турнира, но и не молчание: причина уходит наверх. */
   announce(
     guild: Guild,
     tournament: TournamentRow,
     startsAt: Date,
     bracketUrl: string,
-  ): Promise<string | null>;
+  ): Promise<AnnounceResult>;
   /** Переводит афишу в «идёт». */
   begin(guild: Guild, eventId: string): Promise<void>;
   /** Закрывает афишу и дописывает победителя. */
@@ -77,10 +105,10 @@ export function createTournamentEventsGateway(logger: Logger): TournamentEventsG
   }
 
   return {
-    async announce(guild, tournament, startsAt, bracketUrl): Promise<string | null> {
-      if (!canManage(guild)) {
+    async announce(guild, tournament, startsAt, bracketUrl): Promise<AnnounceResult> {
+      if (!(await canManage(guild))) {
         logger.info({ guildId: guild.id }, 'афиши турнира не будет: нет права «Управление событиями»');
-        return null;
+        return { ok: false, reason: 'no-permission' };
       }
 
       // Начало не раньше, чем через минуту: Discord отклоняет событие в прошлом, а
@@ -101,7 +129,7 @@ export function createTournamentEventsGateway(logger: Logger): TournamentEventsG
         }),
       );
 
-      return event?.id ?? null;
+      return event ? { ok: true, eventId: event.id } : { ok: false, reason: 'failed' };
     },
 
     async begin(guild, eventId): Promise<void> {
@@ -147,4 +175,11 @@ export function createTournamentEventsGateway(logger: Logger): TournamentEventsG
       });
     },
   };
+}
+
+/** Что сказать организатору про неудавшуюся афишу. Одна строка, и с ней понятно, что делать. */
+export function explainAnnounceFailure(reason: 'no-permission' | 'failed'): string {
+  return reason === 'no-permission'
+    ? 'Афиши во вкладке «События» не будет: у бота нет права «Управление событиями». Выдай его в настройках роли — турнир от этого не зависит, но напоминания подписавшимся приходят только от события.'
+    : 'Афишу во вкладке «События» создать не удалось — Discord отказал. Турнир это не затрагивает, попробовать можно следующим.';
 }

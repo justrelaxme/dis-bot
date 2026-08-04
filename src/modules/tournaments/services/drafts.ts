@@ -221,7 +221,11 @@ export function createDraftsService(deps: {
           id,
           label,
           group: 'characters' as const,
-          imageUrl: `${GENSHIN_IMAGE_BASE}/${icon.replace('_Side_', '_')}.png`,
+          // Обе картинки — мелкая иконка, 128×128 и 14 КБ. Крупный портрет весит 76 КБ, и
+          // на сто одиннадцать плиток это восемь мегабайт на один экран — ровно та же
+          // причина, по которой у агентов Valorant взят портрет из килл-фида. Лицо на
+          // мелкой иконке то же, а в самой игре ей и подписан отряд.
+          imageUrl: `${GENSHIN_IMAGE_BASE}/${icon}.png`,
           iconUrl: `${GENSHIN_IMAGE_BASE}/${icon}.png`,
         });
       }

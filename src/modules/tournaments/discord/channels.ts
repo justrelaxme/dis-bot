@@ -43,7 +43,19 @@ export interface ChannelsGateway {
     memberIds: string[];
   }): Promise<string | null>;
   archiveThread(guild: Guild, threadId: string): Promise<void>;
-  deleteChannel(guild: Guild, channelId: string): Promise<void>;
+  /**
+   * Удаляет ветку матча насовсем. Нужно отмене: у отменённого турнира нет результата, а
+   * значит нет и спора, ради которого переписку хранили. Оставленная архивная ветка при
+   * этом не исчезает из списка — она просто уезжает в «Архив», и через месяц ежедневных
+   * отмен там лежит месяц мусора.
+   */
+  deleteThread(guild: Guild, threadId: string): Promise<boolean>;
+  /**
+   * Удаляет канал. Отвечает, получилось ли, и это не придирка: уборка сообщала «комнаты
+   * убраны» независимо от того, убрала ли хоть одну. Когда боту не хватало права
+   * «Управление каналами», организатор видел бодрый отчёт и комнаты на своих местах.
+   */
+  deleteChannel(guild: Guild, channelId: string): Promise<boolean>;
   deleteMessage(guild: Guild, channelId: string, messageId: string): Promise<void>;
   /**
    * Открывает или закрывает человеку доступ в комнату команды. Нужно заменам: состав
@@ -184,13 +196,27 @@ export function createChannelsGateway(logger: Logger): ChannelsGateway {
       }
     },
 
-    async deleteChannel(guild, channelId): Promise<void> {
+    async deleteThread(guild, threadId): Promise<boolean> {
+      try {
+        const thread = await guild.channels.fetch(threadId);
+        // Уже удалена руками — для уборки это успех: ветки нет, а больше ничего и не нужно.
+        if (thread?.isThread()) await thread.delete('Турнир отменён: уборка веток');
+        return true;
+      } catch (error) {
+        logger.warn({ err: error, threadId }, 'не удалось удалить ветку матча');
+        return false;
+      }
+    },
+
+    async deleteChannel(guild, channelId): Promise<boolean> {
       try {
         const channel = await guild.channels.fetch(channelId);
-        // Уже удалён руками — это не ошибка уборки.
+        // Уже удалён руками — это не ошибка уборки: канала нет, цель достигнута.
         if (channel) await channel.delete('Турнир завершён: уборка комнат');
+        return true;
       } catch (error) {
         logger.warn({ err: error, channelId }, 'не удалось удалить канал турнира');
+        return false;
       }
     },
   };
