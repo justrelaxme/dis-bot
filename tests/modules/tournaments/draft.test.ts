@@ -113,11 +113,19 @@ describe('последовательность драфта героев', () =>
 });
 
 describe('какие дисциплины драфтятся', () => {
-  it('Dota — герои, Valorant — карты, Genshin — персонажи, остальным не нужно', () => {
+  it('у каждой дисциплины свой набор', () => {
     expect(draftSubject('dota2')).toBe('heroes');
     expect(draftSubject('valorant')).toBe('maps');
     expect(draftSubject('genshin')).toBe('characters');
-    expect(draftSubject('lol')).toBeNull();
+    expect(draftSubject('lol')).toBe('champions');
+  });
+
+  /**
+   * TFT без драфта — решение, а не пропуск. Соперников в лобби восемь, играют одновременно, а
+   * чемпионы приходят из общего магазина случайными: забрать чемпиона у соперника заранее
+   * нельзя, потому что он и себе его не гарантирует. Полотно с плитками здесь было бы обманом.
+   */
+  it('TFT остаётся без драфта: делить в нём нечего', () => {
     expect(draftSubject('tft')).toBeNull();
   });
 });

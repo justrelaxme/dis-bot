@@ -110,8 +110,10 @@ export const DRAFT_STYLE = `
 .board { display:grid; gap:.5rem; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); }
 .phase[data-group="maps"] .board { grid-template-columns:repeat(auto-fill,minmax(148px,1fr)); }
 .phase[data-group="agents"] .board { grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); }
-/* Персонажей больше сотни, и плитка им нужна мельче: иначе полотно уезжает на три экрана. */
+/* Персонажей больше сотни, а чемпионов больше двух сотен: плитка им нужна мельче, иначе
+   полотно уезжает на три экрана. */
 .phase[data-group="characters"] .board { grid-template-columns:repeat(auto-fill,minmax(82px,1fr)); }
+.phase[data-group="champions"] .board { grid-template-columns:repeat(auto-fill,minmax(78px,1fr)); }
 
 .tile { position:relative; display:block; width:100%; padding:0; text-align:left; overflow:hidden;
   background:var(--sheet); border:1px solid var(--rule); clip-path:var(--panel); color:inherit;
@@ -121,8 +123,9 @@ export const DRAFT_STYLE = `
 .tile .art { position:relative; display:block; overflow:hidden; background:var(--sheet-2);
   aspect-ratio:16/9; }
 .phase[data-group="agents"] .tile .art { aspect-ratio:2/1; }
-/* Иконки персонажей Genshin квадратные — 256×256 у портрета и 128×128 у мелкой. */
-.phase[data-group="characters"] .tile .art { aspect-ratio:1/1; }
+/* Иконки персонажей Genshin и чемпионов LoL квадратные — 128×128 обе. */
+.phase[data-group="characters"] .tile .art,
+.phase[data-group="champions"] .tile .art { aspect-ratio:1/1; }
 .tile .art img { display:block; width:100%; height:100%; object-fit:cover;
   transition:filter .4s, transform .4s var(--ease), opacity .3s; }
 /* Схема карты открывается по наведению. Это не украшение: по планировке карту и выбирают. */
@@ -249,6 +252,8 @@ const PHASE_LEAD: Record<DraftGroup, string> = {
     'Сначала баны, потом пики. Забаненного не берёт никто, но взятого соперником взять можно: его пик виден, и под него подбирают ответ.',
   characters:
     'Восемь пиков на этаж: четыре на первую половину, четыре на вторую. Забаненного не берёт никто, а взятого соперником взять можно — свой аккаунт от чужого выбора не меняется.',
+  champions:
+    'Сначала баны, потом пики змейкой. Забаненного не берёт никто, а взятого соперником взять можно — под чужой пик и берут контрпик. В клиенте так не выйдет: в режиме отбора чемпион уникален на две команды, поэтому играть этот драфт надо в слепом выборе или в лобби.',
 };
 
 export function draftShell(state: DraftShellState): string {

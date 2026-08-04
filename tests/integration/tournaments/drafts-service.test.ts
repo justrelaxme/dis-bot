@@ -61,6 +61,27 @@ const genshinRoster: Record<string, Record<string, unknown>> = {
   '10000098': { NameTextMapHash: 802 },
 };
 
+/**
+ * Data Dragon в миниатюре. Форма та же, включая то, ради чего справочник тянется двумя
+ * запросами: путь к картинкам прибит к версии патча, и версию сначала надо узнать.
+ */
+const ddragonVersions = ['16.15.1', '16.14.1'];
+const ddragonChampions = {
+  data: Object.fromEntries(
+    Array.from({ length: 30 }, (_, index) => [
+      `Champ${index}`,
+      { id: `Champ${index}`, name: `Чемпион ${String(index).padStart(2, '0')}` },
+    ]),
+  ),
+};
+
+function ddragonClient(): FetchClient {
+  return {
+    json: async <T>(url: string): Promise<T> =>
+      (url.includes('versions.json') ? ddragonVersions : ddragonChampions) as T,
+  };
+}
+
 const genshinLocales = {
   ru: {
     ...Object.fromEntries(Array.from({ length: 20 }, (_, index) => [String(900 + index), `Персонаж ${index}`])),
@@ -86,7 +107,7 @@ const heroes = Array.from({ length: 30 }, (_, index) => ({
 }));
 
 async function makeMatch(options: {
-  game: 'dota2' | 'valorant' | 'genshin';
+  game: 'dota2' | 'valorant' | 'genshin' | 'lol';
   solo: boolean;
   abilities?: boolean;
   /** UID Genshin, привязанный и подтверждённый у участника этой стороны. */
@@ -164,6 +185,7 @@ function drafts(options?: { chronicle?: Parameters<typeof createDraftsService>[0
       dotaClient: catalogClient(heroes),
       valorantClient: catalogClient(agents),
       enkaClient: enkaCatalogClient(genshinRoster, genshinLocales),
+      riotClient: ddragonClient(),
       ...(options?.chronicle ? { chronicle: options.chronicle, genshinUidOf } : {}),
     }),
     cache,
@@ -187,6 +209,47 @@ function chronicleWith(byUid: Record<string, string[]>): Parameters<typeof creat
  * Пометки «есть на аккаунте». Смысл в том, чтобы бан не уходил в пустоту: банить персонажа,
  * которого у соперника и не было, — потраченный ход, и видеть это надо до хода.
  */
+describe('драфт чемпионов LoL', () => {
+  it('пиков по числу игроков в команде, банов два на сторону', async () => {
+    const { tournament, match } = await makeMatch({ game: 'lol', solo: false });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const steps = created?.draft.sequence ?? [];
+    expect(created?.draft.subject).toBe('champions');
+    expect(steps.every((step) => step.group === 'champions')).toBe(true);
+    expect(steps.filter((step) => step.kind === 'ban')).toHaveLength(4);
+    expect(steps.filter((step) => step.kind === 'pick' && step.side === 'a')).toHaveLength(5);
+  });
+
+  /** Путь к картинке прибит к версии патча — поэтому её и спрашивают, а не хардкодят. */
+  it('картинки берутся из текущей версии Data Dragon', async () => {
+    const { tournament, match } = await makeMatch({ game: 'lol', solo: false });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const first = (created?.draft.pool ?? [])[0];
+    expect(first?.imageUrl).toContain('/cdn/16.15.1/img/champion/');
+    expect(first?.imageUrl).toBe(first?.iconUrl);
+  });
+
+  it('имена идут по алфавиту', async () => {
+    const { tournament, match } = await makeMatch({ game: 'lol', solo: false });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const labels = (created?.draft.pool ?? []).map((option) => option.label);
+    expect(labels).toHaveLength(30);
+    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b, 'ru')));
+  });
+});
+
 describe('состав аккаунта в пуле драфта', () => {
   it('помечает, у кого какой персонаж есть', async () => {
     const { tournament, match } = await makeMatch({

@@ -29,7 +29,7 @@ export type DraftSide = 'a' | 'b';
  * восстанавливается из `subject` строки драфта. Так прошлые записи остаются читаемыми — а
  * они и есть то, ради чего драфт заводился.
  */
-export type DraftGroup = 'maps' | 'heroes' | 'agents' | 'characters';
+export type DraftGroup = 'maps' | 'heroes' | 'agents' | 'characters' | 'champions';
 
 export interface DraftStep {
   side: DraftSide;
@@ -275,19 +275,36 @@ export function poolFits(poolSize: number, steps: readonly DraftStep[], group: D
  * Для Valorant это первая фаза: карты. Агенты идут после них, и в последовательности они
  * помечены своим набором.
  */
-export function draftSubject(game: TournamentGame): 'heroes' | 'maps' | 'characters' | null {
+export function draftSubject(
+  game: TournamentGame,
+): 'heroes' | 'maps' | 'characters' | 'champions' | null {
   if (game === 'dota2') return 'heroes';
   if (game === 'valorant') return 'maps';
   if (game === 'genshin') return 'characters';
-  // LoL и TFT: у LoL свой драфт в клиенте и он обязателен, у TFT соперников восемь и
-  // делить нечего. Обещать драфт там, где он не нужен, — лишняя кнопка.
+  if (game === 'lol') return 'champions';
+  /**
+   * TFT остаётся без драфта, и это не недоделка.
+   *
+   * Делить там нечего в буквальном смысле: соперников в лобби восемь, играют все против всех
+   * одновременно, и чемпионы приходят из общего магазина случайными — забрать чемпиона у
+   * соперника заранее невозможно, потому что он и себе-то не может его гарантировать.
+   * Усиления выпадают в игре и до неё не существуют. Маленьких легенд банить бессмысленно:
+   * они косметические и на игру не влияют.
+   *
+   * Прикрутить сюда полотно с плитками было бы легко и было бы обманом: капитаны потратили
+   * бы время на выбор, который в игре ничего не значит.
+   */
   return null;
 }
 
-export const SUBJECT_LABELS: Record<'heroes' | 'maps' | 'characters', { one: string; many: string }> = {
+export const SUBJECT_LABELS: Record<
+  'heroes' | 'maps' | 'characters' | 'champions',
+  { one: string; many: string }
+> = {
   heroes: { one: 'герой', many: 'герои' },
   maps: { one: 'карта', many: 'карты' },
   characters: { one: 'персонаж', many: 'персонажи' },
+  champions: { one: 'чемпион', many: 'чемпионы' },
 };
 
 /** Как называть набор на странице. Родительный падеж — он нужен в «бан карты», «пик героя». */
@@ -296,4 +313,5 @@ export const GROUP_LABELS: Record<DraftGroup, { many: string; one: string; of: s
   heroes: { many: 'Герои', one: 'герой', of: 'героя' },
   agents: { many: 'Агенты', one: 'агент', of: 'агента' },
   characters: { many: 'Персонажи', one: 'персонаж', of: 'персонажа' },
+  champions: { many: 'Чемпионы', one: 'чемпион', of: 'чемпиона' },
 };

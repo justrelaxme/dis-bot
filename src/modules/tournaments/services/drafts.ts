@@ -61,6 +61,14 @@ const ENKA_CHARACTERS_URL =
   'https://raw.githubusercontent.com/EnkaNetwork/API-docs/master/store/characters.json';
 const ENKA_LOC_URL = 'https://raw.githubusercontent.com/EnkaNetwork/API-docs/master/store/loc.json';
 const CHARACTER_CACHE_KEY = 'genshin:characters';
+
+/**
+ * Справочник чемпионов League of Legends — Data Dragon, официальная выгрузка Riot. Двумя
+ * запросами: пути в ней прибиты к версии патча, и версию сначала надо узнать. Захардкоженная
+ * версия устарела бы через две недели и утащила бы за собой все картинки.
+ */
+const DDRAGON_VERSIONS = 'https://ddragon.leagueoflegends.com/api/versions.json';
+const CHAMPION_CACHE_KEY = 'lol:champions';
 /**
  * Картинки персонажей раздаёт та же Enka: у HoYoverse публичного CDN с портретами нет.
  * Ссылка стоит здесь, а не берётся из витрины, потому что зависимость обратная — витрина
@@ -79,6 +87,10 @@ interface ValorantAgent {
   displayName: string;
   killfeedPortrait: string | null;
   displayIcon: string | null;
+}
+
+interface DataDragonChampions {
+  data: Record<string, { id: string; name: string }>;
 }
 
 interface EnkaCharacter {
@@ -109,6 +121,8 @@ export function createDraftsService(deps: {
   valorantClient?: FetchClient;
   /** Клиент Enka.Network: нужен только для справочника персонажей Genshin. */
   enkaClient?: FetchClient;
+  /** Клиент Data Dragon: нужен только для справочника чемпионов LoL. Ключа Riot не требует. */
+  riotClient?: FetchClient;
   /**
    * Состав аккаунта Genshin из Летописи HoYoLAB. Необязательна: без неё драфт идёт без
    * пометок «есть на аккаунте», и это ровно то, что было до её появления.
@@ -275,6 +289,36 @@ export function createDraftsService(deps: {
     }
   }
 
+  /**
+   * Список чемпионов League of Legends: больше двух сотен, по-русски, с квадратными иконками.
+   *
+   * Иконка 128×128 и 27 КБ — та же, что игра рисует в отборе чемпионов, поэтому лицо
+   * узнаваемое. Крупный портрет загрузки весит вдвое больше, а на две сотни плиток разница
+   * складывается в лишние шесть мегабайт.
+   */
+  async function lolChampions(): Promise<DraftOption[] | null> {
+    return catalog(deps.riotClient, CHAMPION_CACHE_KEY, 'справочник чемпионов LoL', async (client) => {
+      const versions = await client.json<string[]>(DDRAGON_VERSIONS);
+      const version = versions[0];
+      if (!version) return [];
+
+      const body = await client.json<DataDragonChampions>(
+        `https://ddragon.leagueoflegends.com/cdn/${version}/data/ru_RU/champion.json`,
+      );
+      const art = `https://ddragon.leagueoflegends.com/cdn/${version}/img/champion`;
+
+      return Object.values(body.data)
+        .map((champion) => ({
+          id: champion.id,
+          label: champion.name,
+          group: 'champions' as const,
+          imageUrl: `${art}/${champion.id}.png`,
+          iconUrl: `${art}/${champion.id}.png`,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+    });
+  }
+
   async function choicesOf(draftId: number): Promise<DraftChoiceRow[]> {
     return db
       .select()
@@ -354,7 +398,12 @@ export function createDraftsService(deps: {
           sequence.push(...agentSteps);
         }
       } else {
-        const options = subject === 'characters' ? await genshinCharacters() : await dotaHeroes();
+        const options =
+          subject === 'characters'
+            ? await genshinCharacters()
+            : subject === 'champions'
+              ? await lolChampions()
+              : await dotaHeroes();
         if (!options) return null;
         const steps = pickBanSequence(subject, picksPerSide, bansPerSide);
         if (!poolFits(options.length, steps, subject)) return null;

@@ -122,6 +122,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
           dotaClient: deps.fetchClientFor('opendota'),
           valorantClient: deps.fetchClientFor('valorant-api'),
           enkaClient: deps.fetchClientFor('enka'),
+          riotClient: deps.fetchClientFor('ddragon'),
         }
       : {}),
     // Летопись читается отдельным клиентом: у неё свой предохранитель, и её отказ не должен

@@ -436,7 +436,7 @@ export const matchDrafts = pgTable(
      * Первая фаза драфта, она же набор по умолчанию для шагов без пометки. У Valorant после
      * карт идут агенты, и их шаги помечены своим набором в самой последовательности.
      */
-    subject: text('subject').$type<'heroes' | 'maps' | 'characters'>().notNull(),
+    subject: text('subject').$type<'heroes' | 'maps' | 'characters' | 'champions'>().notNull(),
     /** Снимок пула на момент создания: патч не должен переписывать прошлое. */
     pool: jsonb('pool')
       .$type<
