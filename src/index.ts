@@ -7,6 +7,7 @@ import { createRouter } from './core/commands/router.js';
 import { loadConfig } from './core/config.js';
 import { createCooldown } from './core/cooldown.js';
 import { createDatabase } from './core/db/client.js';
+import { explainStartupFailure, migrateWithRetry } from './core/db/startup.js';
 import { EventBus } from './core/events/bus.js';
 import { createFetchClient, type FetchClient } from './core/http/fetch-client.js';
 import { createHttpServer } from './core/http/server.js';
@@ -108,20 +109,41 @@ const { db, close: closeDatabase } = createDatabase(config, logger);
  * здесь ничего не делает: drizzle применяет только то, чего ещё нет в своей таблице.
  */
 if (config.MIGRATE_ON_START) {
-  try {
-    await migrate(db, { migrationsFolder: config.MIGRATIONS_DIR });
-    logger.info('миграции применены');
-  } catch (error) {
-    // Стартовать после неудачной миграции нельзя: бот будет падать на каждом запросе к
+  // Недоступную базу переспрашиваем, а не падаем сразу: база, засыпающая при простое, на
+  // первом соединении отвечает не мгновенно, и уйти из-за этого в перезапуск — потерять
+  // минуты на ровном месте. Что переспрашивать, а что нет, решает db/startup.ts.
+  const result = await migrateWithRetry(() => migrate(db, { migrationsFolder: config.MIGRATIONS_DIR }), {
+    onRetry: ({ attempt, attempts, waitMs }) => {
+      logger.warn(
+        { attempt, attempts, waitMs, ...describeDatabaseTarget(config.DATABASE_URL) },
+        'база не ответила — пробуем ещё раз',
+      );
+    },
+  });
+
+  if (result.ok) {
+    logger.info(
+      result.attemptsUsed > 1 ? { attempts: result.attemptsUsed } : {},
+      'миграции применены',
+    );
+  } else {
+    // Стартовать без применённых миграций нельзя: бот будет падать на каждом запросе к
     // изменённой таблице, и разбирать придётся уже по этим падениям, а не по одной строке.
     //
-    // К ошибке добавляем адрес базы без пароля и подсказку про localhost. Стек drizzle
-    // сообщает «ECONNREFUSED», но не говорит куда, а самая частая причина в контейнере
-    // одна и та же: в переменные уехала строка для локальной разработки, где база на
-    // localhost. Внутри контейнера localhost — это сам контейнер, и там базы нет.
+    // Сообщение называет тот отказ, который случился. Раньше здесь всегда стояло «миграции
+    // не применились», и при недоступной базе это отправляло искать поломку в миграциях —
+    // хотя до них дело не доходило вовсе. Адрес базы без пароля прилагается: стек сообщает
+    // «ECONNREFUSED», но не говорит куда, а самая частая причина в контейнере одна и та же —
+    // в переменные уехала строка для локальной разработки, где база на localhost. Внутри
+    // контейнера localhost это сам контейнер, и базы там нет.
     logger.fatal(
-      { err: error, ...describeDatabaseTarget(config.DATABASE_URL) },
-      'миграции не применились — бот не стартует',
+      {
+        err: result.error,
+        failure: result.failure,
+        attempts: result.attemptsUsed,
+        ...describeDatabaseTarget(config.DATABASE_URL),
+      },
+      explainStartupFailure(result.failure ?? 'migration'),
     );
     await closeDatabase();
     process.exit(1);
