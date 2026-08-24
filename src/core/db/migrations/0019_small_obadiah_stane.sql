@@ -1,0 +1,23 @@
+CREATE TABLE "tournament_formats" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"guild_id" text NOT NULL,
+	"name" text NOT NULL,
+	"game" text,
+	"entry_mode" text NOT NULL,
+	"team_size" integer NOT NULL,
+	"max_entrants" integer NOT NULL,
+	"format" text NOT NULL,
+	"best_of" integer NOT NULL,
+	"seeding" text DEFAULT 'rank' NOT NULL,
+	"abilities" boolean DEFAULT true NOT NULL,
+	"auto_teams" boolean DEFAULT false NOT NULL,
+	"require_verified" boolean DEFAULT true NOT NULL,
+	"registration_hours" integer DEFAULT 2 NOT NULL,
+	"note" text,
+	"created_by" text NOT NULL,
+	"used_count" integer DEFAULT 0 NOT NULL,
+	"last_used_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "tournament_formats_guild_name_uq" UNIQUE("guild_id","name")
+);

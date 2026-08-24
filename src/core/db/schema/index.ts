@@ -6,3 +6,4 @@ export * from '../../../modules/identity/schema.js';
 export * from '../../../modules/tournaments/schema.js';
 export * from '../../../modules/welcome/schema.js';
 export * from '../../../modules/predictions/schema.js';
+export * from '../../../modules/web/schema.js';

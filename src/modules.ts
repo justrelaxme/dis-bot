@@ -7,6 +7,7 @@ import { createModerationModule } from './modules/moderation/index.js';
 import { createPredictionsModule } from './modules/predictions/index.js';
 import { createProgressionModule } from './modules/progression/index.js';
 import { createTournamentsModule } from './modules/tournaments/index.js';
+import { createGrantsService } from './modules/web/grants.js';
 import { createWelcomeModule } from './modules/welcome/index.js';
 
 /**
@@ -37,6 +38,9 @@ export function buildModules(identityDeps: IdentityModuleDeps): BotModule[] {
       fetchClientFor: identityDeps.fetchClientFor,
       rateLimiter: identityDeps.rateLimiter,
       ...(identityDeps.config.HOYOLAB_COOKIE ? { hoyolabCookie: identityDeps.config.HOYOLAB_COOKIE } : {}),
+      // Пропуски в конструктор форматов. Тот же экземпляр, что у маршрутов витрины, не нужен:
+      // состояние пропуска целиком в базе, а не в памяти процесса.
+      grants: createGrantsService({ db: identityDeps.db }),
     }),
     createProgressionModule({ db: identityDeps.db, cache: identityDeps.cache }),
     // Прогнозы стоят после прогрессии не по алфавиту: монеты за угаданное начисляет её
@@ -45,6 +49,6 @@ export function buildModules(identityDeps: IdentityModuleDeps): BotModule[] {
     createLfgModule({ db: identityDeps.db }),
     createModerationModule({ db: identityDeps.db, cache: identityDeps.cache }),
     createWelcomeModule({ db: identityDeps.db, cache: identityDeps.cache }),
-    createMaintenanceModule({ config: identityDeps.config }),
+    createMaintenanceModule({ config: identityDeps.config, db: identityDeps.db }),
   ];
 }

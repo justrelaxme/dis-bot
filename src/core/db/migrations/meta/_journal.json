@@ -134,6 +134,20 @@
       "when": 1785758383843,
       "tag": "0018_common_the_santerians",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787564780861,
+      "tag": "0019_small_obadiah_stane",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1787565142960,
+      "tag": "0020_graceful_lester",
+      "breakpoints": true
     }
   ]
 }

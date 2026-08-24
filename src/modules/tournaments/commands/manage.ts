@@ -6,8 +6,9 @@ import { closeTournamentRooms, createTournamentRooms, type CleanupReport } from 
 import type { ChannelsGateway } from '../discord/channels.js';
 import { registrationPanel } from '../discord/onboarding.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
-import type { TournamentFormat, TournamentGame } from '../schema.js';
+import type { TournamentFormat, TournamentFormatRow, TournamentGame } from '../schema.js';
 import { parseClock, type CycleService } from '../services/cycle.js';
+import { bricksOf, type FormatsService } from '../services/formats.js';
 import { explainAnnounceFailure, type TournamentEventsGateway } from '../discord/events.js';
 import type { MessagesService } from '../services/messages.js';
 import { entrantStrengths } from '../services/strength.js';
@@ -35,6 +36,12 @@ export interface ManageDeps {
   messages?: MessagesService;
   /** Афиша во вкладке «События»: ставится при создании, снимается при отмене. */
   events?: TournamentEventsGateway;
+  /**
+   * Сохранённые форматы турнира и выдача пропусков в конструктор на сайте. Необязательны:
+   * без них `/tournament create` работает как раньше, по опциям команды.
+   */
+  formats?: FormatsService;
+  grants?: { issue(input: { guildId: string; userId: string; scope: 'formats' }): Promise<{ token: string; expiresAt: Date }> };
 }
 
 function requireGuild(guild: Guild | null): Guild {
@@ -72,18 +79,26 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
         sub
           .setName('create')
           .setDescription('Создать турнир и открыть регистрацию')
+          // Сохранённый формат идёт первым: с ним остальные опции не нужны, и это должно быть
+          // видно до того, как организатор начнёт заполнять их по одной.
+          .addStringOption((option) =>
+            option
+              .setName('preset')
+              .setDescription('Сохранённый формат — остальное можно не заполнять')
+              .setAutocomplete(true),
+          )
+          // Дисциплина и режим перестали быть обязательными: у формата они свои. Без формата
+          // их отсутствие — понятная ошибка, а не молчаливый турнир «непонятно по чему».
           .addStringOption((option) =>
             option
               .setName('game')
               .setDescription('Дисциплина')
-              .setRequired(true)
               .addChoices(...TOURNAMENT_GAMES.map((game) => ({ name: TOURNAMENT_GAME_LABELS[game], value: game }))),
           )
           .addStringOption((option) =>
             option
               .setName('mode')
               .setDescription('Составы или одиночки')
-              .setRequired(true)
               .addChoices({ name: 'Команды', value: 'team' }, { name: 'Одиночки', value: 'solo' }),
           )
           .addIntegerOption((option) =>
@@ -114,6 +129,11 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
           .addStringOption((option) =>
             option.setName('name').setDescription('Название турнира').setMaxLength(90),
           ),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('formats')
+          .setDescription('Конструктор форматов: собрать формат из кирпичиков и сохранить'),
       )
       .addSubcommand((sub) =>
         sub.setName('start').setDescription('Закрыть регистрацию, разложить сетку и объявить первый круг'),
@@ -163,6 +183,12 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
           )
           .addStringOption((option) =>
             option.setName('timezone').setDescription('Часовой пояс, по умолчанию Europe/Berlin'),
+          )
+          .addStringOption((option) =>
+            option
+              .setName('preset')
+              .setDescription('Взять настройки из сохранённого формата')
+              .setAutocomplete(true),
           ),
       ),
 
@@ -177,6 +203,10 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
 
       if (subcommand === 'create') {
         await create(interaction, guild, deps);
+        return;
+      }
+      if (subcommand === 'formats') {
+        await formatsLink(interaction, guild, deps);
         return;
       }
       if (subcommand === 'start') {
@@ -202,6 +232,63 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
 
 type Interaction = Parameters<CommandDefinition['execute']>[0];
 
+const NL = String.fromCharCode(10);
+
+/**
+ * Формат по имени — или внятный отказ. Имя приходит из автодополнения, но прийти может и
+ * набранным руками: подсказка не обязательство, и опечатка не должна выглядеть как сбой.
+ */
+async function requirePreset(
+  deps: ManageDeps,
+  guildId: string,
+  name: string,
+): Promise<TournamentFormatRow> {
+  if (!deps.formats) {
+    throw new UserError('Сохранённые форматы на этом сервере недоступны.');
+  }
+  const preset = await deps.formats.byName(guildId, name);
+  if (!preset) {
+    const all = await deps.formats.list(guildId);
+    throw new UserError(
+      all.length === 0
+        ? 'Сохранённых форматов пока нет. Собери первый: `/tournament formats`.'
+        : `Формата «${name}» нет. Есть: ${all.map((row) => row.name).join(', ')}.`,
+    );
+  }
+  return preset;
+}
+
+/**
+ * Ссылка в конструктор форматов. Ответ эфемерный и остаётся таким намеренно: ссылка — это и
+ * есть право менять форматы сервера, а сообщение в канале переслал бы его всем, кто это
+ * сообщение видит.
+ */
+async function formatsLink(interaction: Interaction, guild: Guild, deps: ManageDeps): Promise<void> {
+  if (!deps.grants) {
+    throw new UserError('Конструктор форматов на этом сервере не подключён.');
+  }
+
+  const grant = await deps.grants.issue({
+    guildId: guild.id,
+    userId: interaction.user.id,
+    scope: 'formats',
+  });
+  const saved = deps.formats ? await deps.formats.list(guild.id) : [];
+
+  await interaction.editReply({
+    content: [
+      '## Конструктор форматов',
+      `${deps.publicBaseUrl}/formats/${grant.token}`,
+      '',
+      `**Ссылка личная и действует до <t:${Math.floor(grant.expiresAt.getTime() / 1_000)}:t>.** Кто её откроет, тот и меняет форматы сервера — не пересылай. Новая ссылка гасит эту, так что отозвать доступ всегда можно этой же командой.`,
+      '',
+      saved.length === 0
+        ? 'Сохранённых форматов пока нет. Собери первый — дальше турнир запускается по имени: `/tournament create preset:Имя`.'
+        : `Сохранено форматов: ${saved.length}. Запуск: \`/tournament create preset:${saved[0]?.name ?? 'Имя'}\`.`,
+    ].join(NL),
+  });
+}
+
 async function create(interaction: Interaction, guild: Guild, deps: ManageDeps): Promise<void> {
   // Второй одновременный турнир — это участники в двух сетках сразу и невозможность
   // понять, к какому турниру относится /match report.
@@ -210,20 +297,44 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
     throw new UserError(`На сервере уже есть турнир «${running.name}». Сначала заверши или отмени его.`);
   }
 
-  const game = interaction.options.getString('game', true) as TournamentGame;
-  const mode = interaction.options.getString('mode', true) === 'solo' ? 'solo' : 'team';
-  const teamSize = interaction.options.getInteger('team_size') ?? (mode === 'solo' ? 1 : 5);
-  const maxEntrants = interaction.options.getInteger('max_entrants') ?? 16;
-  const hours = interaction.options.getInteger('hours') ?? REGISTRATION_HOURS_DEFAULT;
-  const name = interaction.options.getString('name') ?? `Турнир по ${TOURNAMENT_GAME_LABELS[game]}`;
+  /**
+   * Сохранённый формат — заготовка, а не рамка: указанная явно опция перебивает его. Иначе
+   * пришлось бы держать отдельный формат на каждое «то же самое, но на восьмерых», и вместо
+   * шести осмысленных имён в списке оказалось бы тридцать.
+   */
+  const presetName = interaction.options.getString('preset');
+  const preset = presetName ? await requirePreset(deps, guild.id, presetName) : null;
+  const base = preset ? bricksOf(preset) : null;
+
+  const game = (interaction.options.getString('game') ?? base?.game ?? null) as TournamentGame | null;
+  if (game === null) {
+    throw new UserError(
+      preset
+        ? `В формате «${preset.name}» дисциплина не задана — добавь опцию \`game\`, она нужна для драфта и жеребьёвки.`
+        : 'Укажи дисциплину или сохранённый формат, в котором она есть: `/tournament formats` — конструктор.',
+    );
+  }
+
+  const modeOption = interaction.options.getString('mode');
+  const mode = modeOption === null ? (base?.entryMode ?? 'team') : modeOption === 'solo' ? 'solo' : 'team';
+  const teamSize =
+    interaction.options.getInteger('team_size') ?? (mode === 'solo' ? 1 : (base?.teamSize ?? 5));
+  const maxEntrants = interaction.options.getInteger('max_entrants') ?? base?.maxEntrants ?? 16;
+  const hours =
+    interaction.options.getInteger('hours') ?? base?.registrationHours ?? REGISTRATION_HOURS_DEFAULT;
+  const name =
+    interaction.options.getString('name') ??
+    (preset ? `${preset.name} · ${TOURNAMENT_GAME_LABELS[game]}` : `Турнир по ${TOURNAMENT_GAME_LABELS[game]}`);
   // У турнира, который организатор ставит руками, по умолчанию второй шанс: это событие,
   // а не будничный вечер, и приходить ради одного матча обидно. У автомата наоборот —
   // там по умолчанию выбывание, чтобы вечер укладывался в разумное время.
-  const format = (interaction.options.getString('format') ?? 'double-elim') as TournamentFormat;
+  const format = (interaction.options.getString('format') ??
+    base?.format ??
+    'double-elim') as TournamentFormat;
   // Со способностями по умолчанию: обычный турнир играется ими, а дуэль на прицел —
   // отдельный случай, который организатор выбирает осознанно.
-  const abilities = interaction.options.getBoolean('abilities') ?? true;
-  const autoTeams = interaction.options.getBoolean('auto_teams') ?? false;
+  const abilities = interaction.options.getBoolean('abilities') ?? base?.abilities ?? true;
+  const autoTeams = interaction.options.getBoolean('auto_teams') ?? base?.autoTeams ?? false;
 
   const tournament = await deps.tournaments.create({
     guildId: guild.id,
@@ -233,15 +344,21 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
     entryMode: mode,
     teamSize,
     maxEntrants,
-    seeding: 'rank',
-    bestOf: 1,
+    seeding: base?.seeding ?? 'rank',
+    bestOf: base?.bestOf ?? 1,
     abilities,
     autoTeams,
-    requireVerified: true,
+    requireVerified: base?.requireVerified ?? true,
     createdBy: interaction.user.id,
     ...(interaction.channelId ? { announceChannelId: interaction.channelId } : {}),
     ...(interaction.channelId ? { matchParentId: interaction.channelId } : {}),
   });
+
+  // Счётчик запусков — учёт, а не часть турнира: по нему сортируется список форматов, и
+  // отказ базы здесь не повод не проводить вечер.
+  if (preset && deps.formats) {
+    await deps.formats.markUsed(preset.id).catch(() => {});
+  }
 
   const closesAt = new Date(Date.now() + hours * 60 * 60 * 1_000);
   await deps.tournaments.openRegistration(tournament.id, closesAt);
@@ -425,6 +542,27 @@ function describeCleanup(report: CleanupReport): string {
  */
 async function schedule(interaction: Interaction, guild: Guild, deps: ManageDeps): Promise<void> {
   const patch: Record<string, unknown> = {};
+
+  /**
+   * Сохранённый формат кладётся в правку первым: указанные тут же опции перебивают его,
+   * потому что стоят в объекте после. Порядок здесь несёт смысл, и менять его нельзя.
+   *
+   * Дисциплина из формата в расписание не переносится намеренно: её выбирает голосование, и
+   * прибить её к расписанию значило бы отменить голосование, не сказав об этом.
+   */
+  const presetName = interaction.options.getString('preset');
+  if (presetName) {
+    const preset = await requirePreset(deps, guild.id, presetName);
+    const base = bricksOf(preset);
+    patch['entryMode'] = base.entryMode;
+    patch['teamSize'] = base.teamSize;
+    patch['maxEntrants'] = base.maxEntrants;
+    patch['format'] = base.format;
+    patch['bestOf'] = base.bestOf;
+    patch['abilities'] = base.abilities;
+    patch['autoTeams'] = base.autoTeams;
+    patch['requireVerified'] = base.requireVerified;
+  }
 
   const enabled = interaction.options.getBoolean('enabled');
   if (enabled !== null) {

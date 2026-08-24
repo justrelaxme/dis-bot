@@ -16,12 +16,14 @@ import {
   createTournamentRooms,
 } from './commands/play.js';
 import { closeTournamentPublic } from './discord/closing.js';
+import { createFormatAutocomplete } from './discord/autocomplete.js';
 import { createTournamentEventsGateway } from './discord/events.js';
 import { createTournamentPollCommand } from './commands/poll.js';
 import { createStatsCommand } from './commands/stats.js';
 import { createChannelsGateway } from './discord/channels.js';
 import { createDiscordPollGateway } from './discord/poll-gateway.js';
 import { createCycleService } from './services/cycle.js';
+import { createFormatsService } from './services/formats.js';
 import { createMessagesService } from './services/messages.js';
 import { createDotaVerifier } from './services/dota-verify.js';
 import { createDraftsService } from './services/drafts.js';
@@ -82,6 +84,14 @@ export interface TournamentsModuleDeps {
    * персонаж есть. Без них пометок нет, и это штатное состояние.
    */
   hoyolabCookie?: string;
+  /**
+   * Выдача пропусков в конструктор форматов на сайте. Живёт в веб-модуле, потому что пропуск
+   * — про витрину, а не про турниры; сюда приходит зависимостью, чтобы команда `/tournament
+   * formats` могла выдать ссылку, не зная, как устроен доступ к сайту.
+   */
+  grants?: {
+    issue(input: { guildId: string; userId: string; scope: 'formats' }): Promise<{ token: string; expiresAt: Date }>;
+  };
 }
 
 /**
@@ -139,6 +149,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
       : {}),
   });
 
+  const formats = createFormatsService({ db: deps.db });
   const messages = createMessagesService({ db: deps.db });
   const events = createTournamentEventsGateway(deps.logger);
 
@@ -158,14 +169,14 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
     name: 'tournaments',
 
     commands: [
-      createManageCommand({ ...play, cycles }, poll.execute),
+      createManageCommand({ ...play, cycles, formats, ...(deps.grants ? { grants: deps.grants } : {}) }, poll.execute),
       createTeamCommand(play),
       createMatchCommand(play),
       createCheckinCommand(play),
       createStatsCommand({ db: deps.db, publicBaseUrl: deps.publicBaseUrl }),
     ],
 
-    events: [createButtonHandler(play)],
+    events: [createButtonHandler(play), createFormatAutocomplete({ formats })],
 
     jobs: [
       {

@@ -44,9 +44,10 @@ describe('модуль tournaments', () => {
       'tournaments:draft-timeout',
       'tournaments:poll-finalize',
     ]);
-    // Кнопки состава и подтверждения результата обслуживает сам модуль: роутер ядра
-    // занимается только slash-командами.
-    expect(botModule.events?.map((e) => e.event)).toEqual(['interactionCreate']);
+    // Кнопки состава, подтверждение результата и подсказки имён форматов обслуживает сам
+    // модуль: роутер ядра занимается только slash-командами. Оба обработчика слушают одно и
+    // то же событие — Discord присылает и нажатия, и запрос автодополнения как interactionCreate.
+    expect(botModule.events?.map((e) => e.event)).toEqual(['interactionCreate', 'interactionCreate']);
   });
 
   it('объявляет корректные cron-выражения для своих джоб', () => {

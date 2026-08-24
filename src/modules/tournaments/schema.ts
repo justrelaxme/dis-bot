@@ -26,6 +26,65 @@ import type { DraftGroup } from './draft/pools.js';
  */
 export type TournamentGame = 'dota2' | 'lol' | 'tft' | 'valorant' | 'genshin';
 
+/**
+ * Сохранённый формат турнира — набор настроек под именем.
+ *
+ * Зачем вообще. Настроек у турнира одиннадцать, и организатор каждый раз собирает их заново:
+ * составы или одиночки, сколько в составе, какая сетка, сколько карт в матче, со
+ * способностями или без, собирать ли составы боту. Один раз настроить не проблема — проблема
+ * повторить это через неделю тем же самым, а не «примерно так же». Формат существует ровно
+ * для этого: собрал один раз, назвал, дальше запускаешь по имени.
+ *
+ * Дисциплина здесь **необязательна**, и это главное решение в таблице. Часть форматов про
+ * форму вечера, а не про игру: «пять на пять, двойное устранение, до двух побед» одинаково
+ * годится и для Dota, и для Valorant. Такой формат нужен ещё и ежедневному автомату, где
+ * дисциплину выбирает голосование, а не человек. Обязательная игра сделала бы формат
+ * непригодным для автомата вообще.
+ *
+ * Формат — заготовка, а не рамка: явно указанная при создании настройка перебивает
+ * сохранённую. Иначе пришлось бы держать отдельный формат на каждое «то же самое, но на
+ * восьмерых», и вместо шести осмысленных имён в списке оказалось бы тридцать.
+ */
+export const tournamentFormats = pgTable(
+  'tournament_formats',
+  {
+    id: serial('id').primaryKey(),
+    guildId: text('guild_id').notNull(),
+    /**
+     * Имя, которым организатор его позовёт. Уникально в пределах сервера: повторное
+     * сохранение под тем же именем — это правка формата, а не второй формат-двойник.
+     */
+    name: text('name').notNull(),
+    /** Дисциплина или null — «любая, решается при запуске». */
+    game: text('game').$type<TournamentGame>(),
+    entryMode: text('entry_mode').$type<EntryMode>().notNull(),
+    teamSize: integer('team_size').notNull(),
+    maxEntrants: integer('max_entrants').notNull(),
+    format: text('format').$type<TournamentFormat>().notNull(),
+    bestOf: integer('best_of').notNull(),
+    seeding: text('seeding').$type<SeedingMode>().notNull().default('rank'),
+    abilities: boolean('abilities').notNull().default(true),
+    autoTeams: boolean('auto_teams').notNull().default(false),
+    requireVerified: boolean('require_verified').notNull().default(true),
+    /** Сколько часов идёт регистрация. Часть формата: у турнира выходного дня она длиннее. */
+    registrationHours: integer('registration_hours').notNull().default(2),
+    /** Своими словами: чем этот формат отличается и когда его брать. */
+    note: text('note'),
+    createdBy: text('created_by').notNull(),
+    /**
+     * Сколько турниров по нему провели и когда в последний раз. Нужно не для статистики, а
+     * для порядка в списке: сверху то, чем правда пользуются, а не то, что назвали первым.
+     */
+    usedCount: integer('used_count').notNull().default(0),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique('tournament_formats_guild_name_uq').on(table.guildId, table.name)],
+);
+
+export type TournamentFormatRow = typeof tournamentFormats.$inferSelect;
+
 export const tournamentPolls = pgTable(
   'tournament_polls',
   {

@@ -20,6 +20,7 @@ import { createShutdown } from './core/shutdown.js';
 import { buildModules } from './modules.js';
 import { registerSteamCallback } from './modules/identity/http/steam-callback.js';
 import { registerDraftRoutes } from './modules/web/draft.js';
+import { registerFormatRoutes } from './modules/web/formats.js';
 import { registerWebRoutes } from './modules/web/routes.js';
 import { createProviderRegistry } from './modules/identity/providers/index.js';
 import { createLinkingService } from './modules/identity/services/linking.js';
@@ -194,6 +195,10 @@ registerWebRoutes(http, { db, cache, logger, guildId: config.DISCORD_GUILD_ID })
 // Драфт — единственная страница витрины, где что-то нажимают. Право действовать даёт
 // ссылка с токеном, которую бот присылает капитану в личку: входа на сайт нет и не будет.
 registerDraftRoutes(http, { db, cache, logger });
+
+// Конструктор форматов турнира — вторая и последняя страница, где что-то меняют. Право
+// даёт та же ссылка с токеном: организатор получает её командой `/tournament formats`.
+registerFormatRoutes(http, { db, logger });
 
 registerSteamCallback(http, {
   logger,
