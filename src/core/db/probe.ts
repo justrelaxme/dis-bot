@@ -19,8 +19,16 @@ export interface ProbeSuccess {
   /** Версия сервера — по ней видно, что это Postgres, а не что-то совместимое наполовину. */
   version: string;
   database: string;
-  /** Шифруется ли соединение. Для облачной базы «нет» означает, что что-то не так. */
+  /**
+   * Шифруется ли наш участок соединения. Именно наш: через pooler их два, и второй —
+   * внутренний, между pooler и Postgres.
+   */
   encrypted: boolean;
+  /**
+   * Идём ли мы через pooler. Тогда `pg_stat_ssl` рассказывает не про нас, и вывод обязан это
+   * оговорить — иначе проверка пугает «соединение не шифруется» там, где всё в порядке.
+   */
+  pooled: boolean;
   /** Сколько миграций применено и последняя из них. Пустая база — законное состояние. */
   migrations: { count: number; last: string | null };
   /** Таблиц в схеме public. Ноль означает «бот здесь ещё не запускался». */
@@ -67,11 +75,29 @@ export async function probeDatabase(
         'select version() as version, current_database() as database',
       );
 
-      // Шифрование спрашиваем у самой базы, а не выводим из строки подключения: в строке
-      // может стоять одно, а на деле получиться другое.
-      const ssl = await client
+      /**
+       * Шифрование смотрим на своём сокете, а не спрашиваем у базы.
+       *
+       * Спрашивать у базы неверно, и это выяснилось на живой Supabase: `pg_stat_ssl`
+       * описывает сессию, которая пришла в Postgres, а через pooler в Postgres приходит
+       * сессия **pooler**, и её внутренний участок не шифруется. Проверка отвечала
+       * «соединение не шифруется» на полностью проверенном TLS — то есть пугала на ровном
+       * месте.
+       *
+       * Свой сокет знает правду: если он TLS, наш участок зашифрован. А раз соединение
+       * вообще установилось при `verify-full`, то и сертификат проверен — иначе рукопожатие
+       * не состоялось бы.
+       */
+      const stream = (client as unknown as { connection?: { stream?: { encrypted?: boolean } } })
+        .connection?.stream;
+      const encrypted = stream?.encrypted === true;
+
+      // Через pooler в Postgres приходит его сессия, а не наша. Признак — `pg_stat_ssl`
+      // говорит «не шифруется» при том, что наш сокет TLS.
+      const inner = await client
         .query<{ ssl: boolean }>('select ssl from pg_stat_ssl where pid = pg_backend_pid()')
         .catch(() => ({ rows: [] as { ssl: boolean }[] }));
+      const pooled = encrypted && inner.rows[0]?.ssl === false;
 
       const tables = await client.query<{ count: string }>(
         "select count(*)::text as count from information_schema.tables where table_schema = 'public'",
@@ -89,7 +115,8 @@ export async function probeDatabase(
         ok: true,
         version: version.rows[0]?.version ?? 'неизвестно',
         database: version.rows[0]?.database ?? 'неизвестно',
-        encrypted: ssl.rows[0]?.ssl === true,
+        encrypted,
+        pooled,
         migrations: {
           count: Number(migrations?.rows[0]?.count ?? 0),
           last: migrations?.rows[0]?.last ?? null,
