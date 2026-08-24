@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
     "build": "tsc -p tsconfig.json",
@@ -15,6 +17,7 @@
     "test:contract": "vitest run --config vitest.contract.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
+    "db:check": "tsx --env-file-if-exists=.env scripts/db-check.ts",
     "deploy-commands": "tsx --env-file-if-exists=.env scripts/deploy-commands.ts",
     "backup": "tsx --env-file-if-exists=.env scripts/backup.ts",
     "test:services:up": "node scripts/test-services.mjs up",

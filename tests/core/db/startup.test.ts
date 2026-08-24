@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   classifyStartupFailure,
+  describeFailure,
   explainStartupFailure,
   isTransient,
   migrateWithRetry,
@@ -118,23 +119,43 @@ describe('стоит ли пробовать ещё раз', () => {
 });
 
 describe('текст отказа', () => {
+  const kinds = ['quota', 'unreachable', 'auth', 'migration'] as const;
+
   it('у каждой причины свой, и они не похожи друг на друга', () => {
-    const texts = (['quota', 'unreachable', 'auth', 'migration'] as const).map(explainStartupFailure);
+    const texts = kinds.map(describeFailure);
 
     expect(new Set(texts).size).toBe(texts.length);
   });
 
   /** Про квоту надо сказать прямо, что код ни при чём: иначе искать будут в миграциях. */
   it('про квоту сказано, что код тут ни при чём', () => {
-    expect(explainStartupFailure('quota')).toMatch(/тариф/);
-    expect(explainStartupFailure('quota')).toMatch(/ни при чём/);
+    expect(describeFailure('quota')).toMatch(/тариф/);
+    expect(describeFailure('quota')).toMatch(/ни при чём/);
   });
 
   it('про недоступность есть подсказка про localhost в контейнере', () => {
-    expect(explainStartupFailure('unreachable')).toMatch(/localhost/);
+    expect(describeFailure('unreachable')).toMatch(/localhost/);
   });
 
-  it('про поломку миграции — прежняя формулировка: по ней ищут в логах', () => {
+  /**
+   * Разбор без последствий: тот же текст нужен проверке строки подключения, где бот и не
+   * запускался — «бот не стартует» там было бы неправдой.
+   */
+  it('сам разбор про остановку бота не говорит', () => {
+    for (const kind of kinds) {
+      expect(describeFailure(kind), kind).not.toMatch(/не стартует/);
+    }
+  });
+
+  it('в фатальный лог последствие дописывается', () => {
+    for (const kind of kinds) {
+      expect(explainStartupFailure(kind), kind).toContain(describeFailure(kind));
+      expect(explainStartupFailure(kind), kind).toMatch(/бот не стартует/);
+    }
+  });
+
+  /** Формулировка дословная: по ней ищут в логах, и менять её значит ломать поиск. */
+  it('про поломку миграции — прежняя строка', () => {
     expect(explainStartupFailure('migration')).toBe('миграции не применились — бот не стартует');
   });
 });
