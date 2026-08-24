@@ -24,6 +24,11 @@ export type StartupFailure =
   | 'unreachable'
   /** Не пустили: пароль, имя базы, права. Повтор не поможет. */
   | 'auth'
+  /**
+   * Соединение шифруется, но сертификат не проверился. Своя причина, потому что и лечится
+   * своим: указать корневой сертификат центра, а не «проверить хост» и не «сменить пароль».
+   */
+  | 'tls'
   /** Соединение было, упала сама миграция. Это единственный случай, когда виноват код. */
   | 'migration';
 
@@ -43,6 +48,16 @@ const NETWORK_CODES = new Set([
  * Полный список в документации Postgres, класс 28 и 3D.
  */
 const AUTH_CODES = new Set(['28000', '28P01', '3D000', '42501']);
+
+/** Коды OpenSSL из node: цепочка не проверилась, срок вышел, имя хоста не совпало. */
+const TLS_CODES = new Set([
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'CERT_HAS_EXPIRED',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
 
 /** Ошибка приходит завёрнутой: drizzle оборачивает ошибку pg, а та — ошибку сети. */
 function chain(error: unknown): unknown[] {
@@ -81,6 +96,19 @@ export function classifyStartupFailure(error: unknown): StartupFailure {
   // остального: соединения нет, но выглядит это как отказ на первом же запросе.
   if (text.includes('quota') || text.includes('compute time')) return 'quota';
 
+  // Сертификат проверяется до «не пустили» и до сети: TLS падает раньше, чем база успевает
+  // сказать хоть что-то про пароль, и без своей ветки это выглядело поломкой миграции.
+  if (codes.some((code) => TLS_CODES.has(code))) return 'tls';
+  if (
+    text.includes('self-signed certificate') ||
+    text.includes('self signed certificate') ||
+    text.includes('unable to verify the first certificate') ||
+    text.includes('certificate has expired') ||
+    text.includes('does not match certificate')
+  ) {
+    return 'tls';
+  }
+
   if (codes.some((code) => AUTH_CODES.has(code))) return 'auth';
   if (text.includes('password authentication failed') || text.includes('role') && text.includes('does not exist')) {
     return 'auth';
@@ -118,6 +146,8 @@ export function describeFailure(failure: StartupFailure): string {
       return 'база не отвечает. Проверьте DATABASE_URL, доступность хоста и то, что база поднята: внутри контейнера localhost — это сам контейнер, и базы там нет';
     case 'auth':
       return 'база не пустила: не подошли пароль, имя базы или прав недостаточно';
+    case 'tls':
+      return 'соединение шифруется, но сертификат базы не проверился: её удостоверяющего центра нет в наборе Node. Укажите центр явно — `sslrootcert=/opt/app/certs/supabase-ca.crt` в строке подключения (см. certs/README.md). Крайняя мера — `sslmode=no-verify`: шифрование останется, проверка центра нет';
     case 'migration':
       return 'миграции не применились';
   }

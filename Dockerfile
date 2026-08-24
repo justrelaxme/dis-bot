@@ -28,6 +28,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /opt/app/dist ./dist
 COPY src/core/db/migrations ./src/core/db/migrations
+# Корневые сертификаты облачных Postgres: с ними соединение можно проверять целиком
+# (sslmode=verify-full), а не только шифровать. Подробности и путь — в certs/README.md.
+COPY certs ./certs
 USER node
 # Абсолютный путь к точке входа: если платформа запустит нас из другого каталога,
 # относительный путь не найдётся. Перед запуском печатаем, где мы и что видим, — это

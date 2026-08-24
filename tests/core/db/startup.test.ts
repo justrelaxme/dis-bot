@@ -73,6 +73,44 @@ describe('почему база не далась', () => {
     }
   });
 
+  /**
+   * Тоже из живого случая. Pooler Supabase подписан их собственным центром, которого нет в
+   * наборе Node, и `verify-full` его отвергает. Без своей ветки это опознавалось как поломка
+   * миграции — то есть снова ложный след, только про другое.
+   */
+  it('непроверенный сертификат опознаётся сертификатом', () => {
+    const error = wrapped(
+      'Failed query: CREATE SCHEMA IF NOT EXISTS "drizzle"',
+      new Error('self-signed certificate in certificate chain'),
+    );
+
+    expect(classifyStartupFailure(error)).toBe('tls');
+  });
+
+  it('сертификат: коды OpenSSL', () => {
+    for (const code of [
+      'SELF_SIGNED_CERT_IN_CHAIN',
+      'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+      'CERT_HAS_EXPIRED',
+      'ERR_TLS_CERT_ALTNAME_INVALID',
+    ]) {
+      expect(classifyStartupFailure(pgError('tls', code)), code).toBe('tls');
+    }
+  });
+
+  /**
+   * Сертификат проверяется раньше пароля не по вкусу, а по порядку событий: TLS падает до
+   * того, как база успевает сказать хоть что-то про пароль.
+   */
+  it('сертификат важнее пароля, когда в тексте есть и то и другое', () => {
+    const error = wrapped(
+      'password authentication failed',
+      new Error('self-signed certificate in certificate chain'),
+    );
+
+    expect(classifyStartupFailure(error)).toBe('tls');
+  });
+
   it('не пустили: сообщение про пароль', () => {
     expect(classifyStartupFailure(new Error('password authentication failed for user "bot"'))).toBe('auth');
   });
@@ -114,12 +152,13 @@ describe('стоит ли пробовать ещё раз', () => {
     expect(isTransient('unreachable')).toBe(true);
     expect(isTransient('quota')).toBe(false);
     expect(isTransient('auth')).toBe(false);
+    expect(isTransient('tls')).toBe(false);
     expect(isTransient('migration')).toBe(false);
   });
 });
 
 describe('текст отказа', () => {
-  const kinds = ['quota', 'unreachable', 'auth', 'migration'] as const;
+  const kinds = ['quota', 'unreachable', 'auth', 'tls', 'migration'] as const;
 
   it('у каждой причины свой, и они не похожи друг на друга', () => {
     const texts = kinds.map(describeFailure);
@@ -135,6 +174,12 @@ describe('текст отказа', () => {
 
   it('про недоступность есть подсказка про localhost в контейнере', () => {
     expect(describeFailure('unreachable')).toMatch(/localhost/);
+  });
+
+  /** Ошибка сертификата бесполезна без того, что с ней делать: путь к центру и его цена. */
+  it('про сертификат сказано, чем его лечить', () => {
+    expect(describeFailure('tls')).toMatch(/sslrootcert/);
+    expect(describeFailure('tls')).toMatch(/no-verify/);
   });
 
   /**
