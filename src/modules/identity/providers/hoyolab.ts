@@ -78,6 +78,19 @@ function signature(now: number): string {
   return `${time},${random},${hash}`;
 }
 
+/** Оружие персонажа. `affix_level` — это огранка, от 1 до 5; своего слова для неё в ответе нет. */
+const weaponSchema = z.object({
+  name: z.string(),
+  rarity: z.number().optional(),
+  level: z.number().optional(),
+  affix_level: z.number().optional(),
+});
+
+/** Надетый артефакт. Из него нужен только комплект: позиция и уровень на стоимость не влияют. */
+const reliquarySchema = z.object({
+  set: z.object({ name: z.string() }).optional(),
+});
+
 const avatarSchema = z.object({
   id: z.number(),
   name: z.string(),
@@ -88,6 +101,13 @@ const avatarSchema = z.object({
   /** Созвездие: от 0 до 6. Разница между C0 и C6 в Genshin больше, чем между уровнями. */
   actived_constellation_num: z.number().optional(),
   icon: z.string().optional(),
+  /**
+   * Оружие и артефакты приходят не всегда: у неподнятого персонажа их может не быть вовсе, а
+   * ответ HoYoLAB не обещает ни одного из этих полей. Поэтому оба необязательны, и отсутствие
+   * означает «неизвестно», а не «нет».
+   */
+  weapon: weaponSchema.optional(),
+  reliquaries: z.array(reliquarySchema).optional(),
 });
 
 const rosterSchema = z.object({
@@ -96,6 +116,14 @@ const rosterSchema = z.object({
   data: z.object({ avatars: z.array(avatarSchema) }).nullable().optional(),
 });
 
+export interface OwnedWeapon {
+  name: string;
+  rarity: number;
+  /** Огранка, от 1 до 5. В ответе HoYoLAB это `affix_level`. */
+  refinement: number;
+  level: number;
+}
+
 export interface OwnedCharacter {
   /** Тот же идентификатор, что и в справочнике Enka: по нему состав сходится с пулом драфта. */
   id: string;
@@ -103,6 +131,14 @@ export interface OwnedCharacter {
   level: number;
   constellation: number;
   rarity: number;
+  /** Что надето. Отсутствие означает «неизвестно»: у неподнятого персонажа оружия может не быть. */
+  weapon?: OwnedWeapon;
+  /**
+   * Комплекты артефактов: имя и сколько предметов надето. Очков не стоят — артефакты фармятся
+   * временем, а не деньгами, — но говорят, насколько персонаж собран, а это и есть то, что
+   * хотят знать перед матчем.
+   */
+  sets: { name: string; pieces: number }[];
 }
 
 export interface HoyolabDeps {
@@ -130,6 +166,29 @@ export type RosterResult =
 
 /** Летопись закрыта или UID не тот. Коды из ответов HoYoLAB, документации к ним нет. */
 const PRIVATE_CODES = new Set([10102, 10104, 1034]);
+
+/**
+ * Комплекты артефактов: сколько предметов какого набора надето. Считается по именам, потому
+ * что «четыре из Багровой ведьмы» — это то, как о сборке говорят, а какие именно предметы в
+ * этих четырёх, значения не имеет.
+ */
+function setsOf(
+  reliquaries: { set?: { name: string } | undefined }[] | undefined,
+): { name: string; pieces: number }[] {
+  if (!reliquaries) return [];
+
+  const counts = new Map<string, number>();
+  for (const item of reliquaries) {
+    const name = item.set?.name;
+    if (!name) continue;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  // Больший комплект вперёд: у сборки «4+0» и «2+2» на первом месте должно стоять то, что
+  // определяет её целиком.
+  return [...counts]
+    .map(([name, pieces]) => ({ name, pieces }))
+    .sort((a, b) => b.pieces - a.pieces || a.name.localeCompare(b.name, 'ru'));
+}
 
 export function createHoyolabChronicle(deps: HoyolabDeps) {
   const now = deps.now ?? ((): number => Date.now());
@@ -183,6 +242,18 @@ export function createHoyolabChronicle(deps: HoyolabDeps) {
           // Пробным персонажам HoYoLAB ставит редкость 105 вместо 5. Приводится к пятёрке:
           // иначе «пятизвёздочных: 0» у аккаунта, где они есть, и сортировка врёт.
           rarity: avatar.rarity === undefined ? 4 : avatar.rarity > 100 ? avatar.rarity - 100 : avatar.rarity,
+          ...(avatar.weapon
+            ? {
+                weapon: {
+                  name: avatar.weapon.name,
+                  rarity: avatar.weapon.rarity ?? 1,
+                  // Огранка начинается с единицы: R1 — это оружие без единой копии.
+                  refinement: avatar.weapon.affix_level ?? 1,
+                  level: avatar.weapon.level ?? 1,
+                },
+              }
+            : {}),
+          sets: setsOf(avatar.reliquaries),
         }))
         .sort((a, b) => b.rarity - a.rarity || b.level - a.level || a.name.localeCompare(b.name, 'ru'));
 

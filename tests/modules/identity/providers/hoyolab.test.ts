@@ -84,8 +84,8 @@ describe('состав аккаунта из Летописи HoYoLAB', () => {
     expect(result).toEqual({
       ok: true,
       characters: [
-        { id: '10000002', name: 'Аяка', level: 90, constellation: 2, rarity: 5 },
-        { id: '10000031', name: 'Фишль', level: 80, constellation: 6, rarity: 4 },
+        { id: '10000002', name: 'Аяка', level: 90, constellation: 2, rarity: 5, sets: [] },
+        { id: '10000031', name: 'Фишль', level: 80, constellation: 6, rarity: 4, sets: [] },
       ],
     });
   });
@@ -208,11 +208,102 @@ describe('что сказать игроку', () => {
 
   it('одна строка про состав считает пятизвёздочных', () => {
     const text = describeRoster([
-      { id: '1', name: 'а', level: 90, constellation: 0, rarity: 5 },
-      { id: '2', name: 'б', level: 90, constellation: 0, rarity: 5 },
-      { id: '3', name: 'в', level: 80, constellation: 0, rarity: 4 },
+      { id: '1', name: 'а', level: 90, constellation: 0, rarity: 5, sets: [] },
+      { id: '2', name: 'б', level: 90, constellation: 0, rarity: 5, sets: [] },
+      { id: '3', name: 'в', level: 80, constellation: 0, rarity: 4, sets: [] },
     ]);
 
     expect(text).toBe('персонажей 3, из них пятизвёздочных 2');
+  });
+});
+
+/**
+ * Оружие и артефакты. Ради них Летопись и читается вторым заходом: созвездие говорит, кто у
+ * игрока есть, а оружие с огранкой — сколько в него вложено, и именно это считает бюджет
+ * турнира.
+ */
+describe('оружие и артефакты в составе', () => {
+  it('оружие приходит с редкостью и огранкой', async () => {
+    const { chronicle } = chronicleWith(
+      okResponse([
+        {
+          id: 10000046,
+          name: 'Ху Тао',
+          rarity: 5,
+          level: 90,
+          actived_constellation_num: 1,
+          weapon: { name: 'Нефритовый секач', rarity: 5, level: 90, affix_level: 1 },
+        },
+      ]),
+    );
+
+    const result = await chronicle.roster('700000001');
+
+    expect(result.ok && result.characters[0]?.weapon).toEqual({
+      name: 'Нефритовый секач',
+      rarity: 5,
+      refinement: 1,
+      level: 90,
+    });
+  });
+
+  /** У неподнятого персонажа оружия может не быть вовсе — это «неизвестно», а не сбой. */
+  it('без оружия персонаж всё равно читается', async () => {
+    const { chronicle } = chronicleWith(okResponse([{ id: 10000046, name: 'Ху Тао', rarity: 5 }]));
+
+    const result = await chronicle.roster('700000001');
+
+    expect(result.ok && result.characters[0]?.weapon).toBeUndefined();
+    expect(result.ok && result.characters[0]?.sets).toEqual([]);
+  });
+
+  it('артефакты сводятся в комплекты: «четыре из такого-то»', async () => {
+    const { chronicle } = chronicleWith(
+      okResponse([
+        {
+          id: 10000046,
+          name: 'Ху Тао',
+          rarity: 5,
+          reliquaries: [
+            { set: { name: 'Багровая ведьма пламени' } },
+            { set: { name: 'Багровая ведьма пламени' } },
+            { set: { name: 'Багровая ведьма пламени' } },
+            { set: { name: 'Багровая ведьма пламени' } },
+            { set: { name: 'Тень Шимэнава' } },
+          ],
+        },
+      ]),
+    );
+
+    const result = await chronicle.roster('700000001');
+
+    expect(result.ok && result.characters[0]?.sets).toEqual([
+      { name: 'Багровая ведьма пламени', pieces: 4 },
+      { name: 'Тень Шимэнава', pieces: 1 },
+    ]);
+  });
+
+  /** Больший комплект вперёд: он определяет сборку целиком, а второй лишь дополняет. */
+  it('комплекты идут от большего к меньшему', async () => {
+    const { chronicle } = chronicleWith(
+      okResponse([
+        {
+          id: 10000046,
+          name: 'Ху Тао',
+          rarity: 5,
+          reliquaries: [
+            { set: { name: 'Второй' } },
+            { set: { name: 'Второй' } },
+            { set: { name: 'Первый' } },
+            { set: { name: 'Первый' } },
+            { set: { name: 'Первый' } },
+          ],
+        },
+      ]),
+    );
+
+    const result = await chronicle.roster('700000001');
+
+    expect(result.ok && result.characters[0]?.sets.map((set) => set.pieces)).toEqual([3, 2]);
   });
 });
