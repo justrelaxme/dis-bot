@@ -1,6 +1,7 @@
 import {
   boolean,
   date,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -68,6 +69,14 @@ export const tournamentFormats = pgTable(
     requireVerified: boolean('require_verified').notNull().default(true),
     /** Сколько часов идёт регистрация. Часть формата: у турнира выходного дня она длиннее. */
     registrationHours: integer('registration_hours').notNull().default(2),
+    /**
+     * Потолок стоимости состава в очках — только для Genshin. `null` означает «без потолка»:
+     * играют чем есть, и это обычный турнир.
+     *
+     * Дробное, потому что очки бывают половинными: стандартный пятизвёздочный C0 стоит 0.5.
+     * Смысл потолка и сама система очков — в `genshin/cost.ts`.
+     */
+    costCap: doublePrecision('cost_cap'),
     /** Своими словами: чем этот формат отличается и когда его брать. */
     note: text('note'),
     createdBy: text('created_by').notNull(),
@@ -201,6 +210,14 @@ export const tournaments = pgTable(
     autoTeams: boolean('auto_teams').notNull().default(false),
     /** Требовать подтверждённую привязку по игре у каждого игрока состава. */
     requireVerified: boolean('require_verified').notNull().default(true),
+    /**
+     * Потолок стоимости состава в очках у турниров Genshin. `null` — без потолка.
+     *
+     * Хранится у турнира, а не читается из формата при каждом обращении: формат могут
+     * поправить назавтра, а турнир должен остаться сыгранным по тем правилам, по которым его
+     * играли. Это тот же принцип, что у снимка пула драфта.
+     */
+    costCap: doublePrecision('cost_cap'),
     /**
      * Чемпион. Хранится, а не выводится из последнего матча: «кто победил» — это факт о
      * турнире, который спрашивают чаще всего, и зал славы не должен для каждой строки
@@ -507,6 +524,17 @@ export const matchDrafts = pgTable(
           group?: DraftGroup;
           /** У кого этот персонаж есть. Только у Genshin и только когда состав прочитан. */
           owned?: ('a' | 'b')[];
+          /**
+           * Как персонаж собран у каждой стороны и во сколько ей обойдётся. Снимок на момент
+           * матча: аккаунт назавтра изменится, а сыгранное должно остаться сыгранным.
+           */
+          builds?: {
+            side: 'a' | 'b';
+            constellation: number;
+            cost: number;
+            weapon?: { name: string; refinement: number; rarity: number };
+            sets?: string;
+          }[];
         }[]
       >()
       .notNull(),

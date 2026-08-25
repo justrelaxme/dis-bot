@@ -233,6 +233,14 @@ export function formatsShell(state: FormatsShellState): string {
       </div>
     </section>
 
+    <section class="brick" style="--delay:220ms">
+      <h2>Бюджет состава — Genshin</h2>
+      <p class="hint">Игра одиночная, аккаунты разные: без потолка побеждает тот, кто больше вложил, а не тот, кто лучше играет. Очки считаются по системе спидран-турниров сообщества — четырёхзвёздочные бесплатны совсем, лимитированный C0 стоит 1 и каждое созвездие добавляет ещё 1, сигнатурное оружие R1 — тоже 1. Артефакты не стоят ничего: они фармятся временем, а не деньгами.</p>
+      <div class="nums">
+        <label class="num"><span>Потолок, очков</span><input type="number" data-cap="costCap" min="0" max="96" step="0.5" placeholder="без потолка"></label>
+      </div>
+    </section>
+
     <section class="brick" style="--delay:240ms">
       <h2>Имя формата</h2>
       <p class="hint">По нему турнир и запускают. Сохранение под существующим именем — правка, а не второй формат.</p>
@@ -280,7 +288,7 @@ const SCRIPT = String.raw`
 
   var DEFAULTS = { game: '', entryMode: 'team', teamSize: 5, maxEntrants: 16, format: 'single-elim',
     bestOf: 1, seeding: 'rank', abilities: true, autoTeams: false, requireVerified: true,
-    registrationHours: 2 };
+    registrationHours: 2, costCap: null };
   var state = Object.assign({}, DEFAULTS);
   var editing = null;
 
@@ -294,6 +302,13 @@ const SCRIPT = String.raw`
     });
     document.querySelectorAll('[data-n]').forEach(function (input) {
       if (document.activeElement !== input) input.value = state[input.dataset.n];
+    });
+    // Потолок отдельно: пустое поле означает «без потолка», а не ноль — ноль это законный и
+    // очень жёсткий бюджет, при котором проходят только четырёхзвёздочные составы.
+    document.querySelectorAll('[data-cap]').forEach(function (input) {
+      if (document.activeElement !== input) {
+        input.value = state[input.dataset.cap] === null ? '' : state[input.dataset.cap];
+      }
     });
     // Размер состава у одиночного турнира всегда один: поле не врёт, а выключается.
     var size = document.querySelector('[data-n="teamSize"]');
@@ -387,6 +402,12 @@ const SCRIPT = String.raw`
   });
 
   document.addEventListener('input', function (event) {
+    var cap = event.target.closest('[data-cap]');
+    if (cap) {
+      state[cap.dataset.cap] = cap.value.trim() === '' ? null : Number(cap.value);
+      preview();
+      return;
+    }
     var input = event.target.closest('[data-n]');
     if (!input) return;
     var value = Number(input.value);

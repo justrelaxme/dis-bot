@@ -51,6 +51,7 @@ interface RawBricks {
   autoTeams?: unknown;
   requireVerified?: unknown;
   registrationHours?: unknown;
+  costCap?: unknown;
 }
 
 const GAMES = new Set<string>(TOURNAMENT_GAMES);
@@ -93,7 +94,17 @@ function readBricks(raw: RawBricks | undefined): FormatBricks {
     autoTeams: body.autoTeams === true,
     requireVerified: body.requireVerified !== false,
     registrationHours: asInt(body.registrationHours, 2),
+    // Пустое поле означает «без потолка», а не ноль: ноль — это законный и очень жёсткий
+    // бюджет, при котором проходят только четырёхзвёздочные составы.
+    costCap: asCap(body.costCap),
   };
+}
+
+/** Потолок стоимости: пустое поле — «без потолка», всё остальное — число с половинками. */
+function asCap(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const number = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 /** Карточка формата для страницы: то же самое, что видно в списке, плюс настройки для правки. */

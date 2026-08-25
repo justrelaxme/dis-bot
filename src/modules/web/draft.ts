@@ -53,6 +53,12 @@ interface DraftPayload {
   done: boolean;
   deadlineAt: string | null;
   /**
+   * Потолок стоимости состава в очках — у турниров Genshin. `null` означает «без потолка»:
+   * играют чем есть. Берётся у турнира, а не у формата: формат могут поправить назавтра, а
+   * матч должен остаться сыгранным по тем правилам, по которым его играли.
+   */
+  costCap: number | null;
+  /**
    * Полный пул. Приходит один раз — вместе со страницей, — и в ответах опроса его нет:
    * снимок пула не меняется за время драфта, а сто двадцать семь героев каждые две секунды
    * это тридцать килобайт на пустом месте.
@@ -95,6 +101,7 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
     const nameOf = (id: number | null): string =>
       entrants.find((entrant) => entrant.id === id)?.displayName ?? '—';
 
+    const side = drafts.sideOfToken(draft, token);
     const { total } = draftProgress(draft.sequence, state.choices);
     // Набор для шагов без пометки — `subject` драфта: так странице всегда достаётся
     // конкретный набор, включая записи, заведённые до появления фаз.
@@ -105,7 +112,7 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
       tournamentName: tournament?.name ?? 'Турнир',
       game: tournament?.game ?? 'valorant',
       teams: { a: nameOf(match.entrantAId), b: nameOf(match.entrantBId) },
-      you: drafts.sideOfToken(draft, token),
+      you: side,
       step: state.view.step,
       total,
       current: state.view.current
@@ -113,8 +120,21 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
         : null,
       done: state.view.done,
       deadlineAt: state.view.done ? null : (draft.deadlineAt?.toISOString() ?? null),
+      costCap: tournament?.costCap ?? null,
       ...(options.withPool
-        ? { pool: draft.pool.map((option) => ({ ...option, group: groupOf(option.group) })) }
+        ? {
+            pool: draft.pool.map((option) => ({
+              ...option,
+              group: groupOf(option.group),
+              // Сборки чужой стороны из ответа вырезаются, а не прячутся вёрсткой. Пул
+              // встраивается в страницу целиком, и «не показали на плитке» означало бы
+              // «лежит в исходном коде страницы» — а это созвездия, оружие и артефакты
+              // чужого аккаунта, которые открываются по ссылке кому угодно.
+              ...(option.builds
+                ? { builds: option.builds.filter((build) => build.side === side) }
+                : {}),
+            })),
+          }
         : {}),
       banned: state.view.banned,
       picks: { a: state.view.pickedA, b: state.view.pickedB },

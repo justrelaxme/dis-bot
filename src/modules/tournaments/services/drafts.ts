@@ -12,6 +12,7 @@ import {
   type DraftChoice,
   type DraftView,
 } from '../draft/engine.js';
+import { costOf, type CostedCharacter } from '../genshin/cost.js';
 import {
   VALORANT_MAPS,
   bansFor,
@@ -20,6 +21,7 @@ import {
   pickBanSequence,
   picksFor,
   poolFits,
+  type DraftBuild,
   type DraftOption,
   type DraftSide,
   type DraftStep,
@@ -101,6 +103,15 @@ interface EnkaCharacter {
   QualityType?: string;
 }
 
+/**
+ * Что о персонаже знает Летопись — ровно столько, сколько нужно драфту. Тип структурный, а не
+ * импортированный из модуля личности: драфту незачем знать, откуда состав приехал, а модулю
+ * личности незачем подстраиваться под драфт.
+ */
+type RosterCharacter = CostedCharacter & {
+  sets?: readonly { name: string; pieces: number }[] | undefined;
+};
+
 export interface DraftState {
   draft: MatchDraftRow;
   choices: DraftChoiceRow[];
@@ -129,7 +140,7 @@ export function createDraftsService(deps: {
    */
   chronicle?: {
     configured: boolean;
-    roster(uid: string): Promise<{ ok: true; characters: { id: string }[] } | { ok: false }>;
+    roster(uid: string): Promise<{ ok: true; characters: readonly RosterCharacter[] } | { ok: false }>;
   };
   /** UID Genshin участника. Отдаётся мостом к модулю личности, чтобы драфт не знал SQL. */
   genshinUidOf?: (entrantId: number) => Promise<string | null>;
@@ -281,10 +292,12 @@ export function createDraftsService(deps: {
       }
       if (!result.ok) continue;
 
-      const owned = new Set(result.characters.map((character) => character.id));
+      const owned = new Map(result.characters.map((character) => [character.id, character]));
       for (const option of pool) {
-        if (!owned.has(option.id)) continue;
+        const mine = owned.get(option.id);
+        if (!mine) continue;
         option.owned = [...(option.owned ?? []), side];
+        option.builds = [...(option.builds ?? []), buildOf(side, mine)];
       }
     }
   }
@@ -317,6 +330,36 @@ export function createDraftsService(deps: {
         }))
         .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
     });
+  }
+
+  /**
+   * Сборка персонажа для пула: созвездие, оружие, комплекты и цена всего этого в очках.
+   *
+   * Считается здесь и запоминается в снимке пула. Пересчитывать её при каждом показе страницы
+   * было бы неверно: аккаунт назавтра изменится, а сыгранный матч должен остаться сыгранным по
+   * тем числам, по которым его играли.
+   */
+  function buildOf(side: DraftSide, character: RosterCharacter): DraftBuild {
+    const sets = (character.sets ?? [])
+      .filter((set) => set.pieces >= 2)
+      .map((set) => `${set.pieces}× ${set.name}`)
+      .join(', ');
+
+    return {
+      side,
+      constellation: character.constellation,
+      cost: costOf(character).total,
+      ...(character.weapon
+        ? {
+            weapon: {
+              name: character.weapon.name,
+              refinement: character.weapon.refinement,
+              rarity: character.weapon.rarity,
+            },
+          }
+        : {}),
+      ...(sets ? { sets } : {}),
+    };
   }
 
   async function choicesOf(draftId: number): Promise<DraftChoiceRow[]> {

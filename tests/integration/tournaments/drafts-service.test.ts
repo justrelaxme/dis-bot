@@ -194,13 +194,31 @@ function drafts(options?: { chronicle?: Parameters<typeof createDraftsService>[0
 
 const genshinUidOf = (entrantId: number): Promise<string | null> => genshinUidOfEntrant(pg.db, entrantId);
 
-/** Летопись-заглушка: отдаёт заданный состав по UID, ничего не зная про сеть. */
-function chronicleWith(byUid: Record<string, string[]>): Parameters<typeof createDraftsService>[0]['chronicle'] {
+/**
+ * Летопись-заглушка: отдаёт заданный состав по UID, ничего не зная про сеть. Персонажи
+ * лимитированные пятизвёздочные C0 — то есть по одному очку каждый, если не сказано иначе.
+ */
+function chronicleWith(
+  byUid: Record<string, (string | { id: string; constellation?: number; rarity?: number })[]>,
+): Parameters<typeof createDraftsService>[0]['chronicle'] {
   return {
     configured: true,
     roster: async (uid: string) => {
-      const ids = byUid[uid];
-      return ids ? { ok: true, characters: ids.map((id) => ({ id })) } : { ok: false };
+      const entries = byUid[uid];
+      if (!entries) return { ok: false };
+      return {
+        ok: true,
+        characters: entries.map((entry) => {
+          const raw = typeof entry === 'string' ? { id: entry } : entry;
+          return {
+            id: raw.id,
+            name: `Персонаж ${raw.id}`,
+            rarity: raw.rarity ?? 5,
+            constellation: raw.constellation ?? 0,
+            sets: [],
+          };
+        }),
+      };
     },
   };
 }
@@ -280,6 +298,37 @@ describe('состав аккаунта в пуле драфта', () => {
    * Отсутствие пометок означает «неизвестно». Оно и должно быть неотличимо от того, как драфт
    * работал до Летописи: закрытая Летопись не повод останавливать матч.
    */
+  /**
+   * Стоимость считается на момент создания драфта и ложится в снимок пула вместе с ним.
+   * Пересчитывать её при показе страницы было бы неверно: аккаунт назавтра изменится, а
+   * сыгранный матч должен остаться сыгранным по тем числам, по которым его играли.
+   */
+  it('запоминает созвездие и цену каждой стороны', async () => {
+    const { tournament, match } = await makeMatch({
+      game: 'genshin',
+      solo: true,
+      genshinUids: { a: '700000041', b: '700000042' },
+    });
+    const { service, cache } = drafts({
+      chronicle: chronicleWith({
+        // Лимитированный C2 стоит 3 очка, C0 — одно. Четырёхзвёздочный бесплатен.
+        '700000041': [{ id: '10000100', constellation: 2 }, { id: '10000101', rarity: 4, constellation: 6 }],
+        '700000042': [{ id: '10000100', constellation: 0 }],
+      }),
+    });
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const pool = created?.draft.pool ?? [];
+    const builds = pool.find((option) => option.id === '10000100')?.builds ?? [];
+    expect(builds.find((build) => build.side === 'a')).toMatchObject({ constellation: 2, cost: 3 });
+    expect(builds.find((build) => build.side === 'b')).toMatchObject({ constellation: 0, cost: 1 });
+
+    const free = pool.find((option) => option.id === '10000101')?.builds ?? [];
+    expect(free[0]).toMatchObject({ side: 'a', cost: 0 });
+  });
+
   it('закрытая Летопись оставляет пул без пометок', async () => {
     const { tournament, match } = await makeMatch({
       game: 'genshin',

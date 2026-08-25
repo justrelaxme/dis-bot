@@ -32,6 +32,11 @@ export const MAX_FORMATS_PER_GUILD = 25;
 const NAME_MAX = 60;
 const NOTE_MAX = 200;
 const ALLOWED_BEST_OF = [1, 3, 5];
+/**
+ * Дороже восьмёрки лимитированных C6 с сигнатурными оружиями R5 состав не бывает: 8 × (7 + 5).
+ * Потолок выше этого ничего не ограничивает и означает, что человек ошибся полем.
+ */
+const MAX_COST_CAP = 96;
 
 export interface FormatBricks {
   game?: TournamentGame | null | undefined;
@@ -45,11 +50,20 @@ export interface FormatBricks {
   autoTeams?: boolean;
   requireVerified?: boolean;
   registrationHours?: number;
+  /**
+   * Потолок стоимости состава в очках — только у Genshin. `null` означает «без потолка»:
+   * играют чем есть, и это обычный турнир.
+   *
+   * Смысл потолка в том, что игра одиночная и аккаунты разные: без него побеждает тот, кто
+   * больше вложил, а не тот, кто лучше играет. Система очков — в `genshin/cost.ts`.
+   */
+  costCap?: number | null | undefined;
   note?: string | null;
 }
 
-export type NormalizedBricks = Omit<Required<FormatBricks>, 'note' | 'game'> & {
+export type NormalizedBricks = Omit<Required<FormatBricks>, 'note' | 'game' | 'costCap'> & {
   game: TournamentGame | null;
+  costCap: number | null;
   note: string | null;
 };
 
@@ -98,6 +112,18 @@ export function normalizeBricks(bricks: FormatBricks): NormalizedBricks {
     throw new UserError(`Заметка к формату — не длиннее ${NOTE_MAX} символов.`);
   }
 
+  // Потолок бывает половинным: стандартный пятизвёздочный C0 стоит 0.5 очка. Округляем до
+  // половины, а не до целого — иначе половина системы очков просто не выражается.
+  const costCap =
+    bricks.costCap === null || bricks.costCap === undefined
+      ? null
+      : Math.round(Math.max(0, bricks.costCap) * 2) / 2;
+  if (costCap !== null && costCap > MAX_COST_CAP) {
+    throw new UserError(
+      `Потолок стоимости больше ${MAX_COST_CAP} очков не имеет смысла: дороже восьмёрки лимитированных C6 с сигнатурками не бывает вовсе.`,
+    );
+  }
+
   return {
     game: bricks.game ?? null,
     entryMode,
@@ -110,6 +136,7 @@ export function normalizeBricks(bricks: FormatBricks): NormalizedBricks {
     autoTeams,
     requireVerified: bricks.requireVerified ?? true,
     registrationHours,
+    costCap,
     note: bricks.note?.trim() ? bricks.note.trim() : null,
   };
 }
@@ -142,6 +169,13 @@ export function warningsFor(bricks: NormalizedBricks): string[] {
   }
   if (bricks.game === null) {
     warnings.push('Дисциплина не задана: её выберут при запуске или голосованием. Это нормально для автомата.');
+  }
+  // Бюджет считается по созвездиям и оружию из Летописи, а её у остальных дисциплин нет.
+  if (bricks.costCap !== null && bricks.game !== null && bricks.game !== 'genshin') {
+    warnings.push('Бюджет состава работает только в Genshin — в этой дисциплине он ни на что не влияет.');
+  }
+  if (bricks.costCap === 0) {
+    warnings.push('Бюджет ноль: пройдут только составы целиком из четырёхзвёздочных. Это жёстко, но законно.');
   }
 
   return warnings;
@@ -216,6 +250,14 @@ export function previewOf(bricks: NormalizedBricks): FormatPreview {
     );
   }
 
+  // Потолок стоимости — то, что делает турнир по Genshin соревнованием, а не сравнением
+  // вложений. Молчать о нём в предпросмотре значило бы прятать главное правило вечера.
+  if (bricks.costCap !== null) {
+    lines.push(
+      `Бюджет состава: ${bricks.costCap} очков. Четырёхзвёздочные бесплатны, лимитированный C0 стоит 1, его сигнатурка R1 — ещё 1.`,
+    );
+  }
+
   const game = bricks.game === null ? 'Дисциплина по выбору' : TOURNAMENT_GAME_LABELS[bricks.game];
   const headline = `${game} · ${EVENT_SIZE_LABELS[size]} на ${roster}`;
 
@@ -236,6 +278,7 @@ export function bricksOf(row: TournamentFormatRow): NormalizedBricks {
     autoTeams: row.autoTeams,
     requireVerified: row.requireVerified,
     registrationHours: row.registrationHours,
+    costCap: row.costCap,
     note: row.note,
   };
 }

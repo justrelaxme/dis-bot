@@ -349,6 +349,9 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
     abilities,
     autoTeams,
     requireVerified: base?.requireVerified ?? true,
+    // Потолок берётся из формата и запоминается у турнира: формат могут поправить назавтра,
+    // а сыгранный турнир должен остаться сыгранным по своим правилам.
+    ...(base?.costCap === null || base?.costCap === undefined ? {} : { costCap: base.costCap }),
     createdBy: interaction.user.id,
     ...(interaction.channelId ? { announceChannelId: interaction.channelId } : {}),
     ...(interaction.channelId ? { matchParentId: interaction.channelId } : {}),

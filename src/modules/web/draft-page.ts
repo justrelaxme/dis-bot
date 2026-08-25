@@ -1,5 +1,6 @@
 import type { DraftGroup, DraftOption, DraftSide } from '../tournaments/draft/pools.js';
 import { GROUP_LABELS } from '../tournaments/draft/pools.js';
+import { formatCost } from '../tournaments/genshin/cost.js';
 import { escape } from './render.js';
 
 /**
@@ -176,6 +177,25 @@ export const DRAFT_STYLE = `
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .tile.lacks-you .art img { filter:grayscale(.6) brightness(.72); }
 
+/* Сборка персонажа: созвездие и цена. В Genshin разница между C0 и C6 больше, чем между
+   уровнями, поэтому созвездие стоит там же, где у карты название, — его читают до выбора. */
+.tile .rig { display:flex; gap:.3rem; align-items:baseline; padding:0 .5rem .3rem;
+  font-family:var(--mono); font-size:.6rem; color:var(--dim); }
+.tile .rig b { color:var(--bone); font-weight:500; }
+.tile .rig .pt { margin-left:auto; color:var(--accent); }
+.tile.pricey .rig .pt { color:var(--ember); }
+
+/* Бюджет. Стоит над полотном и липнет: решение о ходе принимают, глядя на остаток, а не
+   вспоминая его. */
+.purse { position:sticky; top:0; z-index:3; display:flex; flex-wrap:wrap; gap:.6rem 1.2rem;
+  align-items:baseline; padding:.5rem .7rem; margin-bottom:.7rem;
+  background:var(--sheet); border:1px solid var(--rule); clip-path:var(--panel);
+  font-family:var(--mono); font-size:.74rem; }
+.purse .who { color:var(--dim); }
+.purse b { color:var(--bone); font-weight:500; }
+.purse .over b { color:var(--ember); }
+.purse .cap { color:var(--dim); margin-left:auto; }
+
 /* Итог фазы. Стоит после занятых нарочно: карта, которую выбрали, — тоже итог, и её рамка
    должна быть акцентной, а не цветом выбравшей команды. */
 .tile.won { border-color:var(--accent);
@@ -201,6 +221,11 @@ export interface DraftShellState {
   you: 'a' | 'b' | null;
   pool?: DraftOption[];
   phases: { group: DraftGroup; total: number; done: number; resultIds: string[] }[];
+  /**
+   * Потолок стоимости состава в очках у турниров Genshin. `null` — без потолка, играют чем
+   * есть. Система очков и её смысл — в `tournaments/genshin/cost.ts`.
+   */
+  costCap?: number | null;
 }
 
 /**
@@ -218,8 +243,38 @@ function lacking(option: DraftOption, you: DraftSide | null): { text: string; mi
   return null;
 }
 
+/**
+ * Сборка глазами того, кто смотрит: его созвездие, его оружие, его цена.
+ *
+ * Показывается только своя. Чужое созвездие соперника — сведения о его аккаунте, и выкладывать
+ * их на странице, которую открывают по ссылке, незачем: для решения хватает своей цены и того,
+ * есть ли персонаж у соперника вообще.
+ */
+function rigOf(
+  option: DraftOption,
+  you: DraftSide | null,
+  cap: number | null,
+): { html: string; cost: number; pricey: boolean } {
+  const mine = you ? option.builds?.find((build) => build.side === you) : undefined;
+  if (!mine) return { html: '', cost: 0, pricey: false };
+
+  const parts = [`<b>C${mine.constellation}</b>`];
+  if (mine.weapon) {
+    parts.push(`${escape(mine.weapon.name)} R${mine.weapon.refinement}`);
+  }
+  // Персонаж, который в одиночку не влезает в потолок, помечается сразу: иначе это выясняется
+  // ходом позже, когда ход уже потрачен.
+  const pricey = cap !== null && mine.cost > cap;
+
+  return {
+    cost: mine.cost,
+    pricey,
+    html: `<span class="rig">${parts.join(' · ')}<span class="pt">${formatCost(mine.cost)}</span></span>`,
+  };
+}
+
 /** Плитка варианта. Разметка ставится один раз — дальше меняется только класс. */
-function tile(option: DraftOption, index: number, you: DraftSide | null): string {
+function tile(option: DraftOption, index: number, you: DraftSide | null, cap: number | null): string {
   const art = option.imageUrl
     ? `<img src="${escape(option.imageUrl)}" alt="${escape(option.label)}" loading="lazy" decoding="async">`
     : '';
@@ -232,10 +287,12 @@ function tile(option: DraftOption, index: number, you: DraftSide | null): string
 
   const lack = lacking(option, you);
   const note = lack ? `<span class="lack">${escape(lack.text)}</span>` : '';
+  const rig = rigOf(option, you, cap);
 
-  return `<button type="button" class="tile free${lack?.mine ? ' lacks-you' : ''}" data-id="${escape(option.id)}" style="--delay:${Math.min(index, 24) * 18}ms">
+  return `<button type="button" class="tile free${lack?.mine ? ' lacks-you' : ''}${rig.pricey ? ' pricey' : ''}" data-id="${escape(option.id)}" data-cost="${rig.cost}" style="--delay:${Math.min(index, 24) * 18}ms">
 <span class="art">${art}${scheme}${note}</span>
 <span class="tl">${escape(option.label)}</span>
+${rig.html}
 <span class="by"></span>
 </button>`;
 }
@@ -256,9 +313,33 @@ const PHASE_LEAD: Record<DraftGroup, string> = {
     'Сначала баны, потом пики змейкой. Забаненного не берёт никто, а взятого соперником взять можно — под чужой пик и берут контрпик. В клиенте так не выйдет: в режиме отбора чемпион уникален на две команды, поэтому играть этот драфт надо в слепом выборе или в лобби.',
 };
 
+/**
+ * Состояние для встраивания в страницу — без чужих сборок.
+ *
+ * Пул уезжает в HTML целиком, поэтому «не нарисовали на плитке» означало бы «лежит в исходном
+ * коде страницы». Созвездия, оружие и артефакты чужого аккаунта так открывались бы каждому,
+ * кто получил ссылку, — а страница драфта ещё и трансляция для зрителей.
+ *
+ * Маршрут вырезает то же самое у себя, и это не дублирование по недосмотру: там граница
+ * данных, здесь граница разметки. Свойство «чужая сборка не попадает в страницу» должно
+ * держаться при любом вызывающем, а не только при том единственном, что есть сегодня.
+ */
+function embeddable(state: DraftShellState): DraftShellState {
+  if (!state.pool) return state;
+  return {
+    ...state,
+    pool: state.pool.map((option) =>
+      option.builds
+        ? { ...option, builds: option.builds.filter((build) => build.side === state.you) }
+        : option,
+    ),
+  };
+}
+
 export function draftShell(state: DraftShellState): string {
   const pool = state.pool ?? [];
   const groups = state.phases.map((phase) => phase.group);
+  const cap = state.costCap ?? null;
 
   const sections = state.phases
     .map((phase, order) => {
@@ -275,13 +356,28 @@ export function draftShell(state: DraftShellState): string {
 <h2><span class="num">Фаза ${order + 1}</span> ${escape(labels.many)} <span class="pm" data-pm="${phase.group}"></span></h2>
 <p class="lede">${PHASE_LEAD[phase.group]}</p>
 ${search}
-<div class="board" data-board="${phase.group}">${options.map((option, index) => tile(option, index, state.you)).join('')}</div>
+<div class="board" data-board="${phase.group}">${options.map((option, index) => tile(option, index, state.you, cap)).join('')}</div>
 <p class="pres" data-pres="${phase.group}"></p>
 </section>`;
     })
     .join('\n');
 
   const twoPhase = groups.length > 1;
+
+  /**
+   * Кошелёк показывается там, где стоимость вообще посчитана, — то есть в драфте персонажей
+   * Genshin с прочитанным составом. У карт и агентов очков нет, и пустая полоса над полотном
+   * была бы шумом.
+   */
+  const priced = pool.some((option) => (option.builds?.length ?? 0) > 0);
+  const purse = priced
+    ? `<div class="purse" id="purse">
+<span class="who">Потрачено:</span>
+<span data-purse="a"><span class="who">${escape(state.teams.a)}</span> <b>0</b></span>
+<span data-purse="b"><span class="who">${escape(state.teams.b)}</span> <b>0</b></span>
+${cap === null ? '<span class="cap">без потолка</span>' : `<span class="cap">потолок ${escape(formatCost(cap))}</span>`}
+</div>`
+    : '';
 
   return `<p class="eyebrow">${escape(state.tournamentName)}</p>
 <h1>Драфт</h1>
@@ -311,12 +407,15 @@ ${search}
 <p class="next" id="next"></p>
 <p class="err" id="err" role="status"></p>
 
+${purse}
 ${sections}
 
 <script>
 (function () {
-  var state = ${inlineState(state)};
+  var state = ${inlineState(embeddable(state))};
   var token = new URLSearchParams(location.search).get('as') || '';
+  /** Потолок стоимости состава в очках. null — без потолка: играют чем есть. */
+  var CAP = state.costCap === undefined ? null : state.costCap;
   /** Пул приходит один раз, со страницей: в ответах опроса его нет — он не меняется. */
   var pool = state.pool || [];
   var byId = {};
@@ -398,6 +497,22 @@ ${sections}
   function renderTeams() {
     el('nameA').textContent = state.teams.a;
     el('nameB').textContent = state.teams.b;
+    // Кошелёк: сумма цен взятых персонажей. Цена лежит на самой плитке, поэтому второго
+    // источника чисел здесь нет — и разойтись с показанным на плитке кошелёк не может.
+    var purse = el('purse');
+    if (purse) {
+      ['a', 'b'].forEach(function (side) {
+        var spent = state.picks[side].reduce(function (sum, id) {
+          var tile = document.querySelector('.tile[data-id="' + CSS.escape(id) + '"]');
+          return sum + (tile ? Number(tile.dataset.cost || 0) : 0);
+        }, 0);
+        var box = purse.querySelector('[data-purse="' + side + '"]');
+        if (!box) return;
+        box.querySelector('b').textContent = String(Math.round(spent * 10) / 10);
+        box.className = CAP !== null && spent > CAP ? 'over' : '';
+      });
+    }
+
     ['a', 'b'].forEach(function (side) {
       var plate = el(side === 'a' ? 'teamA' : 'teamB');
       var active = state.current && state.current.side === side;

@@ -254,3 +254,90 @@ describe('состав аккаунта на полотне драфта', () =>
     expect(html).toContain('class="tile free lacks-you"');
   });
 });
+
+/**
+ * Стоимость состава на полотне драфта. В Genshin разница между C0 и C6 больше, чем между
+ * уровнями, поэтому созвездие и цена стоят там же, где название, — их читают до хода, а не
+ * после матча.
+ */
+describe('стоимость состава в драфте', () => {
+  const withBuild = (cost: number, over: Partial<DraftOption> = {}): DraftOption => ({
+    id: '10000046',
+    label: 'Ху Тао',
+    group: 'characters',
+    owned: ['a'],
+    builds: [
+      {
+        side: 'a',
+        constellation: 1,
+        cost,
+        weapon: { name: 'Нефритовый секач', refinement: 1, rarity: 5 },
+        sets: '4× Багровая ведьма',
+      },
+    ],
+    ...over,
+  });
+
+  const shell = (pool: DraftOption[], you: 'a' | 'b' | null, costCap?: number | null): string =>
+    draftShell({
+      matchId: 7,
+      tournamentName: 'Кубок',
+      teams: { a: 'Пантеры', b: 'Кобры' },
+      you,
+      pool,
+      phases: [{ group: 'characters', total: pool.length, done: 0, resultIds: [] }],
+      ...(costCap === undefined ? {} : { costCap }),
+    });
+
+  it('на плитке видно созвездие, оружие и цену', () => {
+    const html = shell([withBuild(3)], 'a');
+
+    expect(html).toContain('C1');
+    expect(html).toContain('Нефритовый секач R1');
+    expect(html).toContain('data-cost="3"');
+  });
+
+  /**
+   * Показывается только своя сборка. Чужое созвездие — сведения об аккаунте соперника, и
+   * выкладывать их на странице, которую открывают по ссылке, незачем: для решения хватает
+   * своей цены и того, есть ли персонаж у соперника вообще.
+   */
+  it('чужая сборка не показывается', () => {
+    const html = shell([withBuild(3)], 'b');
+
+    expect(html).not.toContain('Нефритовый секач');
+    expect(html).toContain('data-cost="0"');
+  });
+
+  it('зрителю без стороны сборки не показываются', () => {
+    expect(shell([withBuild(3)], null)).not.toContain('Нефритовый секач');
+  });
+
+  /** Персонаж, который в одиночку не влезает в потолок, помечается до хода, а не после. */
+  it('слишком дорогой для потолка помечается', () => {
+    expect(shell([withBuild(8)], 'a', 6)).toContain('tile free pricey');
+    expect(shell([withBuild(3)], 'a', 6)).not.toContain('pricey');
+  });
+
+  it('кошелёк показывает потолок', () => {
+    const html = shell([withBuild(3)], 'a', 6);
+
+    expect(html).toContain('id="purse"');
+    expect(html).toContain('потолок 6');
+  });
+
+  it('без потолка кошелёк это говорит, а не молчит', () => {
+    expect(shell([withBuild(3)], 'a', null)).toContain('без потолка');
+  });
+
+  /** У карт и агентов очков нет: пустая полоса над полотном была бы шумом. */
+  it('без посчитанной стоимости кошелька нет вовсе', () => {
+    const html = shell([{ id: 'a', label: 'Ascent', group: 'characters' }], 'a', 6);
+
+    expect(html).not.toContain('id="purse"');
+  });
+
+  it('половинные очки не превращаются в хвост', () => {
+    expect(shell([withBuild(1.5)], 'a', 5.5)).toContain('потолок 5.5');
+  });
+});
