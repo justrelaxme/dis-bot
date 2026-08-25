@@ -31,6 +31,7 @@ const card = (over: Partial<FormatCard> = {}): FormatCard => ({
   summary: 'Dota 2 · турнир на 16 составов по 5',
   note: null,
   usedCount: 3,
+  game: 'dota2',
   bricks: { game: 'dota2', entryMode: 'team', teamSize: 5 },
   ...over,
 });
@@ -79,6 +80,34 @@ describe('конструктор форматов', () => {
 
     expect(html).toContain('/tournament create preset:Вечерний');
     expect(html).toContain('запусков 3');
+  });
+
+  /** Ради этого формат и собирают: воспользоваться им, не переключаясь в Discord. */
+  it('на карточке есть кнопка запуска', () => {
+    expect(formatCardsHtml([card()])).toContain('data-run="7"');
+  });
+
+  /**
+   * У формата без дисциплины её спрашивают в самой карточке. Без неё бот не знает ни про
+   * драфт, ни про жеребьёвку, и отказ пришёл бы уже после подтверждения запуска.
+   */
+  it('формат без дисциплины предлагает выбрать её при запуске', () => {
+    const games = [
+      { value: 'dota2', label: 'Dota 2' },
+      { value: 'genshin', label: 'Genshin Impact' },
+    ];
+    const html = formatCardsHtml([card({ game: null })], games);
+
+    expect(html).toContain('data-game=""');
+    expect(html).toContain('data-go="7" data-game="dota2"');
+    expect(html).toContain('data-go="7" data-game="genshin"');
+  });
+
+  it('у формата с дисциплиной выбора нет: он лишний', () => {
+    const html = formatCardsHtml([card({ game: 'dota2' })], [{ value: 'dota2', label: 'Dota 2' }]);
+
+    expect(html).toContain('data-game="dota2"');
+    expect(html).not.toContain('data-go=');
   });
 
   it('ни разу не запущенный формат так и подписан, а не «запусков 0»', () => {

@@ -110,6 +110,9 @@ export const FORMATS_STYLE = `
   background:var(--ink-2); border:1px solid var(--rule); padding:.3rem .5rem; overflow-x:auto; }
 .preset .act { margin-top:.2rem; }
 .saved > div > .sum { color:var(--dim); font-size:.85rem; }
+/* Выбор дисциплины у формата без неё: появляется по нажатию «Запустить» и только там. */
+.preset .pick { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.2rem; }
+.preset .pick[hidden] { display:none; }
 
 /* Всё, что появляется движением, обязано просто быть. Список в theme.ts про классы этой
    страницы не знает, поэтому она отвечает за свои сама. */
@@ -124,6 +127,11 @@ export interface FormatCard {
   summary: string;
   note: string | null;
   usedCount: number;
+  /**
+   * Дисциплина формата или `null` — «любая». У формата без дисциплины её спрашивают при
+   * запуске: без неё бот не знает ни про драфт, ни про жеребьёвку.
+   */
+  game: string | null;
   /** Настройки как есть: страница подставляет их в конструктор при «Открыть». */
   bricks: Record<string, unknown>;
 }
@@ -152,17 +160,33 @@ function toggle(key: string, title: string, hint: string): string {
 </button>`;
 }
 
-function cardHtml(card: FormatCard): string {
-  return `<article class="preset" data-id="${card.id}">
+function cardHtml(card: FormatCard, games: { value: string; label: string }[]): string {
+  /**
+   * У формата без дисциплины её спрашивают здесь же, а не отдельным окном: выбор из трёх
+   * кнопок в той же карточке — это один лишний щелчок, а окно поверх страницы — отдельный
+   * способ ошибиться и закрыть его не глядя.
+   */
+  const pick = card.game
+    ? ''
+    : `<div class="pick" hidden>${games
+        .map(
+          (game) =>
+            `<button type="button" class="btn ghost" data-go="${card.id}" data-game="${escape(game.value)}">${escape(game.label)}</button>`,
+        )
+        .join('')}</div>`;
+
+  return `<article class="preset" data-id="${card.id}" data-game="${escape(card.game ?? '')}">
 <div class="row"><span class="nm">${escape(card.name)}</span>
 <span class="meta">${card.usedCount === 0 ? 'ещё не запускали' : `запусков ${card.usedCount}`}</span></div>
 <p class="sum">${escape(card.summary)}</p>
 ${card.note ? `<p class="sum">${escape(card.note)}</p>` : ''}
 <p class="cmd">/tournament create preset:${escape(card.name)}</p>
 <div class="act">
+<button type="button" class="btn" data-run="${card.id}">Запустить</button>
 <button type="button" class="btn ghost" data-open="${card.id}">Открыть в конструкторе</button>
 <button type="button" class="btn ghost" data-del="${card.id}">Удалить</button>
 </div>
+${pick}
 </article>`;
 }
 
@@ -267,7 +291,7 @@ export function formatsShell(state: FormatsShellState): string {
 
 <section class="saved">
   <h2 class="eyebrow" style="margin-top:1rem">Сохранённые форматы (${state.cards.length} из ${state.limit})</h2>
-  <div id="cards">${state.cards.map(cardHtml).join('') || '<p class="sum">Пока ни одного. Собери первый — он появится здесь.</p>'}</div>
+  <div id="cards">${formatCardsHtml(state.cards, [...state.games])}</div>
 </section>
 
 ${formatsBoot(state)}
@@ -379,6 +403,41 @@ const SCRIPT = String.raw`
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
+    /**
+     * Запуск. Подтверждение обязательно и не для красоты: это сообщение всему серверу и
+     * открытая регистрация, а не правка у себя в конструкторе. Отменить турнир потом можно, но
+     * объявление уже увидят.
+     */
+    var run = event.target.closest('[data-run]');
+    if (run) {
+      var card = run.closest('.preset');
+      // Формат без дисциплины сначала спрашивает её: без неё бот не знает ни про драфт, ни
+      // про жеребьёвку, и отказ пришёл бы уже после подтверждения.
+      if (!card.dataset.game) {
+        var pick = card.querySelector('.pick');
+        if (pick && pick.hidden) {
+          pick.hidden = false;
+          say('Выбери дисциплину — в этом формате она не задана.', '');
+          return;
+        }
+        return;
+      }
+      if (run.dataset.armed !== '1') {
+        run.dataset.armed = '1';
+        run.textContent = 'Точно запустить?';
+        setTimeout(function () { run.dataset.armed = '0'; run.textContent = 'Запустить'; }, 4000);
+        return;
+      }
+      launch(Number(run.dataset.run), null, run);
+      return;
+    }
+
+    var go = event.target.closest('[data-go]');
+    if (go) {
+      launch(Number(go.dataset.go), go.dataset.game, go);
+      return;
+    }
+
     var del = event.target.closest('[data-del]');
     if (del) {
       if (del.dataset.armed !== '1') {
@@ -430,6 +489,20 @@ const SCRIPT = String.raw`
     });
   });
 
+  function launch(id, game, button) {
+    button.disabled = true;
+    say('Запускаю…', '');
+    post('launch', { id: id, game: game }).then(function (data) {
+      button.disabled = false;
+      button.textContent = 'Запустить';
+      button.dataset.armed = '0';
+      if (data.error) { say(data.error, 'err'); return; }
+      render(data.cards);
+      var tail = data.billboard ? ' Афиши не будет: у бота нет права «Управление событиями».' : '';
+      say('Турнир «' + data.name + '» объявлен в канале сервера.' + tail, 'ok');
+    });
+  }
+
   function render(cards) {
     el('cards').innerHTML = cards.html;
     document.querySelectorAll('.preset').forEach(function (card) {
@@ -456,14 +529,17 @@ export function formatsBoot(state: FormatsShellState): string {
   const payload = {
     limit: state.limit,
     data: state.cards,
-    html: state.cards.map(cardHtml).join('') || '<p class="sum">Пока ни одного. Собери первый — он появится здесь.</p>',
+    html: formatCardsHtml(state.cards, [...state.games]),
   };
   return `<script>window.__FORMATS__=${JSON.stringify(payload).replaceAll('<', '\\u003c')}</script>`;
 }
 
-/** Разметка списка карточек — она же уходит в ответ на сохранение и удаление. */
-export function formatCardsHtml(cards: FormatCard[]): string {
-  return cards.map(cardHtml).join('') || '<p class="sum">Пока ни одного. Собери первый — он появится здесь.</p>';
+/** Разметка списка карточек — она же уходит в ответ на сохранение, удаление и запуск. */
+export function formatCardsHtml(cards: FormatCard[], games: { value: string; label: string }[] = []): string {
+  return (
+    cards.map((card) => cardHtml(card, games)).join('') ||
+    '<p class="sum">Пока ни одного. Собери первый — он появится здесь.</p>'
+  );
 }
 
 /** Страница «ссылка не действует». Отдельная, потому что отказ надо объяснить, а не показать 404. */

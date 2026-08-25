@@ -4,11 +4,11 @@ import type { CommandDefinition, ModuleContext } from '../../../core/module.js';
 import { BRACKET_FORMAT_LABELS, EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
 import { closeTournamentRooms, createTournamentRooms, type CleanupReport } from './play.js';
 import type { ChannelsGateway } from '../discord/channels.js';
-import { registrationPanel } from '../discord/onboarding.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentFormat, TournamentFormatRow, TournamentGame } from '../schema.js';
 import { parseClock, type CycleService } from '../services/cycle.js';
 import { bricksOf, type FormatsService } from '../services/formats.js';
+import { defaultName, launchTournament } from '../services/launch.js';
 import { explainAnnounceFailure, type TournamentEventsGateway } from '../discord/events.js';
 import type { MessagesService } from '../services/messages.js';
 import { entrantStrengths } from '../services/strength.js';
@@ -290,13 +290,6 @@ async function formatsLink(interaction: Interaction, guild: Guild, deps: ManageD
 }
 
 async function create(interaction: Interaction, guild: Guild, deps: ManageDeps): Promise<void> {
-  // Второй одновременный турнир — это участники в двух сетках сразу и невозможность
-  // понять, к какому турниру относится /match report.
-  const running = await deps.tournaments.current(guild.id);
-  if (running) {
-    throw new UserError(`На сервере уже есть турнир «${running.name}». Сначала заверши или отмени его.`);
-  }
-
   /**
    * Сохранённый формат — заготовка, а не рамка: указанная явно опция перебивает его. Иначе
    * пришлось бы держать отдельный формат на каждое «то же самое, но на восьмерых», и вместо
@@ -322,9 +315,7 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
   const maxEntrants = interaction.options.getInteger('max_entrants') ?? base?.maxEntrants ?? 16;
   const hours =
     interaction.options.getInteger('hours') ?? base?.registrationHours ?? REGISTRATION_HOURS_DEFAULT;
-  const name =
-    interaction.options.getString('name') ??
-    (preset ? `${preset.name} · ${TOURNAMENT_GAME_LABELS[game]}` : `Турнир по ${TOURNAMENT_GAME_LABELS[game]}`);
+  const name = interaction.options.getString('name') ?? defaultName(game, preset?.name);
   // У турнира, который организатор ставит руками, по умолчанию второй шанс: это событие,
   // а не будничный вечер, и приходить ради одного матча обидно. У автомата наоборот —
   // там по умолчанию выбывание, чтобы вечер укладывался в разумное время.
@@ -336,78 +327,52 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
   const abilities = interaction.options.getBoolean('abilities') ?? base?.abilities ?? true;
   const autoTeams = interaction.options.getBoolean('auto_teams') ?? base?.autoTeams ?? false;
 
-  const tournament = await deps.tournaments.create({
-    guildId: guild.id,
-    name,
-    game,
-    format,
-    entryMode: mode,
-    teamSize,
-    maxEntrants,
-    seeding: base?.seeding ?? 'rank',
-    bestOf: base?.bestOf ?? 1,
-    abilities,
-    autoTeams,
-    requireVerified: base?.requireVerified ?? true,
-    // Потолок берётся из формата и запоминается у турнира: формат могут поправить назавтра,
-    // а сыгранный турнир должен остаться сыгранным по своим правилам.
-    ...(base?.costCap === null || base?.costCap === undefined ? {} : { costCap: base.costCap }),
-    createdBy: interaction.user.id,
-    ...(interaction.channelId ? { announceChannelId: interaction.channelId } : {}),
-    ...(interaction.channelId ? { matchParentId: interaction.channelId } : {}),
-  });
-
   // Счётчик запусков — учёт, а не часть турнира: по нему сортируется список форматов, и
   // отказ базы здесь не повод не проводить вечер.
   if (preset && deps.formats) {
     await deps.formats.markUsed(preset.id).catch(() => {});
   }
 
-  const closesAt = new Date(Date.now() + hours * 60 * 60 * 1_000);
-  await deps.tournaments.openRegistration(tournament.id, closesAt);
+  const result = await launchTournament(
+    { tournaments: deps.tournaments, publicBaseUrl: deps.publicBaseUrl, ...(deps.messages ? { messages: deps.messages } : {}), ...(deps.events ? { events: deps.events } : {}) },
+    guild,
+    {
+      settings: {
+        name,
+        game,
+        format,
+        entryMode: mode,
+        teamSize,
+        maxEntrants,
+        seeding: base?.seeding ?? 'rank',
+        bestOf: base?.bestOf ?? 1,
+        abilities,
+        autoTeams,
+        requireVerified: base?.requireVerified ?? true,
+        costCap: base?.costCap ?? null,
+        registrationHours: hours,
+      },
+      // Комнаты заводятся там, где вызвали команду: организатор набирает её в том канале, где
+      // хочет видеть турнир, и подбирать три идентификатора руками ему не приходится.
+      places: {
+        ...(interaction.channelId ? { announceChannelId: interaction.channelId, matchParentId: interaction.channelId } : {}),
+      },
+      createdBy: interaction.user.id,
+      // Панель — это и есть ответ на команду: организатор набрал её в нужном канале, и
+      // отправлять туда же вторым сообщением значило бы дублировать саму себя.
+      deliver: async (message) => {
+        const sent = await interaction.editReply(message);
+        return { channelId: sent.channelId, messageId: sent.id };
+      },
+    },
+  );
 
-  // Панель с кнопками вместо инструкции текстом: новичку не надо разбираться, какую
-  // команду набрать, — он нажимает «Что мне делать?» и получает свой следующий шаг.
-  const panel = registrationPanel(tournament);
-  const sent = await interaction.editReply({
-    content: [
-      panel.content,
-      '',
-      `Старт <t:${Math.floor(closesAt.getTime() / 1_000)}:t> · сетка: ${deps.publicBaseUrl}/t/${tournament.id}`,
-    ].join('\n'),
-    components: panel.components,
-  });
-
-  // Афиша во вкладке «События»: сама напомнит подписавшимся и покажет отсчёт. О неудаче
-  // организатор узнаёт здесь же — он и есть тот, кто может выдать боту право.
-  if (deps.events) {
-    const billboard = await deps.events.announce(
-      guild,
-      tournament,
-      closesAt,
-      `${deps.publicBaseUrl}/t/${tournament.id}`,
-    );
-    if (billboard.ok) {
-      await deps.tournaments.attachScheduledEvent(tournament.id, billboard.eventId);
-    } else {
-      await interaction.followUp({
-        content: explainAnnounceFailure(billboard.reason),
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-  }
-
-  // Панель с живыми кнопками — сор, и самый вредный: по ней нажимают через сутки. Запись
-  // не должна ронять создание турнира, поэтому ошибка здесь только в лог.
-  try {
-    await deps.messages?.remember(
-      tournament.id,
-      { channelId: sent.channelId, messageId: sent.id },
-      { transient: true },
-    );
-  } catch {
-    // Турнир создан, панель отправлена — этого достаточно. Сор останется, и это не повод
-    // сообщать организатору об ошибке.
+  // О неудаче афиши организатор узнаёт здесь же — он и есть тот, кто может выдать боту право.
+  if (result.billboard && !result.billboard.ok) {
+    await interaction.followUp({
+      content: explainAnnounceFailure(result.billboard.reason),
+      flags: MessageFlags.Ephemeral,
+    });
   }
 }
 
@@ -486,15 +451,6 @@ async function start(interaction: Interaction, guild: Guild, deps: ManageDeps, c
   });
 }
 
-/**
- * Отмена турнира. Уборка здесь ровно та же, что и после доигранного, и это не совпадение:
- * отменённый турнир оставляет за собой то же самое — комнаты, ветки, панель с живыми
- * кнопками. Пока отмена чистила только голосовые каналы играющих, всё остальное оставалось
- * на сервере: ветки матчей, панель регистрации, напоминания, а с ними и комнаты вышедших.
- *
- * Ветки при отмене удаляются, а не архивируются: результата у турнира нет, спорить не о чем,
- * а архив продолжает висеть в списке.
- */
 async function cancel(
   interaction: Interaction,
   guild: Guild,

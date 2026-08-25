@@ -220,7 +220,7 @@ registerDraftRoutes(http, { db, cache, logger });
 
 // Конструктор форматов турнира — вторая и последняя страница, где что-то меняют. Право
 // даёт та же ссылка с токеном: организатор получает её командой `/tournament formats`.
-registerFormatRoutes(http, { db, logger });
+registerFormatRoutes(http, { db, logger, client, publicBaseUrl: config.PUBLIC_BASE_URL });
 
 registerSteamCallback(http, {
   logger,

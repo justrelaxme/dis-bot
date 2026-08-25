@@ -1,8 +1,14 @@
+import type { Client, Guild, SendableChannels } from 'discord.js';
 import type { FastifyInstance } from 'fastify';
 import type { Database } from '../../core/db/client.js';
 import { describeForUser } from '../../core/errors.js';
 import type { Logger } from '../../core/logger.js';
+import { createTournamentEventsGateway } from '../tournaments/discord/events.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../tournaments/games.js';
+import { createCycleService } from '../tournaments/services/cycle.js';
+import { defaultName, launchTournament, type LaunchPlaces } from '../tournaments/services/launch.js';
+import { createMessagesService } from '../tournaments/services/messages.js';
+import { createTournamentsService } from '../tournaments/services/tournaments.js';
 import type { EntryMode, SeedingMode, TournamentFormat, TournamentGame } from '../tournaments/schema.js';
 import type { TournamentFormatRow } from '../tournaments/schema.js';
 import {
@@ -36,6 +42,13 @@ import { page } from './render.js';
 export interface FormatRoutesDeps {
   db: Database;
   logger: Logger;
+  /**
+   * Клиент Discord и адрес витрины — только для запуска турнира с сайта. Без них конструктор
+   * работает целиком, но кнопка «Запустить» честно говорит, что запускать некому: турнир — это
+   * сообщение с кнопками в канале, а канал живёт в Discord, а не в браузере.
+   */
+  client?: Client | undefined;
+  publicBaseUrl?: string | undefined;
 }
 
 /** Что пришло из браузера. Ничему тут не верим: приводим и проверяем на сервере. */
@@ -55,6 +68,8 @@ interface RawBricks {
 }
 
 const GAMES = new Set<string>(TOURNAMENT_GAMES);
+/** Дисциплины для выбора при запуске формата без своей. Тот же список, что и в конструкторе. */
+const GAME_CHOICES = TOURNAMENT_GAMES.map((game) => ({ value: game, label: TOURNAMENT_GAME_LABELS[game] }));
 
 function asGame(value: unknown): TournamentGame | null {
   return typeof value === 'string' && GAMES.has(value) ? (value as TournamentGame) : null;
@@ -116,6 +131,7 @@ function cardOf(row: TournamentFormatRow): FormatCard {
     summary: preview.headline,
     note: row.note,
     usedCount: row.usedCount,
+    game: row.game,
     bricks: {
       ...bricksOf(row),
       // Страница держит «любую дисциплину» пустой строкой: в HTML нет способа выбрать null.
@@ -127,6 +143,56 @@ function cardOf(row: TournamentFormatRow): FormatCard {
 export function registerFormatRoutes(server: FastifyInstance, deps: FormatRoutesDeps): void {
   const formats = createFormatsService({ db: deps.db });
   const grants = createGrantsService({ db: deps.db });
+  const cycles = createCycleService({ db: deps.db, logger: deps.logger });
+  const tournaments = createTournamentsService({ db: deps.db });
+  const messages = createMessagesService({ db: deps.db });
+  const events = createTournamentEventsGateway(deps.logger);
+
+  /**
+   * Куда запускать турнир, начатый с сайта.
+   *
+   * У запроса из браузера нет ни сервера, ни канала — в отличие от команды, которую набирают
+   * там, где хотят видеть турнир. Поэтому канал берётся из настроек ежедневного автомата: это
+   * единственное место, где на сервере записано «турниры проводим здесь». Если автомат не
+   * настроен, честнее отказать с объяснением, чем выбрать канал за организатора и объявить
+   * турнир не там, где его ждут.
+   */
+  async function placeFor(guildId: string): Promise<
+    | { ok: true; guild: Guild; channel: SendableChannels; places: LaunchPlaces }
+    | { ok: false; error: string }
+  > {
+    if (!deps.client || !deps.publicBaseUrl) {
+      return { ok: false, error: 'Запуск с сайта на этом сервере не подключён — воспользуйся командой в Discord.' };
+    }
+
+    const schedule = await cycles.schedule(guildId);
+    if (!schedule?.announceChannelId) {
+      return {
+        ok: false,
+        error:
+          'Не знаю, в каком канале объявлять турнир. Набери `/tournament schedule` в том канале, где проводите турниры, — этого достаточно, включать сам автомат не обязательно.',
+      };
+    }
+
+    const guild = await deps.client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) return { ok: false, error: 'Не вижу этот сервер — проверь, что бот на нём остался.' };
+
+    const channel = await guild.channels.fetch(schedule.announceChannelId).catch(() => null);
+    if (!channel?.isSendable()) {
+      return { ok: false, error: 'Канал объявлений недоступен: он удалён или боту закрыт доступ в него.' };
+    }
+
+    return {
+      ok: true,
+      guild,
+      channel,
+      places: {
+        announceChannelId: schedule.announceChannelId,
+        matchParentId: schedule.matchParentId ?? schedule.announceChannelId,
+        teamCategoryId: schedule.teamCategoryId ?? null,
+      },
+    };
+  }
 
   /** Карточки в трёх видах сразу: данные для скрипта, готовая разметка и предел. */
   async function cardsPayload(guildId: string): Promise<{
@@ -136,7 +202,7 @@ export function registerFormatRoutes(server: FastifyInstance, deps: FormatRoutes
   }> {
     const rows = await formats.list(guildId);
     const data = rows.map(cardOf);
-    return { data, html: formatCardsHtml(data), limit: MAX_FORMATS_PER_GUILD };
+    return { data, html: formatCardsHtml(data, GAME_CHOICES), limit: MAX_FORMATS_PER_GUILD };
   }
 
   server.get<{ Params: { token: string } }>('/formats/:token', async (_request, reply) => {
@@ -238,6 +304,99 @@ export function registerFormatRoutes(server: FastifyInstance, deps: FormatRoutes
       return reply.code(409).send({ error: described.text });
     }
   });
+
+  /**
+   * Запуск турнира прямо с карточки формата.
+   *
+   * Ради этого формат и собирают: человек смотрит на готовые правила и должен иметь возможность
+   * ими воспользоваться, не переключаясь в Discord и не набирая имя формата руками.
+   *
+   * Сам турнир создаёт общий сервис — тот же, что и слэш-команда. Разница только в том, куда
+   * уходит панель регистрации: у команды это ответ на неё, здесь — сообщение в канал
+   * объявлений.
+   */
+  server.post<{ Params: { token: string }; Body: { id?: number; game?: unknown } }>(
+    '/api/formats/:token/launch',
+    async (request, reply) => {
+      const grant = await grants.owner(request.params.token, 'formats');
+      if (!grant) return reply.code(403).send({ error: 'Ссылка не действует — попроси новую.' });
+
+      const id = request.body?.id;
+      if (typeof id !== 'number') return reply.code(400).send({ error: 'Не понял, какой формат запускать.' });
+
+      const preset = await formats.byId(grant.guildId, id);
+      if (!preset) return reply.code(404).send({ error: 'Такого формата на сервере нет.' });
+
+      const bricks = bricksOf(preset);
+      // Дисциплина у формата необязательна: он бывает про форму вечера, а не про игру. Тогда
+      // её выбирают при запуске — иначе бот не знает ни про драфт, ни про жеребьёвку.
+      const game = bricks.game ?? asGame(request.body?.game);
+      if (!game) {
+        return reply.code(409).send({
+          error: `В формате «${preset.name}» дисциплина не задана — выбери её при запуске.`,
+          needsGame: true,
+        });
+      }
+
+      const place = await placeFor(grant.guildId);
+      if (!place.ok) return reply.code(409).send({ error: place.error });
+
+      try {
+        const result = await launchTournament(
+          {
+            tournaments,
+            publicBaseUrl: deps.publicBaseUrl ?? '',
+            messages,
+            events,
+          },
+          place.guild,
+          {
+            settings: {
+              name: defaultName(game, preset.name),
+              game,
+              format: bricks.format,
+              entryMode: bricks.entryMode,
+              teamSize: bricks.teamSize,
+              maxEntrants: bricks.maxEntrants,
+              seeding: bricks.seeding,
+              bestOf: bricks.bestOf,
+              abilities: bricks.abilities,
+              autoTeams: bricks.autoTeams,
+              requireVerified: bricks.requireVerified,
+              costCap: bricks.costCap,
+              registrationHours: bricks.registrationHours,
+            },
+            places: place.places,
+            createdBy: grant.userId,
+            deliver: async (message) => {
+              const sent = await place.channel.send(message);
+              return { channelId: sent.channelId, messageId: sent.id };
+            },
+          },
+        );
+
+        // Счётчик запусков — учёт: по нему сортируется список, и отказ базы здесь не повод
+        // считать турнир несостоявшимся.
+        await formats.markUsed(preset.id).catch(() => {});
+
+        return reply.header('cache-control', 'no-store').send({
+          name: result.tournament.name,
+          bracket: `${deps.publicBaseUrl ?? ''}/t/${result.tournament.id}`,
+          channelId: place.places.announceChannelId,
+          // Афиша могла не завестись — об этом надо сказать тому, кто может выдать право.
+          billboard: result.billboard?.ok === false ? result.billboard.reason : null,
+          cards: await cardsPayload(grant.guildId),
+        });
+      } catch (error) {
+        const described = describeForUser(error);
+        if (described.incidentId) {
+          deps.logger.error({ err: error, incidentId: described.incidentId }, 'турнир с сайта не запустился');
+          return reply.code(500).send({ error: described.text });
+        }
+        return reply.code(409).send({ error: described.text });
+      }
+    },
+  );
 
   server.post<{ Params: { token: string }; Body: { id?: number } }>(
     '/api/formats/:token/remove',
