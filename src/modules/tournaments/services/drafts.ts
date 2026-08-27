@@ -474,9 +474,17 @@ export function createDraftsService(deps: {
       const [existing] = await db.select().from(matchDrafts).where(eq(matchDrafts.matchId, match.id));
       if (existing) return { draft: existing, created: false };
 
-      // Способности выключены — делить нечего: дуэль на прицел играется на любом агенте, и
-      // ни агенты, ни карта на неё не влияют. Драфта у такого турнира нет вовсе.
-      if (!tournament.abilities) return null;
+      /**
+       * Выключенные способности отменяют драфт **только у Valorant**: там это дуэль на прицел,
+       * которая играется на любом агенте, и ни агенты, ни карта на неё не влияют.
+       *
+       * Раньше проверка была общей, и это было ошибкой с последствиями. Настройка стоит в
+       * конструкторе форматов у любой дисциплины, и формат по Genshin, сохранённый с
+       * выключенными способностями, оставался вовсе без драфта — то есть ссылки капитанам не
+       * приходили, и выглядело это поломкой бота, а не следствием переключателя. У Dota и
+       * Genshin способности не выключить в самой игре, поэтому и отменять по ним нечего.
+       */
+      if (tournament.game === 'valorant' && !tournament.abilities) return null;
 
       const subject = draftSubject(tournament.game);
       if (subject === null) return null;

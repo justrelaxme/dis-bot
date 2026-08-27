@@ -465,6 +465,23 @@ describe('драфт персонажей Genshin', () => {
     expect(first?.iconUrl).toBe('https://enka.network/ui/UI_AvatarIcon_Side_Hero0.png');
   });
 
+  /**
+   * Переключатель «со способностями» стоит в конструкторе форматов у любой дисциплины, а
+   * значит что-то только у Valorant: там выключенные способности — это дуэль на прицел, где
+   * делить нечего. Пока проверка была общей, формат по Genshin, сохранённый с выключенными
+   * способностями, оставался вовсе без драфта — и ссылки капитанам не приходили.
+   */
+  it('выключенные способности драфт не отменяют: в Genshin их не выключить', async () => {
+    const { tournament, match } = await makeMatch({ game: 'genshin', solo: true, abilities: false });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    expect(created?.draft.subject).toBe('characters');
+    expect((created?.draft.pool ?? []).length).toBeGreaterThan(0);
+  });
+
   it('имена идут по алфавиту, а не в порядке выгрузки', async () => {
     const { tournament, match } = await makeMatch({ game: 'genshin', solo: true });
     const { service, cache } = drafts();

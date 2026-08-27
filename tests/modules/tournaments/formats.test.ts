@@ -92,11 +92,35 @@ describe('согласование кирпичиков', () => {
 });
 
 describe('предупреждения', () => {
-  /** Не запрещено, но почти наверняка не то, чего человек хотел. Молчать об этом нельзя. */
-  it('о выключенных способностях говорится прямо: драфта не будет', () => {
-    const warnings = warningsFor(normalizeBricks(team({ abilities: false })));
+  /**
+   * Настройка значит что-то только у Valorant: у Dota и Genshin способности в самой игре не
+   * выключаются. Переключатель при этом стоит у всех дисциплин, и раньше он отменял драфт
+   * везде — формат по Genshin с выключенными способностями оставался без драфта, и ссылки
+   * капитанам не приходили.
+   */
+  it('о выключенных способностях у Valorant говорится, что драфта не будет', () => {
+    const warnings = warningsFor(normalizeBricks(team({ game: 'valorant', abilities: false })));
 
-    expect(warnings.join(' ')).toMatch(/драфта не будет/);
+    expect(warnings.join(' ')).toMatch(/драфта у неё не будет/);
+  });
+
+  it('у остальных дисциплин сказано, что настройка ни на что не влияет', () => {
+    const warnings = warningsFor(normalizeBricks(team({ game: 'dota2', abilities: false })));
+
+    expect(warnings.join(' ')).toMatch(/ни на что не влияет/);
+  });
+
+  /** Этаж Бездны проходит один человек: командный Genshin означает вечер без заявок составов. */
+  it('про командный Genshin предупреждает', () => {
+    const warnings = warningsFor(normalizeBricks(team({ game: 'genshin', entryMode: 'team', teamSize: 4 })));
+
+    expect(warnings.join(' ')).toMatch(/Одиночки/);
+  });
+
+  it('про одиночный Genshin не предупреждает', () => {
+    const warnings = warningsFor(normalizeBricks(team({ game: 'genshin', entryMode: 'solo' })));
+
+    expect(warnings.join(' ')).not.toMatch(/Одиночки/);
   });
 
   it('второй шанс плюс матчи до двух побед — предупреждение про длину вечера', () => {
@@ -172,10 +196,21 @@ describe('что получится', () => {
     expect(preview.lines.join(' ')).toMatch(/Драфт: у этой дисциплины его нет/);
   });
 
-  it('выключенные способности отменяют драфт, и это видно в предпросмотре', () => {
+  it('выключенные способности отменяют драфт Valorant, и это видно в предпросмотре', () => {
     const preview = previewOf(normalizeBricks(team({ game: 'valorant', abilities: false })));
 
     expect(preview.lines.join(' ')).toMatch(/Драфт: нет/);
+  });
+
+  /**
+   * У Dota и Genshin способности в игре не выключаются. Пока переключатель отменял драфт везде,
+   * формат по Genshin с ним оставался без драфта — и ссылки капитанам не приходили.
+   */
+  it('у остальных дисциплин выключенные способности драфт не отменяют', () => {
+    const preview = previewOf(normalizeBricks(team({ game: 'genshin', entryMode: 'solo', abilities: false })));
+
+    expect(preview.lines.join(' ')).toContain('персонажи');
+    expect(preview.lines.join(' ')).not.toMatch(/Драфт: нет/);
   });
 
   it('людей считает по составам, а не по участникам сетки', () => {

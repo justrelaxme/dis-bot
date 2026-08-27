@@ -150,8 +150,20 @@ export function normalizeBricks(bricks: FormatBricks): NormalizedBricks {
 export function warningsFor(bricks: NormalizedBricks): string[] {
   const warnings: string[] = [];
 
-  if (!bricks.abilities) {
-    warnings.push('Способности выключены — драфта не будет вовсе: ни карт, ни героев.');
+  // Настройка означает что-то только у Valorant: у Dota и Genshin способности в самой игре не
+  // выключаются. Молчать об этом нельзя — переключатель стоит у всех дисциплин.
+  if (!bricks.abilities && (bricks.game === 'valorant' || bricks.game === null)) {
+    warnings.push('Способности выключены — у Valorant это дуэль на прицел, и драфта у неё не будет.');
+  }
+  if (!bricks.abilities && bricks.game !== null && bricks.game !== 'valorant') {
+    warnings.push('Способности выключены, но в этой дисциплине настройка ни на что не влияет — драфт будет.');
+  }
+  // Этаж Бездны проходит один человек своей четвёркой. Командный турнир по Genshin означает,
+  // что заявки составов не будет ни у кого: она привязана к человеку, а не к пятёрке.
+  if (bricks.game === 'genshin' && bricks.entryMode === 'team') {
+    warnings.push(
+      'Genshin командой: этаж Бездны проходит один человек, и заявки составов у команд не будет. Скорее всего нужен режим «Одиночки».',
+    );
   }
   if (bricks.entryMode === 'team' && !bricks.autoTeams) {
     warnings.push('Автосбор выключен: составы собирают капитаны, и записаться в одиночку не выйдет.');
@@ -231,8 +243,10 @@ export function previewOf(bricks: NormalizedBricks): FormatPreview {
   // прямо: организатор иначе ждёт полотно с пиками, а его нет, и это выглядит поломкой.
   if (bricks.game === null) {
     lines.push('Драфт: зависит от дисциплины, а она пока не задана.');
-  } else if (!bricks.abilities) {
-    lines.push('Драфт: нет — способности выключены.');
+  } else if (bricks.game === 'valorant' && !bricks.abilities) {
+    // Только у Valorant: там выключенные способности означают дуэль на прицел, где делить
+    // нечего. В остальных дисциплинах способности в игре не выключаются, и драфт остаётся.
+    lines.push('Драфт: нет — способности выключены, играется дуэль на прицел.');
   } else {
     const subject = draftSubject(bricks.game);
     lines.push(
