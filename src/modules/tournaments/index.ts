@@ -8,6 +8,7 @@ import type { RateLimiter } from '../../core/rate-limit.js';
 import { createHoyolabChronicle } from '../identity/providers/hoyolab.js';
 import { createManageCommand } from './commands/manage.js';
 import {
+  advanceTournamentRooms,
   createButtonHandler,
   createCheckinCommand,
   createMatchCommand,
@@ -229,22 +230,29 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
           if (settled.length === 0) return;
           ctx.logger.info({ count: settled.length }, 'результаты приняты по молчанию соперника');
 
-          // Последний матч турнира чаще всего закрывается именно здесь, а не кнопкой. Значит,
-          // и убирать за турниром обязана эта джоба: пока она этого не делала, голосовые
-          // комнаты команд оставались на сервере навсегда.
+          // Матч турнира чаще всего закрывается именно здесь, а не кнопкой — и последний, и
+          // любой другой. Значит, эта джоба обязана делать обе вещи: убирать за завершённым
+          // турниром и догонять сетку у продолжающегося.
+          //
+          // Пока она не делала ни того ни другого, это выглядело так: голосовые комнаты
+          // оставались навсегда, а во втором круге у матчей не появлялось ни веток, ни
+          // драфта — то есть ссылки капитанам не приходили вовсе.
           for (const { match, finished } of settled) {
-            if (!finished) continue;
             try {
               const tournament = await tournaments.byId(match.tournamentId);
               const guild = await ctx.client.guilds.fetch(tournament.guildId).catch(() => null);
               if (!guild) continue;
+              if (!finished) {
+                await advanceTournamentRooms(play, guild, tournament.id);
+                continue;
+              }
               await closeTournamentRooms(play, guild, tournament.id, ctx.logger);
               await closeTournamentPublic(play, guild, tournament, ctx.logger);
             } catch (error) {
               // Сбой уборки одного турнира не должен обрывать остальные принятые результаты.
               ctx.logger.error(
                 { err: error, matchId: match.id },
-                'турнир закрылся по молчанию, но убрать за ним не удалось',
+                'результат принят по молчанию, но догнать сетку или убрать за турниром не удалось',
               );
             }
           }

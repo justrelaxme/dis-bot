@@ -471,7 +471,7 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
       });
 
       if (result.finished) await cleanup(deps, guild, tournament.id, ctx);
-      else await ensureMatchThreads(deps, guild, tournament.id);
+      else await advanceTournamentRooms(deps, guild, tournament.id);
     },
   };
 }
@@ -599,6 +599,29 @@ export async function createTournamentRooms(deps: PlayDeps, guild: Guild, tourna
     if (channelId) await deps.tournaments.attachVoice(entrant.id, channelId);
   }
 
+  await advanceTournamentRooms(deps, guild, tournamentId);
+}
+
+/**
+ * Догнать сетку: у каждого матча, который стал играбельным, должна появиться ветка и драфт.
+ *
+ * Экспортируется и вызывается **после каждого изменения сетки**, а изменений этих три:
+ * организатор присудил победу, соперник подтвердил результат кнопкой, и — чаще всего —
+ * результат приняли по молчанию, то есть джобой автоподтверждения.
+ *
+ * Функция появилась из дефекта, и дефект был ровно в том, что этих путей три. Каждый из них
+ * дописывали отдельно, и до драфта дошёл только старт турнира: во втором круге ветка у матча
+ * появлялась, а ссылки на драфт капитанам не приходили — драфта просто не существовало. У
+ * молчаливого пути не было и ветки: он не догонял сетку вообще ничем.
+ *
+ * Отсюда правило: список того, что нужно ставшему играбельным матчу, живёт здесь и только
+ * здесь. Дописать в один путь и забыть про два остальных больше нельзя, потому что путь один.
+ */
+export async function advanceTournamentRooms(
+  deps: PlayDeps,
+  guild: Guild,
+  tournamentId: number,
+): Promise<void> {
   await ensureMatchThreads(deps, guild, tournamentId);
   await ensureMatchDrafts(deps, guild, tournamentId);
 }
@@ -886,7 +909,7 @@ async function handleButton(
     // нужна комната. А если это был последний матч, комнаты пора убирать: раньше этот
     // путь уборку не запускал, и после турнира, закрытого кнопкой, каналы оставались.
     if (finished) await cleanup(deps, guild, tournament.id, ctx);
-    else await ensureMatchThreads(deps, guild, tournament.id);
+    else await advanceTournamentRooms(deps, guild, tournament.id);
     return;
   }
 
