@@ -46,6 +46,63 @@ export type TournamentGame = 'dota2' | 'lol' | 'tft' | 'valorant' | 'genshin';
  * сохранённую. Иначе пришлось бы держать отдельный формат на каждое «то же самое, но на
  * восьмерых», и вместо шести осмысленных имён в списке оказалось бы тридцать.
  */
+/**
+ * Состав игрока на турнир: кого он заявил и во сколько очков это обошлось.
+ *
+ * Зачем отдельная таблица, а не «читать Летопись каждый раз». Аккаунт меняется каждый день:
+ * выпало созвездие, докрутилось оружие — и вчерашние 6 очков сегодня стали 8. Турнир так
+ * судить нельзя. Заявка фиксирует, с чем человек пришёл, и остаётся такой же до конца вечера,
+ * что бы он ни накрутил после.
+ *
+ * Второе, ради чего она нужна: показать честно, из чего человек выбирал. Пул драфта — это все
+ * сто с лишним персонажей игры, а заявка — те, что у него есть и в бюджет влезли. Разница
+ * между ними и есть ответ на вопрос «почему он не взял вот этого».
+ *
+ * Хранится снимком, а не ссылками на справочник: справочник обновится с патчем, а прошлый
+ * турнир должен остаться читаемым ровно таким, каким его играли. Тот же принцип, что у пула
+ * драфта и у потолка стоимости у самого турнира.
+ */
+export const tournamentRosters = pgTable(
+  'tournament_rosters',
+  {
+    id: serial('id').primaryKey(),
+    tournamentId: integer('tournament_id')
+      .notNull()
+      .references(() => tournaments.id, { onDelete: 'cascade' }),
+    userId: text('user_id').notNull(),
+    /** UID игрового аккаунта на момент заявки: по нему потом видно, чей это был состав. */
+    externalId: text('external_id'),
+    /** Заявленные персонажи со сборкой и ценой каждого. */
+    characters: jsonb('characters')
+      .$type<
+        {
+          id: string;
+          name: string;
+          rarity: number;
+          constellation: number;
+          cost: number;
+          iconUrl?: string;
+          weapon?: { name: string; rarity: number; refinement: number };
+          sets?: string;
+        }[]
+      >()
+      .notNull(),
+    /** Сумма очков заявки. Считается при сохранении и не пересчитывается потом. */
+    spent: doublePrecision('spent').notNull(),
+    /**
+     * Потолок, действовавший в момент заявки. Хранится вместе с ней: организатор может
+     * поменять потолок турнира, и тогда должно быть видно, по какому правилу заявка прошла.
+     */
+    cap: doublePrecision('cap'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  // Один игрок — одна заявка на турнир. Повторное сохранение правит её, а не заводит вторую.
+  (table) => [unique('tournament_rosters_tournament_user_uq').on(table.tournamentId, table.userId)],
+);
+
+export type TournamentRosterRow = typeof tournamentRosters.$inferSelect;
+
 export const tournamentFormats = pgTable(
   'tournament_formats',
   {

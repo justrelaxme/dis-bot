@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { and, eq, lt } from 'drizzle-orm';
 import type { Database } from '../../core/db/client.js';
-import { webGrants, type WebGrantRow } from './schema.js';
+import { webGrants, type WebGrantRow, type WebGrantScope } from './schema.js';
 
 /**
  * Выдача и проверка пропусков на витрину. Устройство и его цена описаны в `schema.ts`.
@@ -29,7 +29,7 @@ export function createGrantsService(deps: { db: Database }) {
     async issue(input: {
       guildId: string;
       userId: string;
-      scope: 'formats';
+      scope: WebGrantScope;
     }): Promise<{ token: string; expiresAt: Date }> {
       await db
         .delete(webGrants)
@@ -54,7 +54,7 @@ export function createGrantsService(deps: { db: Database }) {
      * ссылка больше не действует, попроси новую», а разница между ними полезна только тому,
      * кто перебирает токены.
      */
-    async owner(token: string | undefined, scope: 'formats'): Promise<WebGrantRow | null> {
+    async owner(token: string | undefined, scope: WebGrantScope): Promise<WebGrantRow | null> {
       if (!token) return null;
       const [row] = await db.select().from(webGrants).where(eq(webGrants.token, token));
       if (!row || row.scope !== scope) return null;

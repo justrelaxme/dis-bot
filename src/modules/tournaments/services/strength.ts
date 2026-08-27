@@ -98,6 +98,23 @@ export async function genshinUidOfEntrant(db: Database, entrantId: number): Prom
 }
 
 /**
+ * UID Genshin игрока — по нему читается его состав для заявки на турнир.
+ *
+ * Подтверждение обязательно: без него любой указал бы чужой UID и заявил чужой состав.
+ * Подтвердить владение в Genshin возможно (код в подписи профиля), поэтому требовать его тут
+ * не значит требовать невозможного — в отличие от Valorant.
+ */
+export async function genshinUidOfUser(db: Database, userId: string): Promise<string | null> {
+  const result = await db.execute<{ external_id: string }>(sql`
+    select external_id
+    from game_accounts
+    where user_id = ${userId} and provider = 'enka' and verified_at is not null
+    limit 1
+  `);
+  return result.rows[0]?.external_id ?? null;
+}
+
+/**
  * Сила каждого участника: для команды — **средний** ранг состава, для одиночки — его
  * собственный. Средний, а не максимальный: команда из одного Immortal и четырёх Herald
  * играет не как Immortal, и сеять её первой значило бы отдать ей пропуск, которого она

@@ -21,7 +21,9 @@ import { createShutdown } from './core/shutdown.js';
 import { buildModules } from './modules.js';
 import { registerSteamCallback } from './modules/identity/http/steam-callback.js';
 import { registerDraftRoutes } from './modules/web/draft.js';
+import { createHoyolabChronicle } from './modules/identity/providers/hoyolab.js';
 import { registerFormatRoutes } from './modules/web/formats.js';
+import { registerRosterRoutes } from './modules/web/roster.js';
 import { registerWebRoutes } from './modules/web/routes.js';
 import { createProviderRegistry } from './modules/identity/providers/index.js';
 import { createLinkingService } from './modules/identity/services/linking.js';
@@ -221,6 +223,18 @@ registerDraftRoutes(http, { db, cache, logger });
 // Конструктор форматов турнира — вторая и последняя страница, где что-то меняют. Право
 // даёт та же ссылка с токеном: организатор получает её командой `/tournament formats`.
 registerFormatRoutes(http, { db, logger, client, publicBaseUrl: config.PUBLIC_BASE_URL });
+
+// Заявка состава на турнир по Genshin: игрок видит свой аккаунт с ценой каждого персонажа и
+// укладывается в бюджет. Право даёт та же ссылка с токеном, что и у драфта с конструктором.
+registerRosterRoutes(http, {
+  db,
+  logger,
+  chronicle: createHoyolabChronicle({
+    client: fetchClientFor('hoyolab'),
+    rateLimiter,
+    ...(config.HOYOLAB_COOKIE ? { cookie: config.HOYOLAB_COOKIE } : {}),
+  }),
+});
 
 registerSteamCallback(http, {
   logger,

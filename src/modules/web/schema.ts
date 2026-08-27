@@ -1,6 +1,15 @@
 import { index, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 
 /**
+ * Что разрешает пропуск. Областей две, и они для разных людей: `formats` — организатору,
+ * собирать форматы турниров, `roster` — игроку, заявлять свой состав на текущий турнир.
+ *
+ * Разделены намеренно. Ссылка — это и есть право, и пропуск игрока не должен открывать
+ * настройки сервера просто потому, что оба живут в одной таблице.
+ */
+export type WebGrantScope = 'formats' | 'roster';
+
+/**
  * Пропуск на витрину — способ дать право что-то менять человеку, который на сайт не входил.
  *
  * Витрина по устройству анонимна и только для чтения: ни логина, ни пароля, ни OAuth. Это
@@ -30,7 +39,7 @@ export const webGrants = pgTable(
      * переключатель значило бы ставить страницу в зависимость от его доступности.
      * Компромисс — короткий срок жизни пропуска.
      */
-    scope: text('scope').$type<'formats'>().notNull(),
+    scope: text('scope').$type<WebGrantScope>().notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

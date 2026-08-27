@@ -54,6 +54,15 @@ export interface CreateTournamentInput {
   abilities?: boolean;
   /** Собирает ли бот составы сам из записавшихся по одному. Только для командного турнира. */
   autoTeams?: boolean;
+  /**
+   * Потолок стоимости состава в очках у турниров Genshin. `null` и отсутствие означают одно —
+   * без потолка, играют чем есть.
+   *
+   * Поле объявлено здесь не для порядка: пока его тут не было, вызывающие передавали потолок
+   * россыпью (`...{ costCap }`), TypeScript такие спреды не проверяет, и вставка молча его
+   * теряла. Формат задавал бюджет, а в строке турнира его не оказывалось.
+   */
+  costCap?: number | null;
   requireVerified: boolean;
   createdBy: string;
   announceChannelId?: string;
@@ -420,6 +429,10 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
           // Автосбор только у командного турнира: в матче один на один делить нечего.
           autoTeams: input.entryMode === 'team' && (input.autoTeams ?? false),
           requireVerified: input.requireVerified,
+          // Потолок стоимости состава: `null` означает «без потолка», и его надо отличать от
+          // «не передали». Пока поле было в типе, но не в этой вставке, бюджет турнира молча
+          // терялся — формат его задавал, а строка турнира оставалась без него.
+          ...(input.costCap === undefined || input.costCap === null ? {} : { costCap: input.costCap }),
           createdBy: input.createdBy,
           ...(input.announceChannelId ? { announceChannelId: input.announceChannelId } : {}),
           ...(input.teamCategoryId ? { teamCategoryId: input.teamCategoryId } : {}),

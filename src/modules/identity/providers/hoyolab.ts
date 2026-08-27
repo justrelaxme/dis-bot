@@ -131,6 +131,12 @@ export interface OwnedCharacter {
   level: number;
   constellation: number;
   rarity: number;
+  /**
+   * Адрес иконки, как его отдаёт Летопись. Берётся её собственный, а не собирается из имени
+   * файла: имя иконки в ответе HoYoLAB не приходит вовсе, а выводить его из идентификатора
+   * нельзя — они не связаны.
+   */
+  iconUrl?: string;
   /** Что надето. Отсутствие означает «неизвестно»: у неподнятого персонажа оружия может не быть. */
   weapon?: OwnedWeapon;
   /**
@@ -242,6 +248,7 @@ export function createHoyolabChronicle(deps: HoyolabDeps) {
           // Пробным персонажам HoYoLAB ставит редкость 105 вместо 5. Приводится к пятёрке:
           // иначе «пятизвёздочных: 0» у аккаунта, где они есть, и сортировка врёт.
           rarity: avatar.rarity === undefined ? 4 : avatar.rarity > 100 ? avatar.rarity - 100 : avatar.rarity,
+          ...(avatar.icon ? { iconUrl: avatar.icon } : {}),
           ...(avatar.weapon
             ? {
                 weapon: {

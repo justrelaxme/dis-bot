@@ -20,6 +20,7 @@ import { closeTournamentPublic } from './discord/closing.js';
 import { createFormatAutocomplete } from './discord/autocomplete.js';
 import { createTournamentEventsGateway } from './discord/events.js';
 import { createTournamentPollCommand } from './commands/poll.js';
+import { createRosterCommand } from './commands/roster.js';
 import { createStatsCommand } from './commands/stats.js';
 import { createChannelsGateway } from './discord/channels.js';
 import { createDiscordPollGateway } from './discord/poll-gateway.js';
@@ -91,7 +92,11 @@ export interface TournamentsModuleDeps {
    * formats` могла выдать ссылку, не зная, как устроен доступ к сайту.
    */
   grants?: {
-    issue(input: { guildId: string; userId: string; scope: 'formats' }): Promise<{ token: string; expiresAt: Date }>;
+    issue(input: {
+      guildId: string;
+      userId: string;
+      scope: 'formats' | 'roster';
+    }): Promise<{ token: string; expiresAt: Date }>;
   };
 }
 
@@ -175,6 +180,11 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
       createMatchCommand(play),
       createCheckinCommand(play),
       createStatsCommand({ db: deps.db, publicBaseUrl: deps.publicBaseUrl }),
+      // Заявку собирает участник, а у `/tournament` стоит право «Управление сервером» — поэтому
+      // своя команда, доступная всем.
+      ...(deps.grants
+        ? [createRosterCommand({ tournaments, grants: deps.grants, publicBaseUrl: deps.publicBaseUrl })]
+        : []),
     ],
 
     events: [createButtonHandler(play), createFormatAutocomplete({ formats })],
