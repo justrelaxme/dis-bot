@@ -327,6 +327,9 @@ export function createDraftsService(deps: {
           const mine = byId.get(option.id);
           if (!mine) continue;
           option.owned = [...(option.owned ?? []), side];
+          // Помечаем как заявленное: только по этой пометке драфт запрещает пик. Прочитанное
+          // из Летописи остаётся подсказкой — она бывает устаревшей.
+          option.declaredBy = [...(option.declaredBy ?? []), side];
           option.builds = [
             ...(option.builds ?? []),
             {

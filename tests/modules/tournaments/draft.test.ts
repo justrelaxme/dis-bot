@@ -579,26 +579,51 @@ describe('прогон вето на настоящем пуле', () => {
 });
 
 /**
- * Пик только из своего. Пометка о владении появляется у персонажей Genshin, когда состав
- * заявлен или прочитан из Летописи: взять того, кого у тебя нет, значит выйти на этаж без него,
- * и выяснилось бы это уже после матча.
+ * Пик только из заявленного — и только если игрок заявлялся.
+ *
+ * Заявку человек собрал сам и уложил в бюджет: держать его в её пределах честно, иначе бюджет
+ * обходился бы прямо в драфте. А состав, лишь прочитанный из Летописи, запретом быть не может:
+ * HoYoLAB показывает вчерашнюю крутку с задержкой, и отнимать ход из-за неё нельзя.
  */
 describe('пик только из заявленного', () => {
-  const characters: DraftOption[] = [
+  /** Заявка: обе стороны заявились, у каждой своё. */
+  const declared: DraftOption[] = [
+    { id: 'мой', label: 'Мой', group: 'characters', owned: ['a'], declaredBy: ['a'] },
+    { id: 'чужой', label: 'Чужой', group: 'characters', owned: ['b'], declaredBy: ['b'] },
+    { id: 'общий', label: 'Общий', group: 'characters', owned: ['a', 'b'], declaredBy: ['a', 'b'] },
+  ];
+  /** Только прочитано из Летописи: заявки нет, пометки есть. */
+  const readOnly: DraftOption[] = [
     { id: 'мой', label: 'Мой', group: 'characters', owned: ['a'] },
     { id: 'чужой', label: 'Чужой', group: 'characters', owned: ['b'] },
-    { id: 'ничей', label: 'Ничей', group: 'characters' },
   ];
   const picks = pickBanSequence('characters', 1, 1);
 
   it('своего взять можно', () => {
-    const view = draftView(characters, picks, choose(picks, [null, null]));
+    const view = draftView(declared, picks, choose(picks, [null, null]));
 
     expect(canChoose(view, 'a', 'мой')).toEqual({ ok: true });
   });
 
-  it('чужого взять нельзя, и сказано почему', () => {
-    const view = draftView(characters, picks, choose(picks, [null, null]));
+  /**
+   * Главное свойство зеркального пула: одного персонажа могут взять обе стороны. Это и есть
+   * смысл контрпика — соперник видит взятого и берёт его же или ответ на него.
+   */
+  it('заявленного обеими сторонами могут взять обе', () => {
+    const first = draftView(declared, picks, choose(picks, [null, null]));
+    expect(canChoose(first, 'a', 'общий')).toEqual({ ok: true });
+
+    // Сторона «a» взяла его — для «b» он всё равно доступен.
+    const after = draftView(declared, picks, [
+      ...choose(picks, [null, null]),
+      { step: 2, side: 'a', kind: 'pick', optionId: 'общий' },
+    ]);
+    expect(after.current?.side).toBe('b');
+    expect(canChoose(after, 'b', 'общий')).toEqual({ ok: true });
+  });
+
+  it('не заявленного тобой взять нельзя, и сказано почему', () => {
+    const view = draftView(declared, picks, choose(picks, [null, null]));
     const verdict = canChoose(view, 'a', 'чужой');
 
     expect(verdict.ok).toBe(false);
@@ -607,19 +632,34 @@ describe('пик только из заявленного', () => {
 
   /** Банят как раз то, что есть у соперника: запрещать бан чужого значило бы отменить баны. */
   it('чужого забанить можно', () => {
-    const view = draftView(characters, picks, []);
+    const view = draftView(declared, picks, []);
 
     expect(view.current?.kind).toBe('ban');
     expect(canChoose(view, 'a', 'чужой')).toEqual({ ok: true });
   });
 
   /**
-   * Отсутствие пометки означает «неизвестно», а не «ни у кого»: без ключа HoYoLAB, при закрытой
-   * Летописи и у остальных дисциплин пометок нет вовсе, и драфт обязан идти как раньше.
+   * Летопись отдаёт вчерашнюю крутку с задержкой. Запрет по таким данным отнимал бы ход из-за
+   * задержки чужого сервиса, поэтому там пометка остаётся подсказкой.
    */
-  it('без пометок ограничения нет', () => {
-    const view = draftView(characters, picks, choose(picks, [null, null]));
+  it('без заявки прочитанное из Летописи не запрещает ход', () => {
+    const view = draftView(readOnly, picks, choose(picks, [null, null]));
 
-    expect(canChoose(view, 'a', 'ничей')).toEqual({ ok: true });
+    expect(view.declaredSides).toEqual([]);
+    expect(canChoose(view, 'a', 'чужой')).toEqual({ ok: true });
+  });
+
+  it('заявка одной стороны не ограничивает другую', () => {
+    const mixed: DraftOption[] = [
+      { id: 'мой', label: 'Мой', group: 'characters', owned: ['a'], declaredBy: ['a'] },
+      { id: 'чужой', label: 'Чужой', group: 'characters', owned: ['b'] },
+    ];
+    const view = draftView(mixed, picks, [
+      ...choose(picks, [null, null]),
+      { step: 2, side: 'a', kind: 'pick', optionId: 'мой' },
+    ]);
+
+    expect(view.declaredSides).toEqual(['a']);
+    expect(canChoose(view, 'b', 'чужой')).toEqual({ ok: true });
   });
 });

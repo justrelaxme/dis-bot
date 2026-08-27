@@ -196,6 +196,12 @@ export const DRAFT_STYLE = `
 .purse .over b { color:var(--ember); }
 .purse .cap { color:var(--dim); margin-left:auto; }
 
+/* Взято соперником — но взять можно и тебе. Пул персонажей и героев зеркальный, и без этой
+   пометки плитка с чужим цветом читалась как занятая: капитан видел полосу соперника и не
+   пробовал нажать. Пунктир говорит обратное — вариант свободен для тебя. */
+.tile.mirror { border-style:dashed; border-color:var(--accent); }
+.tile.mirror .by::after { content:' · можно и тебе'; color:var(--accent); }
+
 /* Итог фазы. Стоит после занятых нарочно: карта, которую выбрали, — тоже итог, и её рамка
    должна быть акцентной, а не цветом выбравшей команды. */
 .tile.won { border-color:var(--accent);
@@ -289,7 +295,7 @@ function tile(option: DraftOption, index: number, you: DraftSide | null, cap: nu
   const note = lack ? `<span class="lack">${escape(lack.text)}</span>` : '';
   const rig = rigOf(option, you, cap);
 
-  return `<button type="button" class="tile free${lack?.mine ? ' lacks-you' : ''}${rig.pricey ? ' pricey' : ''}" data-id="${escape(option.id)}" data-cost="${rig.cost}" style="--delay:${Math.min(index, 24) * 18}ms">
+  return `<button type="button" class="tile free${lack?.mine ? ' lacks-you' : ''}${rig.pricey ? ' pricey' : ''}" data-id="${escape(option.id)}" data-cost="${rig.cost}" data-lack="${lack?.mine ? 1 : 0}" style="--delay:${Math.min(index, 24) * 18}ms">
 <span class="art">${art}${scheme}${note}</span>
 <span class="tl">${escape(option.label)}</span>
 ${rig.html}
@@ -471,7 +477,7 @@ ${sections}
    * Нажать нельзя по забаненному и по тому, что уже взяла **своя** сторона. По взятому
    * соперником — можно, если пики в этом наборе зеркальные: в этом и смысл контрпика.
    */
-  function tileClass(id, group, resultIds) {
+  function tileClass(id, group, resultIds, button) {
     var mirrored = group !== 'maps';
     var banned = isBanned(id);
     var byA = heldBy(id, 'a');
@@ -486,10 +492,20 @@ ${sections}
 
     if (resultIds.indexOf(id) >= 0) classes.push('won');
 
+    // Пометки цены проставлены сервером и должны переживать перерисовку: класс присваивается
+    // целиком, и без этого «нет у тебя» и «дороже потолка» исчезали после первого же обновления.
+    if (button && button.dataset.lack === '1') classes.push('lacks-you');
+    if (CAP !== null && Number(button && button.dataset.cost) > CAP) classes.push('pricey');
+
     if (myTurn() && state.current.group === group) {
       var mine = heldBy(id, state.you);
       var blocked = banned || mine || (!mirrored && (byA || byB));
-      if (!blocked) classes.push('hot');
+      if (!blocked) {
+        classes.push('hot');
+        // Взято соперником, а взять можно и тебе. Без пометки чужой цвет читается как «занято».
+        var byFoe = state.you === 'a' ? byB : byA;
+        if (mirrored && byFoe) classes.push('mirror');
+      }
     }
     return classes.join(' ');
   }
@@ -573,7 +589,7 @@ ${sections}
         var id = button.dataset.id;
         // Класс присваивается целиком и только при изменении: повторное присваивание того же
         // значения не перезапустило бы анимацию, но и трогать разметку зря незачем.
-        var next = tileClass(id, phase.group, phase.resultIds);
+        var next = tileClass(id, phase.group, phase.resultIds, button);
         if (button.className !== next) button.className = next;
 
         var by = button.querySelector('.by');

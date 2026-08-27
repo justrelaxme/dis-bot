@@ -197,6 +197,15 @@ describe('полотно драфта', () => {
  * и та же плитка для одной стороны «нет у тебя», для другой — «нет у соперника», и это две
  * разные подсказки, а не одна на двоих.
  */
+/**
+ * Только разметка, без встроенного скрипта. Скрипт — часть страницы, но не часть того, что
+ * видит человек: его текст в проверках содержимого давал ложные совпадения.
+ */
+function markupOf(html: string): string {
+  const cut = html.indexOf('<script');
+  return cut < 0 ? html : html.slice(0, cut);
+}
+
 describe('состав аккаунта на полотне драфта', () => {
   const shell = (pool: DraftOption[], you: 'a' | 'b' | null): string =>
     draftShell({
@@ -215,7 +224,7 @@ describe('состав аккаунта на полотне драфта', () =>
     { id: '10000046', label: 'Ху Тао', group: 'characters' },
   ];
   it('своей стороне говорит, чего нет у неё, и чего нет у соперника', () => {
-    const html = shell(characters, 'a');
+    const html = markupOf(shell(characters, 'a'));
 
     // Фурины нет у стороны «a» — она смотрит.
     expect(html).toContain('нет у тебя');
@@ -224,7 +233,7 @@ describe('состав аккаунта на полотне драфта', () =>
   });
 
   it('та же плитка для другой стороны читается наоборот', () => {
-    const forB = shell([{ id: '10000089', label: 'Фурина', group: 'characters', owned: ['b'] }], 'b');
+    const forB = markupOf(shell([{ id: '10000089', label: 'Фурина', group: 'characters', owned: ['b'] }], 'b'));
 
     expect(forB).toContain('нет у соперника');
     expect(forB).not.toContain('нет у тебя');
@@ -232,7 +241,7 @@ describe('состав аккаунта на полотне драфта', () =>
 
   /** Пометка помогает делать ход. Зритель ходов не делает, и шум ему ни к чему. */
   it('зрителю без стороны не показывается ничего', () => {
-    const html = shell(characters, null);
+    const html = markupOf(shell(characters, null));
 
     expect(html).not.toContain('нет у тебя');
     expect(html).not.toContain('нет у соперника');
@@ -243,7 +252,7 @@ describe('состав аккаунта на полотне драфта', () =>
    * ключа бота может не быть вовсе — и тогда драфт идёт как раньше, без пометок.
    */
   it('без сведений о составе плитка ничем не помечена', () => {
-    const html = shell([{ id: '10000046', label: 'Ху Тао', group: 'characters' }], 'a');
+    const html = markupOf(shell([{ id: '10000046', label: 'Ху Тао', group: 'characters' }], 'a'));
 
     expect(html).not.toContain('нет у');
   });
@@ -251,7 +260,7 @@ describe('состав аккаунта на полотне драфта', () =>
   it('пометка не запрещает ход: плитка остаётся свободной', () => {
     const html = shell([{ id: '10000089', label: 'Фурина', group: 'characters', owned: ['b'] }], 'a');
 
-    expect(html).toContain('class="tile free lacks-you"');
+    expect(markupOf(html)).toContain('class="tile free lacks-you"');
   });
 });
 
@@ -315,8 +324,8 @@ describe('стоимость состава в драфте', () => {
 
   /** Персонаж, который в одиночку не влезает в потолок, помечается до хода, а не после. */
   it('слишком дорогой для потолка помечается', () => {
-    expect(shell([withBuild(8)], 'a', 6)).toContain('tile free pricey');
-    expect(shell([withBuild(3)], 'a', 6)).not.toContain('pricey');
+    expect(markupOf(shell([withBuild(8)], 'a', 6))).toContain('tile free pricey');
+    expect(markupOf(shell([withBuild(3)], 'a', 6))).not.toContain('pricey');
   });
 
   it('кошелёк показывает потолок', () => {
