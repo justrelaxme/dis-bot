@@ -51,6 +51,8 @@ export interface LaunchSettings {
   requireVerified: boolean;
   /** Потолок стоимости состава в очках у Genshin. `null` — без потолка. */
   costCap: number | null;
+  /** Сколько персонажей игрок защитит от бана. Ноль — иммунов нет. */
+  immunities: number;
   registrationHours: number;
 }
 
@@ -139,6 +141,7 @@ export async function launchTournament(
     autoTeams: settings.autoTeams,
     requireVerified: settings.requireVerified,
     ...(settings.costCap === null ? {} : { costCap: settings.costCap }),
+    immunities: settings.immunities,
     createdBy: input.createdBy,
     ...(places.announceChannelId ? { announceChannelId: places.announceChannelId } : {}),
     ...(places.matchParentId ? { matchParentId: places.matchParentId } : {}),

@@ -164,6 +164,8 @@ function drafts(options?: {
   chronicle?: Parameters<typeof createDraftsService>[0]['chronicle'];
   /** Заявленный состав: тот же для любого участника — тестам большего не нужно. */
   declared?: Record<string, { id: string; constellation: number; cost: number }>;
+  /** Кого заявка защищает от бана. */
+  immune?: string[];
 }) {
   const config = loadConfig({
     DISCORD_TOKEN: 'test',
@@ -187,7 +189,12 @@ function drafts(options?: {
       riotClient: ddragonClient(),
       ...(options?.chronicle ? { chronicle: options.chronicle, genshinUidOf } : {}),
       ...(options?.declared
-        ? { declaredOf: async () => Object.values(options.declared ?? {}) }
+        ? {
+            declaredOf: async () => ({
+              characters: Object.values(options.declared ?? {}),
+              immune: options.immune ?? [],
+            }),
+          }
         : {}),
     }),
     cache,

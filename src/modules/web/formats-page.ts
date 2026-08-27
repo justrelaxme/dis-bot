@@ -262,7 +262,9 @@ export function formatsShell(state: FormatsShellState): string {
       <p class="hint">Игра одиночная, аккаунты разные: без потолка побеждает тот, кто больше вложил, а не тот, кто лучше играет. Очки считаются по системе спидран-турниров сообщества — четырёхзвёздочные бесплатны совсем, лимитированный C0 стоит 1 и каждое созвездие добавляет ещё 1, сигнатурное оружие R1 — тоже 1. Артефакты не стоят ничего: они фармятся временем, а не деньгами.</p>
       <div class="nums">
         <label class="num"><span>Потолок, очков</span><input type="number" data-cap="costCap" min="0" max="96" step="0.5" placeholder="без потолка"></label>
+        <label class="num"><span>Иммунов на игрока</span><input type="number" data-n="immunities" min="0" max="7" step="1"></label>
       </div>
+      <p class="hint">Иммун — персонаж, которого соперник не сможет забанить. Кого именно защитить, каждый выбирает сам в своей заявке; здесь задаётся только сколько. Ноль — иммунов нет, банить можно кого угодно.</p>
     </section>
 
     <section class="brick" style="--delay:240ms">
@@ -312,7 +314,7 @@ const SCRIPT = String.raw`
 
   var DEFAULTS = { game: '', entryMode: 'team', teamSize: 5, maxEntrants: 16, format: 'single-elim',
     bestOf: 1, seeding: 'rank', abilities: true, autoTeams: false, requireVerified: true,
-    registrationHours: 2, costCap: null };
+    registrationHours: 2, costCap: null, immunities: 0 };
   var state = Object.assign({}, DEFAULTS);
   var editing = null;
 

@@ -2,7 +2,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
 import { UserError } from '../../../core/errors.js';
 import { BRACKET_FORMAT_LABELS, EVENT_SIZE_LABELS, effectiveFormat, eventSize } from '../bracket.js';
-import { draftSubject, SUBJECT_LABELS } from '../draft/pools.js';
+import { draftSubject, GENSHIN_ROSTER, SUBJECT_LABELS } from '../draft/pools.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
 import {
   tournamentFormats,
@@ -58,12 +58,22 @@ export interface FormatBricks {
    * больше вложил, а не тот, кто лучше играет. Система очков — в `genshin/cost.ts`.
    */
   costCap?: number | null | undefined;
+  /**
+   * Сколько персонажей игрок может защитить от бана. Ноль — иммунов нет, банить можно кого
+   * угодно. Правило из турниров сообщества: каждый называет своих неприкасаемых.
+   */
+  immunities?: number | undefined;
   note?: string | null;
 }
 
-export type NormalizedBricks = Omit<Required<FormatBricks>, 'note' | 'game' | 'costCap'> & {
+export type NormalizedBricks = Omit<
+  Required<FormatBricks>,
+  'note' | 'game' | 'costCap' | 'immunities'
+> & {
   game: TournamentGame | null;
   costCap: number | null;
+  /** Всегда число: не заданное превращается в ноль при согласовании. */
+  immunities: number;
   note: string | null;
 };
 
@@ -112,6 +122,13 @@ export function normalizeBricks(bricks: FormatBricks): NormalizedBricks {
     throw new UserError(`Заметка к формату — не длиннее ${NOTE_MAX} символов.`);
   }
 
+  /**
+   * Иммунов не может быть больше, чем персонажей в отряде: восемь иммунов при восьми пиках
+   * отменяют баны целиком, и такой драфт превращается в обмен ходами без смысла. Предел на
+   * единицу меньше — так у банов всегда остаётся хотя бы одна цель.
+   */
+  const immunities = Math.min(GENSHIN_ROSTER - 1, Math.max(0, Math.trunc(bricks.immunities ?? 0)));
+
   // Потолок бывает половинным: стандартный пятизвёздочный C0 стоит 0.5 очка. Округляем до
   // половины, а не до целого — иначе половина системы очков просто не выражается.
   const costCap =
@@ -125,6 +142,7 @@ export function normalizeBricks(bricks: FormatBricks): NormalizedBricks {
   }
 
   return {
+    immunities,
     game: bricks.game ?? null,
     entryMode,
     teamSize,
@@ -188,6 +206,14 @@ export function warningsFor(bricks: NormalizedBricks): string[] {
   }
   if (bricks.costCap === 0) {
     warnings.push('Бюджет ноль: пройдут только составы целиком из четырёхзвёздочных. Это жёстко, но законно.');
+  }
+  if (bricks.immunities > 0 && bricks.game !== null && bricks.game !== 'genshin') {
+    warnings.push('Иммуны работают только в Genshin — в этой дисциплине они ни на что не влияют.');
+  }
+  if (bricks.immunities >= GENSHIN_ROSTER - 2 && bricks.immunities > 0) {
+    warnings.push(
+      `Иммунов ${bricks.immunities} при восьми пиках — банить почти нечего. Обычно берут один-два.`,
+    );
   }
 
   return warnings;
@@ -271,6 +297,11 @@ export function previewOf(bricks: NormalizedBricks): FormatPreview {
       `Бюджет состава: ${bricks.costCap} очков. Четырёхзвёздочные бесплатны, лимитированный C0 стоит 1, его сигнатурка R1 — ещё 1.`,
     );
   }
+  if (bricks.immunities > 0) {
+    lines.push(
+      `Иммуны: ${bricks.immunities} на игрока — этих соперник забанить не сможет. Кого именно, каждый выбирает в своей заявке.`,
+    );
+  }
 
   const game = bricks.game === null ? 'Дисциплина по выбору' : TOURNAMENT_GAME_LABELS[bricks.game];
   const headline = `${game} · ${EVENT_SIZE_LABELS[size]} на ${roster}`;
@@ -293,6 +324,7 @@ export function bricksOf(row: TournamentFormatRow): NormalizedBricks {
     requireVerified: row.requireVerified,
     registrationHours: row.registrationHours,
     costCap: row.costCap,
+    immunities: row.immunities,
     note: row.note,
   };
 }

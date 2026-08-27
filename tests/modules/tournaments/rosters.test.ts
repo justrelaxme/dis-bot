@@ -131,3 +131,50 @@ describe('потолок', () => {
     expect(() => buildRoster(submission({ characterIds: [HUTAO], cap: 0 }))).toThrow(UserError);
   });
 });
+
+/**
+ * Иммуны в заявке. Сколько их можно — задал организатор, кого именно защитить — выбирает игрок,
+ * и защищать он может только заявленных: иммун на того, кого не берёшь, ничего не значит.
+ */
+describe('иммуны', () => {
+  it('без разрешения организатора иммунов нет, что бы ни прислали', () => {
+    const result = buildRoster(submission({ characterIds: [HUTAO], immuneIds: [HUTAO] }));
+
+    expect(result.immune).toEqual([]);
+  });
+
+  it('разрешённые сохраняются', () => {
+    const result = buildRoster(
+      submission({ characterIds: [HUTAO, FISCHL], immuneIds: [HUTAO], immunities: 1 }),
+    );
+
+    expect(result.immune).toEqual([HUTAO]);
+  });
+
+  /** Больше разрешённого — отказ: иначе число иммунов задавал бы не организатор. */
+  it('больше разрешённого — отказ с числами', () => {
+    expect(() =>
+      buildRoster(submission({ characterIds: [HUTAO, FISCHL], immuneIds: [HUTAO, FISCHL], immunities: 1 })),
+    ).toThrow(/можно 1, а выбрано 2/);
+  });
+
+  /**
+   * Иммун на незаявленного отбрасывается молча: это порядок нажатий, а не попытка сыграть не по
+   * правилам — в отличие от превышения числа.
+   */
+  it('иммун на незаявленного отбрасывается, а не роняет заявку', () => {
+    const result = buildRoster(
+      submission({ characterIds: [HUTAO], immuneIds: [HUTAO, FISCHL], immunities: 2 }),
+    );
+
+    expect(result.immune).toEqual([HUTAO]);
+  });
+
+  it('повторы в иммунах схлопываются', () => {
+    const result = buildRoster(
+      submission({ characterIds: [HUTAO], immuneIds: [HUTAO, HUTAO], immunities: 2 }),
+    );
+
+    expect(result.immune).toEqual([HUTAO]);
+  });
+});

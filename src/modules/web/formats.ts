@@ -65,6 +65,7 @@ interface RawBricks {
   requireVerified?: unknown;
   registrationHours?: unknown;
   costCap?: unknown;
+  immunities?: unknown;
 }
 
 const GAMES = new Set<string>(TOURNAMENT_GAMES);
@@ -112,6 +113,7 @@ function readBricks(raw: RawBricks | undefined): FormatBricks {
     // Пустое поле означает «без потолка», а не ноль: ноль — это законный и очень жёсткий
     // бюджет, при котором проходят только четырёхзвёздочные составы.
     costCap: asCap(body.costCap),
+    immunities: asInt(body.immunities, 0),
   };
 }
 
@@ -364,6 +366,7 @@ export function registerFormatRoutes(server: FastifyInstance, deps: FormatRoutes
               autoTeams: bricks.autoTeams,
               requireVerified: bricks.requireVerified,
               costCap: bricks.costCap,
+              immunities: bricks.immunities,
               registrationHours: bricks.registrationHours,
             },
             places: place.places,

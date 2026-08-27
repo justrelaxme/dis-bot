@@ -663,3 +663,50 @@ describe('пик только из заявленного', () => {
     expect(canChoose(view, 'b', 'чужой')).toEqual({ ok: true });
   });
 });
+
+/**
+ * Иммун защищает от бана, а не присваивает. Правило из турниров сообщества: каждый называет
+ * своих неприкасаемых, и соперник их забанить не может — а взять может кто угодно, пул
+ * зеркальный.
+ */
+describe('иммун защищает от бана', () => {
+  const withImmune: DraftOption[] = [
+    { id: 'защищён', label: 'Защищён', group: 'characters', owned: ['b'], declaredBy: ['b'], immuneFor: ['b'] },
+    { id: 'обычный', label: 'Обычный', group: 'characters', owned: ['b'], declaredBy: ['b'] },
+  ];
+  const picks = pickBanSequence('characters', 1, 1);
+
+  it('забанить иммунного нельзя, и сказано почему', () => {
+    const view = draftView(withImmune, picks, []);
+    const verdict = canChoose(view, 'a', 'защищён');
+
+    expect(view.current?.kind).toBe('ban');
+    expect(verdict.ok).toBe(false);
+    expect(verdict.ok === false && verdict.reason).toMatch(/под иммуном/);
+  });
+
+  it('обычного забанить можно', () => {
+    const view = draftView(withImmune, picks, []);
+
+    expect(canChoose(view, 'a', 'обычный')).toEqual({ ok: true });
+  });
+
+  /** Иммун не присваивает: заявивший его берёт своего, и это законно. */
+  it('иммунного берёт тот, кто его заявил', () => {
+    const view = draftView(withImmune, picks, [
+      { step: 0, side: 'a', kind: 'ban', optionId: null },
+      { step: 1, side: 'b', kind: 'ban', optionId: null },
+      { step: 2, side: 'a', kind: 'pick', optionId: null },
+    ]);
+
+    expect(view.current?.side).toBe('b');
+    expect(canChoose(view, 'b', 'защищён')).toEqual({ ok: true });
+  });
+
+  it('без иммунов баны работают как раньше', () => {
+    const plain: DraftOption[] = [{ id: 'кто', label: 'Кто', group: 'characters' }];
+    const view = draftView(plain, picks, []);
+
+    expect(canChoose(view, 'a', 'кто')).toEqual({ ok: true });
+  });
+});

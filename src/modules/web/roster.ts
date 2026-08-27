@@ -60,6 +60,7 @@ type Ready =
       tournamentId: number;
       tournamentName: string;
       cap: number | null;
+      immunities: number;
       uid: string;
       owned: readonly OwnedForRoster[];
     }
@@ -114,6 +115,7 @@ export function registerRosterRoutes(server: FastifyInstance, deps: RosterRoutes
       tournamentId: tournament.id,
       tournamentName: tournament.name,
       cap: tournament.costCap,
+      immunities: tournament.immunities,
       uid,
       owned: roster.characters,
     };
@@ -149,11 +151,13 @@ export function registerRosterRoutes(server: FastifyInstance, deps: RosterRoutes
           token: grant.token,
           tournamentName: ready.tournamentName,
           cap: ready.cap,
+          immunities: ready.immunities,
           limit: GENSHIN_ROSTER,
           // Дорогие вперёд: решение принимают, глядя на то, что съедает бюджет, а бесплатные
           // четырёхзвёздочные добираются в конце и без раздумий.
           owned: owned.sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name, 'ru')),
           chosen: (saved?.characters ?? []).map((character) => character.id),
+          immune: saved?.immune ?? [],
           nickname: ready.uid,
         }),
         {
@@ -172,7 +176,7 @@ export function registerRosterRoutes(server: FastifyInstance, deps: RosterRoutes
       .send(await html());
   });
 
-  server.post<{ Params: { token: string }; Body: { characterIds?: unknown } }>(
+  server.post<{ Params: { token: string }; Body: { characterIds?: unknown; immuneIds?: unknown } }>(
     '/api/roster/:token',
     async (request, reply) => {
       const grant = await grants.owner(request.params.token, 'roster');

@@ -182,7 +182,10 @@ export function createDraftsService(deps: {
    * и матч всё равно обязан идти по тому, с чем он пришёл. Летопись остаётся запасным путём —
    * для тех, кто не заявлялся, и для турниров без потолка, где заявка не нужна.
    */
-  declaredOf?: (tournamentId: number, entrantId: number) => Promise<DeclaredCharacter[] | null>;
+  declaredOf?: (
+    tournamentId: number,
+    entrantId: number,
+  ) => Promise<{ characters: DeclaredCharacter[]; immune: string[] } | null>;
 }) {
   const { db, cache, logger } = deps;
 
@@ -321,12 +324,14 @@ export function createDraftsService(deps: {
       // Заявка главнее Летописи: игрок мог выкрутить созвездие после того, как заявился, а
       // матч обязан идти по тому, с чем он пришёл.
       const declared = await deps.declaredOf?.(match.tournamentId, entrantId).catch(() => null);
-      if (declared && declared.length > 0) {
-        const byId = new Map(declared.map((character) => [character.id, character]));
+      if (declared && declared.characters.length > 0) {
+        const byId = new Map(declared.characters.map((character) => [character.id, character]));
+        const immune = new Set(declared.immune);
         for (const option of pool) {
           const mine = byId.get(option.id);
           if (!mine) continue;
           option.owned = [...(option.owned ?? []), side];
+          if (immune.has(option.id)) option.immuneFor = [...(option.immuneFor ?? []), side];
           // Помечаем как заявленное: только по этой пометке драфт запрещает пик. Прочитанное
           // из Летописи остаётся подсказкой — она бывает устаревшей.
           option.declaredBy = [...(option.declaredBy ?? []), side];

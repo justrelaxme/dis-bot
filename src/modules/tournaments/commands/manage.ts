@@ -350,6 +350,7 @@ async function create(interaction: Interaction, guild: Guild, deps: ManageDeps):
         autoTeams,
         requireVerified: base?.requireVerified ?? true,
         costCap: base?.costCap ?? null,
+        immunities: base?.immunities ?? 0,
         registrationHours: hours,
       },
       // Комнаты заводятся там, где вызвали команду: организатор набирает её в том канале, где

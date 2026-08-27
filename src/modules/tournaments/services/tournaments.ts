@@ -63,6 +63,8 @@ export interface CreateTournamentInput {
    * теряла. Формат задавал бюджет, а в строке турнира его не оказывалось.
    */
   costCap?: number | null;
+  /** Сколько персонажей игрок защитит от бана. Ноль — иммунов в турнире нет. */
+  immunities?: number;
   requireVerified: boolean;
   createdBy: string;
   announceChannelId?: string;
@@ -433,6 +435,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
           // «не передали». Пока поле было в типе, но не в этой вставке, бюджет турнира молча
           // терялся — формат его задавал, а строка турнира оставалась без него.
           ...(input.costCap === undefined || input.costCap === null ? {} : { costCap: input.costCap }),
+          ...(input.immunities === undefined ? {} : { immunities: input.immunities }),
           createdBy: input.createdBy,
           ...(input.announceChannelId ? { announceChannelId: input.announceChannelId } : {}),
           ...(input.teamCategoryId ? { teamCategoryId: input.teamCategoryId } : {}),

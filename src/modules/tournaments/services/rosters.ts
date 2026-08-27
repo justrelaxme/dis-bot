@@ -21,6 +21,10 @@ export interface RosterSubmission {
   externalId: string | null;
   /** Кого заявляет. Порядок значения не имеет. */
   characterIds: readonly string[];
+  /** Кого защищает от бана. Подмножество заявленных, не больше `immunities`. */
+  immuneIds?: readonly string[];
+  /** Сколько иммунов разрешил организатор. Ноль — иммунов в этом турнире нет. */
+  immunities?: number;
   /** Потолок турнира в очках. `null` — без потолка. */
   cap: number | null;
   /** Состав аккаунта из Летописи: по нему считается цена и проверяется владение. */
@@ -91,6 +95,7 @@ export function entryOf(
 export function buildRoster(submission: RosterSubmission): {
   characters: RosterEntry[];
   spent: number;
+  immune: string[];
 } {
   const unique = [...new Set(submission.characterIds)];
   if (unique.length === 0) {
@@ -120,7 +125,30 @@ export function buildRoster(submission: RosterSubmission): {
     );
   }
 
-  return { characters, spent };
+  return { characters, spent, immune: immuneOf(submission, unique) };
+}
+
+/**
+ * Кого защитить от бана.
+ *
+ * Два правила, и оба про смысл заявки. Защищать можно только заявленного: иммун на персонажа,
+ * которого не берёшь, ничего не значит и означал бы, что человек ошибся. И не больше, чем
+ * разрешил организатор — иначе число иммунов задавал бы не он.
+ *
+ * Лишние отбрасываются молча, а вот превышение — отказ: первое это опечатка в порядке кнопок,
+ * второе попытка сыграть не по правилам вечера, и путать их нельзя.
+ */
+function immuneOf(submission: RosterSubmission, chosen: readonly string[]): string[] {
+  const allowed = Math.max(0, Math.trunc(submission.immunities ?? 0));
+  const asked = [...new Set(submission.immuneIds ?? [])].filter((id) => chosen.includes(id));
+
+  if (allowed === 0) return [];
+  if (asked.length > allowed) {
+    throw new UserError(
+      `Иммунов можно ${allowed}, а выбрано ${asked.length}. Иммун защищает персонажа от бана соперника, и больше разрешённого взять нельзя.`,
+    );
+  }
+  return asked;
 }
 
 export function createRostersService(deps: { db: Database }) {
@@ -132,7 +160,7 @@ export function createRostersService(deps: { db: Database }) {
      * а не пришёл вторым составом.
      */
     async submit(submission: RosterSubmission): Promise<TournamentRosterRow> {
-      const { characters, spent } = buildRoster(submission);
+      const { characters, spent, immune } = buildRoster(submission);
 
       const [row] = await db
         .insert(tournamentRosters)
@@ -142,6 +170,7 @@ export function createRostersService(deps: { db: Database }) {
           externalId: submission.externalId,
           characters,
           spent,
+          immune,
           cap: submission.cap,
         })
         .onConflictDoUpdate({
@@ -149,6 +178,7 @@ export function createRostersService(deps: { db: Database }) {
           set: {
             characters,
             spent,
+            immune,
             cap: submission.cap,
             externalId: submission.externalId,
             updatedAt: new Date(),

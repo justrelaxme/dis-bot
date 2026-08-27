@@ -231,3 +231,54 @@ describe('что получится', () => {
     expect(preview.warnings.length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Иммуны: персонажи, которых соперник забанить не сможет. Сколько их — решает организатор, кого
+ * именно — игрок в своей заявке. Правило из турниров сообщества.
+ */
+describe('иммуны в формате', () => {
+  it('по умолчанию иммунов нет', () => {
+    expect(normalizeBricks(team()).immunities).toBe(0);
+  });
+
+  it('число сохраняется как задано', () => {
+    expect(normalizeBricks(team({ immunities: 2 })).immunities).toBe(2);
+  });
+
+  /**
+   * Восемь иммунов при восьми пиках отменяют баны целиком, и драфт превращается в обмен ходами
+   * без смысла. Предел на единицу меньше отряда: у банов всегда остаётся хотя бы одна цель.
+   */
+  it('иммунов не больше, чем персонажей в отряде минус один', () => {
+    expect(normalizeBricks(team({ immunities: 99 })).immunities).toBe(7);
+  });
+
+  it('отрицательное число становится нулём', () => {
+    expect(normalizeBricks(team({ immunities: -3 })).immunities).toBe(0);
+  });
+
+  it('предпросмотр говорит про иммуны, когда они есть', () => {
+    const preview = previewOf(normalizeBricks(team({ game: 'genshin', entryMode: 'solo', immunities: 2 })));
+
+    expect(preview.lines.join(' ')).toMatch(/Иммуны: 2/);
+  });
+
+  it('без иммунов предпросмотр про них молчит', () => {
+    const preview = previewOf(normalizeBricks(team({ game: 'genshin', entryMode: 'solo' })));
+
+    expect(preview.lines.join(' ')).not.toMatch(/Иммуны/);
+  });
+
+  /** Иммуны считаются по заявке, а заявки бывают только у Genshin. */
+  it('про иммуны в чужой дисциплине предупреждает', () => {
+    const warnings = warningsFor(normalizeBricks(team({ game: 'dota2', immunities: 2 })));
+
+    expect(warnings.join(' ')).toMatch(/только в Genshin/);
+  });
+
+  it('про слишком много иммунов предупреждает', () => {
+    const warnings = warningsFor(normalizeBricks(team({ game: 'genshin', entryMode: 'solo', immunities: 7 })));
+
+    expect(warnings.join(' ')).toMatch(/банить почти нечего/);
+  });
+});

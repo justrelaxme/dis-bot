@@ -159,7 +159,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
             const userId = members.length === 1 ? members[0] : undefined;
             if (!userId) return null;
             const roster = await rosters.byPlayer(tournamentId, userId);
-            return roster?.characters ?? null;
+            return roster ? { characters: roster.characters, immune: roster.immune } : null;
           },
         }
       : {}),

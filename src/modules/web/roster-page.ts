@@ -66,6 +66,25 @@ export const ROSTER_STYLE = `
 .who4.too { opacity:.42; }
 .who4[hidden] { display:none; }
 
+/* Иммуны. Отдельным разделом, а не третьим состоянием карточки: «взят» и «взят и защищён» на
+   одной кнопке читались бы как одно и то же, и попасть мимо было бы легко. */
+.immune { margin:0 0 1rem; padding:.7rem .8rem; background:var(--sheet);
+  border:1px solid var(--rule); clip-path:var(--panel); }
+.immune h2 { font-family:var(--mono); font-size:.72rem; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--dim); margin:0 0 .3rem; font-weight:400; }
+.immune .hint { color:var(--dim); font-size:.8rem; margin:0 0 .6rem; }
+.chips { display:flex; flex-wrap:wrap; gap:.4rem; }
+.chip { font-family:var(--mono); font-size:.76rem; padding:.35rem .6rem; color:var(--dim);
+  background:var(--sheet-2); border:1px solid var(--rule); clip-path:var(--panel); cursor:pointer;
+  transition:color .18s, border-color .18s; }
+.chip:hover { color:var(--bone); }
+.chip[aria-pressed="true"] { color:var(--ink); background:var(--accent); border-color:var(--accent); }
+.chip:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.immune .none { color:var(--dim); font-size:.8rem; }
+
+/* Персонаж под иммуном виден и в списке: иначе отметку пришлось бы держать в голове. */
+.who4[data-immune="1"] .nm::after { content:' 🛡'; }
+
 @media (prefers-reduced-motion:reduce) { .who4 { transition:none; } }
 `;
 
@@ -80,6 +99,13 @@ export interface RosterShellState {
   owned: RosterEntry[];
   /** Уже заявленные — страница открывается с ними, а не с чистого листа. */
   chosen: string[];
+  /**
+   * Сколько персонажей можно защитить от бана. Ноль — иммунов в этом турнире нет, и раздела
+   * про них на странице не будет вовсе.
+   */
+  immunities: number;
+  /** Кто уже под иммуном. */
+  immune: string[];
   /** Игровой ник, чтобы человек видел, чей это аккаунт. */
   nickname: string;
 }
@@ -136,6 +162,17 @@ export function rosterShell(state: RosterShellState): string {
     state.chosen.length > 0 ? 'Состав уже заявлен. Можно поменять и заявить снова.' : ''
   }</p>
 
+${
+    state.immunities === 0
+      ? ''
+      : `<section class="immune" id="immunebox">
+  <h2>Иммуны — <span id="immunecount">${state.immune.length}</span> из ${state.immunities}</h2>
+  <p class="hint">Иммунного персонажа соперник забанить не сможет. Взять его при этом может кто
+  угодно: иммун защищает от бана, а не присваивает. Отмечать можно только заявленных.</p>
+  <div class="chips" id="chips"></div>
+</section>`
+  }
+
 <input class="filter" id="find" placeholder="Поиск по имени" autocomplete="off" aria-label="Поиск персонажа">
 <div class="roster" id="roster">${cards}</div>
 
@@ -144,7 +181,7 @@ export function rosterShell(state: RosterShellState): string {
 добавляет ещё 1, его сигнатурное оружие R1 — тоже 1. Артефакты не стоят ничего: они фармятся
 временем, а не деньгами.</p>
 
-<script>window.__ROSTER__=${JSON.stringify({ cap: state.cap, limit: state.limit, chosen: state.chosen }).replaceAll('<', '\\u003c')}</script>
+<script>window.__ROSTER__=${JSON.stringify({ cap: state.cap, limit: state.limit, chosen: state.chosen, immunities: state.immunities, immune: state.immune }).replaceAll('<', '\\u003c')}</script>
 <script>${SCRIPT}</script>`;
 }
 
@@ -174,6 +211,7 @@ const SCRIPT = String.raw`
   var token = location.pathname.split('/').pop();
   var el = function (id) { return document.getElementById(id); };
   var chosen = new Set(conf.chosen || []);
+  var immune = new Set(conf.immune || []);
 
   function cards() { return Array.prototype.slice.call(document.querySelectorAll('.who4')); }
 
@@ -202,6 +240,34 @@ const SCRIPT = String.raw`
     });
 
     el('save').disabled = chosen.size === 0 || (conf.cap !== null && total > conf.cap);
+    paintImmune();
+  }
+
+  /**
+   * Иммуны показываются только среди заявленных: защищать того, кого не берёшь, бессмысленно.
+   * Убрали персонажа из состава — снимается и его иммун, иначе он остался бы висеть невидимкой.
+   */
+  function paintImmune() {
+    var box = el('immunebox');
+    if (!box) return;
+
+    Array.from(immune).forEach(function (id) { if (!chosen.has(id)) immune.delete(id); });
+
+    var names = {};
+    cards().forEach(function (card) { names[card.dataset.id] = card.querySelector('.nm').textContent; });
+
+    var list = Array.from(chosen);
+    el('chips').innerHTML = list.length
+      ? list.map(function (id) {
+          return '<button type="button" class="chip" data-immune="' + id + '" aria-pressed="' +
+            (immune.has(id) ? 'true' : 'false') + '">' + (names[id] || id) + '</button>';
+        }).join('')
+      : '<span class="none">Сначала выбери персонажей — защищать пока некого.</span>';
+
+    el('immunecount').textContent = String(immune.size);
+    cards().forEach(function (card) {
+      card.dataset.immune = immune.has(card.dataset.id) ? '1' : '0';
+    });
   }
 
   document.addEventListener('click', function (event) {
@@ -215,7 +281,17 @@ const SCRIPT = String.raw`
       paint();
       return;
     }
-    if (event.target.closest('#clear')) { chosen.clear(); say(''); paint(); return; }
+    var chip = event.target.closest('[data-immune]');
+    if (chip && chip.classList.contains('chip')) {
+      var who = chip.dataset.immune;
+      if (immune.has(who)) immune.delete(who);
+      else if (immune.size < conf.immunities) immune.add(who);
+      else { say('Иммунов можно ' + conf.immunities + ' — сначала сними с кого-нибудь.', 'err'); return; }
+      say('');
+      paintImmune();
+      return;
+    }
+    if (event.target.closest('#clear')) { chosen.clear(); immune.clear(); say(''); paint(); return; }
     if (event.target.closest('#save')) { submit(); }
   });
 
@@ -239,14 +315,15 @@ const SCRIPT = String.raw`
     fetch('/api/roster/' + encodeURIComponent(token), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ characterIds: Array.from(chosen) }),
+      body: JSON.stringify({ characterIds: Array.from(chosen), immuneIds: Array.from(immune) }),
     })
       .then(function (r) { return r.json().catch(function () { return { error: 'Сервер ответил непонятно.' }; }); })
       .catch(function () { return { error: 'Не дозвонился до сервера. Проверь связь.' }; })
       .then(function (data) {
         paint();
         if (data.error) { say(data.error, 'err'); return; }
-        say('Состав заявлен: ' + data.count + ' на ' + data.spent + ' очков. Поменять можно до старта.', 'ok');
+        var tail = data.immune ? ', иммунов ' + data.immune : '';
+        say('Состав заявлен: ' + data.count + ' на ' + data.spent + ' очков' + tail + '. Поменять можно до старта.', 'ok');
       });
   }
 
