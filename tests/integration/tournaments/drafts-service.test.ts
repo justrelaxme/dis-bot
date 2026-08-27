@@ -31,46 +31,20 @@ function catalogClient(payload: unknown): FetchClient {
   return { json: async <T>(): Promise<T> => payload as T };
 }
 
-/**
- * Заглушка Enka: справочник персонажей собирается из двух файлов — игровые данные и словарь
- * локализаций, — поэтому одного ответа тут мало и подмена смотрит на адрес.
- */
-function enkaCatalogClient(roster: unknown, locales: unknown): FetchClient {
-  return { json: async <T>(url: string): Promise<T> => (url.includes('loc.json') ? locales : roster) as T };
-}
-
-/**
- * Выгрузка Enka в миниатюре: двадцать обычных персонажей, оба Путешественника и пробная
- * копия. Форма та же, что у настоящей, включая имена хэшами — они и есть причина, по которой
- * справочник тянется двумя файлами.
- */
-const genshinRoster: Record<string, Record<string, unknown>> = {
-  ...Object.fromEntries(
-    Array.from({ length: 20 }, (_, index) => [
-      String(10000100 + index),
-      { NameTextMapHash: 900 + index, SideIconName: `UI_AvatarIcon_Side_Hero${index}`, Element: 'Fire' },
-    ]),
-  ),
-  // Пробная копия: другой идентификатор, та же иконка. В пуле ей место одно, а не два.
-  '10000903': { NameTextMapHash: 900, SideIconName: 'UI_AvatarIcon_Side_Hero0', Element: 'Fire' },
-  // Путешественник: шестнадцать вариантов под двумя именами. Ни одному в пуле не место.
-  '10000005': { NameTextMapHash: 800, SideIconName: 'UI_AvatarIcon_Side_PlayerBoy', Element: 'Wind' },
-  '10000005-502': { NameTextMapHash: 800, SideIconName: 'UI_AvatarIcon_Side_PlayerBoy', Element: 'Fire' },
-  '10000007': { NameTextMapHash: 801, SideIconName: 'UI_AvatarIcon_Side_PlayerGirl', Element: 'Wind' },
-  // Строка без иконки: в настоящей выгрузке такие есть, и картинки для них не существует.
-  '10000098': { NameTextMapHash: 802 },
-  // Пробная копия вышедшего персонажа: своя запись, своя иконка, но в игре это тот же герой.
-  '10000901': { NameTextMapHash: 803, SideIconName: 'UI_AvatarIcon_Side_Trial', Element: 'Fire' },
-  // Невышедший персонаж: есть только в пробном диапазоне, и нет ни у кого.
-  '10000904': { NameTextMapHash: 804, SideIconName: 'UI_AvatarIcon_Side_Unreleased', Element: 'Ice' },
-  // Служебная запись с чужой иконкой: без отсечки могла вытеснить настоящего персонажа.
-  '11000046': { NameTextMapHash: 805, SideIconName: 'UI_AvatarIcon_Side_Hero1', Element: 'Fire' },
+const agents = {
+  data: Array.from({ length: 20 }, (_, index) => ({
+    uuid: `agent-${index}`,
+    displayName: `Агент ${index}`,
+    killfeedPortrait: `https://media.valorant-api.com/agents/agent-${index}/killfeedportrait.png`,
+    displayIcon: null,
+  })),
 };
 
-/**
- * Data Dragon в миниатюре. Форма та же, включая то, ради чего справочник тянется двумя
- * запросами: путь к картинкам прибит к версии патча, и версию сначала надо узнать.
- */
+const heroes = Array.from({ length: 30 }, (_, index) => ({
+  id: index + 1,
+  name: `npc_dota_hero_hero${index}`,
+  localized_name: `Герой ${index}`,
+}));
 const ddragonVersions = ['16.15.1', '16.14.1'];
 const ddragonChampions = {
   data: Object.fromEntries(
@@ -88,32 +62,44 @@ function ddragonClient(): FetchClient {
   };
 }
 
-const genshinLocales = {
-  ru: {
-    ...Object.fromEntries(Array.from({ length: 20 }, (_, index) => [String(900 + index), `Персонаж ${index}`])),
-    '800': 'Путешественник',
-    '801': 'Путешественница',
-    '802': 'Без иконки',
-    '803': 'Пробная копия',
-    '804': 'Невышедший',
-    '805': 'Служебная запись',
+/**
+ * Заглушка справочника персонажей: форма Project Amber. Один запрос, имена уже переведены,
+ * редкость приходит полем `rank`.
+ */
+function amberCatalogClient(payload: unknown): FetchClient {
+  return { json: async <T>(): Promise<T> => payload as T };
+}
+
+/**
+ * Справочник в миниатюре. Кроме обычных персонажей — Путешественник во всех вариантах и запись
+ * без иконки: и то и другое встречается в настоящей выгрузке.
+ */
+const genshinCatalogue = {
+  data: {
+    items: {
+      ...Object.fromEntries(
+        Array.from({ length: 20 }, (_, index) => [
+          String(10000100 + index),
+          {
+            id: 10000100 + index,
+            name: `Персонаж ${index}`,
+            rank: 5,
+            icon: `UI_AvatarIcon_Hero${index}`,
+            element: 'Fire',
+          },
+        ]),
+      ),
+      // Путешественник: четырнадцать записей на два имени. Ни одной в пуле не место.
+      '10000005-anemo': { id: '10000005-anemo', name: 'Путешественник', rank: 5, icon: 'UI_AvatarIcon_PlayerBoy' },
+      '10000005-pyro': { id: '10000005-pyro', name: 'Путешественник', rank: 5, icon: 'UI_AvatarIcon_PlayerBoy' },
+      '10000007-anemo': { id: '10000007-anemo', name: 'Путешественница', rank: 5, icon: 'UI_AvatarIcon_PlayerGirl' },
+      // Без иконки: картинки для такой записи не существует.
+      '10000098': { id: 10000098, name: 'Без иконки', rank: 4 },
+      // Два лица одного персонажа: дедупликация по иконке — страховка, и она должна работать.
+      '10000199': { id: 10000199, name: 'Двойник', rank: 5, icon: 'UI_AvatarIcon_Hero1' },
+    },
   },
 };
-
-const agents = {
-  data: Array.from({ length: 20 }, (_, index) => ({
-    uuid: `agent-${index}`,
-    displayName: `Агент ${index}`,
-    killfeedPortrait: `https://media.valorant-api.com/agents/agent-${index}/killfeedportrait.png`,
-    displayIcon: null,
-  })),
-};
-
-const heroes = Array.from({ length: 30 }, (_, index) => ({
-  id: index + 1,
-  name: `npc_dota_hero_hero${index}`,
-  localized_name: `Герой ${index}`,
-}));
 
 async function makeMatch(options: {
   game: 'dota2' | 'valorant' | 'genshin' | 'lol';
@@ -197,7 +183,7 @@ function drafts(options?: {
       logger,
       dotaClient: catalogClient(heroes),
       valorantClient: catalogClient(agents),
-      enkaClient: enkaCatalogClient(genshinRoster, genshinLocales),
+      enkaClient: amberCatalogClient(genshinCatalogue),
       riotClient: ddragonClient(),
       ...(options?.chronicle ? { chronicle: options.chronicle, genshinUidOf } : {}),
       ...(options?.declared
@@ -447,7 +433,7 @@ describe('драфт персонажей Genshin', () => {
     expect(steps.filter((step) => step.kind === 'pick' && step.side === 'b')).toHaveLength(8);
   });
 
-  it('в пул попадают только настоящие персонажи: без Путешественника, без пробных копий, по одному разу', async () => {
+  it('в пул попадают только настоящие персонажи: без Путешественника, по одному разу', async () => {
     const { tournament, match } = await makeMatch({ game: 'genshin', solo: true });
     const { service, cache } = drafts();
 
@@ -459,6 +445,7 @@ describe('драфт персонажей Genshin', () => {
     expect(pool.map((option) => option.label)).not.toContain('Путешественник');
     expect(pool.map((option) => option.label)).not.toContain('Путешественница');
     expect(pool.map((option) => option.label)).not.toContain('Без иконки');
+    expect(pool.map((option) => option.label)).not.toContain('Двойник');
     expect(new Set(pool.map((option) => option.id)).size).toBe(pool.length);
   });
 
@@ -476,26 +463,6 @@ describe('драфт персонажей Genshin', () => {
     const first = (created?.draft.pool ?? []).find((option) => option.label === 'Персонаж 0');
     expect(first?.imageUrl).toBe('https://enka.network/ui/UI_AvatarIcon_Side_Hero0.png');
     expect(first?.iconUrl).toBe('https://enka.network/ui/UI_AvatarIcon_Side_Hero0.png');
-  });
-
-  /**
-   * В выгрузке Enka рядом с настоящими персонажами лежат пробные копии, невышедшие и служебные
-   * записи. Первых нет ни у кого, вторых нет в игре вовсе, а третья носит чужую иконку и без
-   * отсечки могла вытеснить настоящего персонажа — победил бы тот, кто раньше в чужом JSON.
-   */
-  it('пробные, невышедшие и служебные записи в пул не попадают', async () => {
-    const { tournament, match } = await makeMatch({ game: 'genshin', solo: true });
-    const { service, cache } = drafts();
-
-    const created = await service.ensureForMatch(tournament, match);
-    await cache.close();
-
-    const labels = (created?.draft.pool ?? []).map((option) => option.label);
-    expect(labels).not.toContain('Пробная копия');
-    expect(labels).not.toContain('Невышедший');
-    expect(labels).not.toContain('Служебная запись');
-    // Настоящий персонаж с той же иконкой, что у служебной записи, остался на месте.
-    expect(labels).toContain('Персонаж 1');
   });
 
   it('имена идут по алфавиту, а не в порядке выгрузки', async () => {

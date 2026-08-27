@@ -55,14 +55,21 @@ const VALORANT_AGENTS_URL = 'https://valorant-api.com/v1/agents?isPlayableCharac
 const AGENT_CACHE_KEY = 'valorant:agents';
 
 /**
- * Справочник персонажей Genshin. У HoYoverse публичного API нет вообще, поэтому берётся
- * выгрузка Enka.Network: два файла, потому что имена в игровых данных лежат хэшами, а
- * расшифровка хэшей — отдельным словарём локализаций. Русские имена есть только там.
+ * Справочник персонажей Genshin — Project Amber, сразу на нужном языке.
+ *
+ * Сначала брали выгрузку Enka с GitHub, и она подвела ровно тем, чем такие зеркала подводят:
+ * отстала от игры. Коломбина в ней лежала под предрелизным номером 10000904, а Сандроне и
+ * Одетты не было вовсе — то есть новых персонажей в драфте не появлялось, и заявка по ним не
+ * сходилась бы с Летописью, которая знает настоящие номера.
+ *
+ * У Amber номера настоящие, имена уже переведены (у Enka они хэшами, и нужен был второй файл со
+ * словарём), редкость приходит полем, а пробных копий и служебных записей в списке нет вовсе.
+ *
+ * Картинки при этом остаются у Enka: её CDN знает и новых персонажей, и старых, а у Amber
+ * мелких иконок для старых нет — проверено, `UI_AvatarIcon_Side_Hutao` там отдаёт 404.
  */
-const ENKA_CHARACTERS_URL =
-  'https://raw.githubusercontent.com/EnkaNetwork/API-docs/master/store/characters.json';
-const ENKA_LOC_URL = 'https://raw.githubusercontent.com/EnkaNetwork/API-docs/master/store/loc.json';
-const CHARACTER_CACHE_KEY = 'genshin:characters';
+const AMBER_CHARACTERS_URL = 'https://gi.yatta.moe/api/v2/ru/avatar';
+const CHARACTER_CACHE_KEY = 'genshin:characters:amber';
 
 /**
  * Справочник чемпионов League of Legends — Data Dragon, официальная выгрузка Riot. Двумя
@@ -96,28 +103,26 @@ interface DataDragonChampions {
 }
 
 /**
- * Играбельный ли это персонаж, а не пробная копия и не заготовка.
- *
- * Настоящие персонажи занимают диапазон до 10000900. Дальше идут записи, которых в игре нет:
- * «Мавуика (пробный)» и «Ху Тао (пробный)» — копии для пробных испытаний, `10000903` — вторая
- * запись уже вышедшей Инеффы, `10000904` — Коломбина, которую ещё не выпустили, а `11000046`
- * вообще служебная и носит иконку Джинн.
- *
- * Без этой отсечки в пул попадали и невышедшая Коломбина, которой нет ни у кого, и служебная
- * запись, которая могла вытеснить настоящую Джинн — какая из двух победит, зависело от порядка
- * ключей в чужом JSON, то есть ни от чего.
+ * Путешественник: у него четырнадцать записей на два имени, он есть у каждого по определению,
+ * и банить его нечего. В пул не идёт.
  */
-function isPlayable(id: string): boolean {
-  const base = Number.parseInt(id.split('-')[0] ?? '', 10);
-  return Number.isFinite(base) && base < 10000900;
+function isTraveler(id: string): boolean {
+  return id.startsWith('10000005') || id.startsWith('10000007');
 }
 
-interface EnkaCharacter {
-  NameTextMapHash: number;
-  /** Имя файла мелкой иконки, например `UI_AvatarIcon_Side_Ayaka`. Портрет — то же без `_Side`. */
-  SideIconName?: string;
-  Element?: string;
-  QualityType?: string;
+interface AmberAvatar {
+  id: number | string;
+  /** Имя уже на нужном языке: словарь хэшей здесь не нужен. */
+  name: string;
+  /** Редкость: 5 или 4. У Amber это `rank`. */
+  rank?: number;
+  /** Имя файла портрета, например `UI_AvatarIcon_Ayaka`. Мелкая иконка — то же с `_Side_`. */
+  icon?: string;
+  element?: string;
+}
+
+interface AmberAvatars {
+  data: { items: Record<string, AmberAvatar> };
 }
 
 /**
@@ -260,33 +265,30 @@ export function createDraftsService(deps: {
    */
   async function genshinCharacters(): Promise<DraftOption[] | null> {
     return catalog(deps.enkaClient, CHARACTER_CACHE_KEY, 'справочник персонажей Genshin', async (client) => {
-      const [roster, locales] = await Promise.all([
-        client.json<Record<string, EnkaCharacter>>(ENKA_CHARACTERS_URL),
-        client.json<Record<string, Record<string, string>>>(ENKA_LOC_URL),
-      ]);
-      const names = locales.ru ?? locales.en ?? {};
+      const body = await client.json<AmberAvatars>(AMBER_CHARACTERS_URL);
 
       const seen = new Set<string>();
       const options: DraftOption[] = [];
-      for (const [id, entry] of Object.entries(roster)) {
-        const icon = entry.SideIconName;
-        if (!icon) continue;
-        if (icon.includes('PlayerBoy') || icon.includes('PlayerGirl')) continue;
-        if (!isPlayable(id)) continue;
-        if (seen.has(icon)) continue;
-        const label = names[String(entry.NameTextMapHash)];
-        if (!label) continue;
-        seen.add(icon);
+      for (const [key, entry] of Object.entries(body.data?.items ?? {})) {
+        const id = String(entry.id ?? key);
+        if (isTraveler(id)) continue;
+        if (!entry.icon || !entry.name) continue;
+        // Дедупликация по иконке остаётся страховкой: она ничего не стоит, а два лица одного
+        // персонажа в пуле выглядели бы поломкой.
+        if (seen.has(entry.icon)) continue;
+        seen.add(entry.icon);
+
+        // Обе картинки — мелкая иконка, 128×128 и 14 КБ. Крупный портрет весит 76 КБ, и на
+        // сотню с лишним плиток это восемь мегабайт на один экран — ровно та же причина, по
+        // которой у агентов Valorant взят портрет из килл-фида. Лицо на мелкой иконке то же,
+        // а в самой игре ей и подписан отряд.
+        const art = `${GENSHIN_IMAGE_BASE}/${entry.icon.replace('UI_AvatarIcon_', 'UI_AvatarIcon_Side_')}.png`;
         options.push({
           id,
-          label,
+          label: entry.name,
           group: 'characters' as const,
-          // Обе картинки — мелкая иконка, 128×128 и 14 КБ. Крупный портрет весит 76 КБ, и
-          // на сто одиннадцать плиток это восемь мегабайт на один экран — ровно та же
-          // причина, по которой у агентов Valorant взят портрет из килл-фида. Лицо на
-          // мелкой иконке то же, а в самой игре ей и подписан отряд.
-          imageUrl: `${GENSHIN_IMAGE_BASE}/${icon}.png`,
-          iconUrl: `${GENSHIN_IMAGE_BASE}/${icon}.png`,
+          imageUrl: art,
+          iconUrl: art,
         });
       }
       return options.sort((a, b) => a.label.localeCompare(b.label, 'ru'));
