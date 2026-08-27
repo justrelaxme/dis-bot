@@ -59,6 +59,12 @@ const genshinRoster: Record<string, Record<string, unknown>> = {
   '10000007': { NameTextMapHash: 801, SideIconName: 'UI_AvatarIcon_Side_PlayerGirl', Element: 'Wind' },
   // Строка без иконки: в настоящей выгрузке такие есть, и картинки для них не существует.
   '10000098': { NameTextMapHash: 802 },
+  // Пробная копия вышедшего персонажа: своя запись, своя иконка, но в игре это тот же герой.
+  '10000901': { NameTextMapHash: 803, SideIconName: 'UI_AvatarIcon_Side_Trial', Element: 'Fire' },
+  // Невышедший персонаж: есть только в пробном диапазоне, и нет ни у кого.
+  '10000904': { NameTextMapHash: 804, SideIconName: 'UI_AvatarIcon_Side_Unreleased', Element: 'Ice' },
+  // Служебная запись с чужой иконкой: без отсечки могла вытеснить настоящего персонажа.
+  '11000046': { NameTextMapHash: 805, SideIconName: 'UI_AvatarIcon_Side_Hero1', Element: 'Fire' },
 };
 
 /**
@@ -88,6 +94,9 @@ const genshinLocales = {
     '800': 'Путешественник',
     '801': 'Путешественница',
     '802': 'Без иконки',
+    '803': 'Пробная копия',
+    '804': 'Невышедший',
+    '805': 'Служебная запись',
   },
 };
 
@@ -417,6 +426,26 @@ describe('драфт персонажей Genshin', () => {
     const first = (created?.draft.pool ?? []).find((option) => option.label === 'Персонаж 0');
     expect(first?.imageUrl).toBe('https://enka.network/ui/UI_AvatarIcon_Side_Hero0.png');
     expect(first?.iconUrl).toBe('https://enka.network/ui/UI_AvatarIcon_Side_Hero0.png');
+  });
+
+  /**
+   * В выгрузке Enka рядом с настоящими персонажами лежат пробные копии, невышедшие и служебные
+   * записи. Первых нет ни у кого, вторых нет в игре вовсе, а третья носит чужую иконку и без
+   * отсечки могла вытеснить настоящего персонажа — победил бы тот, кто раньше в чужом JSON.
+   */
+  it('пробные, невышедшие и служебные записи в пул не попадают', async () => {
+    const { tournament, match } = await makeMatch({ game: 'genshin', solo: true });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const labels = (created?.draft.pool ?? []).map((option) => option.label);
+    expect(labels).not.toContain('Пробная копия');
+    expect(labels).not.toContain('Невышедший');
+    expect(labels).not.toContain('Служебная запись');
+    // Настоящий персонаж с той же иконкой, что у служебной записи, остался на месте.
+    expect(labels).toContain('Персонаж 1');
   });
 
   it('имена идут по алфавиту, а не в порядке выгрузки', async () => {

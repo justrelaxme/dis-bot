@@ -95,6 +95,23 @@ interface DataDragonChampions {
   data: Record<string, { id: string; name: string }>;
 }
 
+/**
+ * Играбельный ли это персонаж, а не пробная копия и не заготовка.
+ *
+ * Настоящие персонажи занимают диапазон до 10000900. Дальше идут записи, которых в игре нет:
+ * «Мавуика (пробный)» и «Ху Тао (пробный)» — копии для пробных испытаний, `10000903` — вторая
+ * запись уже вышедшей Инеффы, `10000904` — Коломбина, которую ещё не выпустили, а `11000046`
+ * вообще служебная и носит иконку Джинн.
+ *
+ * Без этой отсечки в пул попадали и невышедшая Коломбина, которой нет ни у кого, и служебная
+ * запись, которая могла вытеснить настоящую Джинн — какая из двух победит, зависело от порядка
+ * ключей в чужом JSON, то есть ни от чего.
+ */
+function isPlayable(id: string): boolean {
+  const base = Number.parseInt(id.split('-')[0] ?? '', 10);
+  return Number.isFinite(base) && base < 10000900;
+}
+
 interface EnkaCharacter {
   NameTextMapHash: number;
   /** Имя файла мелкой иконки, например `UI_AvatarIcon_Side_Ayaka`. Портрет — то же без `_Side`. */
@@ -238,6 +255,7 @@ export function createDraftsService(deps: {
         const icon = entry.SideIconName;
         if (!icon) continue;
         if (icon.includes('PlayerBoy') || icon.includes('PlayerGirl')) continue;
+        if (!isPlayable(id)) continue;
         if (seen.has(icon)) continue;
         const label = names[String(entry.NameTextMapHash)];
         if (!label) continue;
