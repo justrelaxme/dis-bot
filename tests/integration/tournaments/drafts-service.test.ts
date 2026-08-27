@@ -174,7 +174,11 @@ async function makeMatch(options: {
  * Настоящий Redis, а не заглушка: справочники ходят через `cache.swr`, и на подделке кэша
  * тест проверял бы не тот путь, которым пул попадает в драфт в бою.
  */
-function drafts(options?: { chronicle?: Parameters<typeof createDraftsService>[0]['chronicle'] }) {
+function drafts(options?: {
+  chronicle?: Parameters<typeof createDraftsService>[0]['chronicle'];
+  /** Заявленный состав: тот же для любого участника — тестам большего не нужно. */
+  declared?: Record<string, { id: string; constellation: number; cost: number }>;
+}) {
   const config = loadConfig({
     DISCORD_TOKEN: 'test',
     DISCORD_APP_ID: '123456789012345678',
@@ -196,6 +200,9 @@ function drafts(options?: { chronicle?: Parameters<typeof createDraftsService>[0
       enkaClient: enkaCatalogClient(genshinRoster, genshinLocales),
       riotClient: ddragonClient(),
       ...(options?.chronicle ? { chronicle: options.chronicle, genshinUidOf } : {}),
+      ...(options?.declared
+        ? { declaredOf: async () => Object.values(options.declared ?? {}) }
+        : {}),
     }),
     cache,
   };
@@ -336,6 +343,49 @@ describe('состав аккаунта в пуле драфта', () => {
 
     const free = pool.find((option) => option.id === '10000101')?.builds ?? [];
     expect(free[0]).toMatchObject({ side: 'a', cost: 0 });
+  });
+
+  /**
+   * Заявка старше Летописи и главнее её: игрок мог выкрутить созвездие после того, как
+   * заявился, а матч обязан идти по тому, с чем он пришёл.
+   */
+  it('заявленный состав главнее того, что сейчас в Летописи', async () => {
+    const { tournament, match } = await makeMatch({
+      game: 'genshin',
+      solo: true,
+      genshinUids: { a: '700000051' },
+    });
+    const { service, cache } = drafts({
+      // В Летописи сейчас C6 — то есть 7 очков.
+      chronicle: chronicleWith({ '700000051': [{ id: '10000100', constellation: 6 }] }),
+      // А заявлялся он с C0 за одно очко, и матч должен идти по заявке.
+      declared: {
+        '10000100': { id: '10000100', constellation: 0, cost: 1 },
+      },
+    });
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const builds = (created?.draft.pool ?? []).find((option) => option.id === '10000100')?.builds ?? [];
+    expect(builds.find((build) => build.side === 'a')).toMatchObject({ constellation: 0, cost: 1 });
+  });
+
+  it('без заявки читается Летопись — она запасной путь, а не отменённый', async () => {
+    const { tournament, match } = await makeMatch({
+      game: 'genshin',
+      solo: true,
+      genshinUids: { a: '700000052' },
+    });
+    const { service, cache } = drafts({
+      chronicle: chronicleWith({ '700000052': [{ id: '10000100', constellation: 2 }] }),
+    });
+
+    const created = await service.ensureForMatch(tournament, match);
+    await cache.close();
+
+    const builds = (created?.draft.pool ?? []).find((option) => option.id === '10000100')?.builds ?? [];
+    expect(builds.find((build) => build.side === 'a')).toMatchObject({ constellation: 2, cost: 3 });
   });
 
   it('закрытая Летопись оставляет пул без пометок', async () => {

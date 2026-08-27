@@ -577,3 +577,49 @@ describe('прогон вето на настоящем пуле', () => {
     expect(final.banned).toHaveLength(maps.length - 1);
   });
 });
+
+/**
+ * Пик только из своего. Пометка о владении появляется у персонажей Genshin, когда состав
+ * заявлен или прочитан из Летописи: взять того, кого у тебя нет, значит выйти на этаж без него,
+ * и выяснилось бы это уже после матча.
+ */
+describe('пик только из заявленного', () => {
+  const characters: DraftOption[] = [
+    { id: 'мой', label: 'Мой', group: 'characters', owned: ['a'] },
+    { id: 'чужой', label: 'Чужой', group: 'characters', owned: ['b'] },
+    { id: 'ничей', label: 'Ничей', group: 'characters' },
+  ];
+  const picks = pickBanSequence('characters', 1, 1);
+
+  it('своего взять можно', () => {
+    const view = draftView(characters, picks, choose(picks, [null, null]));
+
+    expect(canChoose(view, 'a', 'мой')).toEqual({ ok: true });
+  });
+
+  it('чужого взять нельзя, и сказано почему', () => {
+    const view = draftView(characters, picks, choose(picks, [null, null]));
+    const verdict = canChoose(view, 'a', 'чужой');
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.ok === false && verdict.reason).toMatch(/нет в твоей заявке/);
+  });
+
+  /** Банят как раз то, что есть у соперника: запрещать бан чужого значило бы отменить баны. */
+  it('чужого забанить можно', () => {
+    const view = draftView(characters, picks, []);
+
+    expect(view.current?.kind).toBe('ban');
+    expect(canChoose(view, 'a', 'чужой')).toEqual({ ok: true });
+  });
+
+  /**
+   * Отсутствие пометки означает «неизвестно», а не «ни у кого»: без ключа HoYoLAB, при закрытой
+   * Летописи и у остальных дисциплин пометок нет вовсе, и драфт обязан идти как раньше.
+   */
+  it('без пометок ограничения нет', () => {
+    const view = draftView(characters, picks, choose(picks, [null, null]));
+
+    expect(canChoose(view, 'a', 'ничей')).toEqual({ ok: true });
+  });
+});

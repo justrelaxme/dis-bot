@@ -129,6 +129,15 @@ type RosterCharacter = CostedCharacter & {
   sets?: readonly { name: string; pieces: number }[] | undefined;
 };
 
+/** Персонаж из заявки: сборка и цена уже посчитаны и зафиксированы при её сохранении. */
+export interface DeclaredCharacter {
+  id: string;
+  constellation: number;
+  cost: number;
+  weapon?: { name: string; rarity: number; refinement: number } | undefined;
+  sets?: string | undefined;
+}
+
 export interface DraftState {
   draft: MatchDraftRow;
   choices: DraftChoiceRow[];
@@ -161,6 +170,14 @@ export function createDraftsService(deps: {
   };
   /** UID Genshin участника. Отдаётся мостом к модулю личности, чтобы драфт не знал SQL. */
   genshinUidOf?: (entrantId: number) => Promise<string | null>;
+  /**
+   * Заявленный состав участника, если он его заявил.
+   *
+   * Заявка старше Летописи и главнее её: игрок мог выкрутить созвездие после того, как заявился,
+   * и матч всё равно обязан идти по тому, с чем он пришёл. Летопись остаётся запасным путём —
+   * для тех, кто не заявлялся, и для турниров без потолка, где заявка не нужна.
+   */
+  declaredOf?: (tournamentId: number, entrantId: number) => Promise<DeclaredCharacter[] | null>;
 }) {
   const { db, cache, logger } = deps;
 
@@ -298,6 +315,30 @@ export function createDraftsService(deps: {
 
     for (const [side, entrantId] of sides) {
       if (entrantId === null) continue;
+
+      // Заявка главнее Летописи: игрок мог выкрутить созвездие после того, как заявился, а
+      // матч обязан идти по тому, с чем он пришёл.
+      const declared = await deps.declaredOf?.(match.tournamentId, entrantId).catch(() => null);
+      if (declared && declared.length > 0) {
+        const byId = new Map(declared.map((character) => [character.id, character]));
+        for (const option of pool) {
+          const mine = byId.get(option.id);
+          if (!mine) continue;
+          option.owned = [...(option.owned ?? []), side];
+          option.builds = [
+            ...(option.builds ?? []),
+            {
+              side,
+              constellation: mine.constellation,
+              cost: mine.cost,
+              ...(mine.weapon ? { weapon: mine.weapon } : {}),
+              ...(mine.sets ? { sets: mine.sets } : {}),
+            },
+          ];
+        }
+        continue;
+      }
+
       const uid = await uidOf(entrantId);
       if (!uid) continue;
 

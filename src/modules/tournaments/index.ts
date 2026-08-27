@@ -26,6 +26,7 @@ import { createChannelsGateway } from './discord/channels.js';
 import { createDiscordPollGateway } from './discord/poll-gateway.js';
 import { createCycleService } from './services/cycle.js';
 import { createFormatsService } from './services/formats.js';
+import { createRostersService } from './services/rosters.js';
 import { createMessagesService } from './services/messages.js';
 import { createDotaVerifier } from './services/dota-verify.js';
 import { createDraftsService } from './services/drafts.js';
@@ -151,11 +152,21 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
             ...(deps.hoyolabCookie ? { cookie: deps.hoyolabCookie } : {}),
           }),
           genshinUidOf: (entrantId: number) => genshinUidOfEntrant(deps.db, entrantId),
+          declaredOf: async (tournamentId: number, entrantId: number) => {
+            // Заявка привязана к человеку, а участник в турнире по Genshin — это один человек.
+            // У команды заявок нет: этаж Бездны проходят в одиночку.
+            const members = await tournaments.membersOf(entrantId);
+            const userId = members.length === 1 ? members[0] : undefined;
+            if (!userId) return null;
+            const roster = await rosters.byPlayer(tournamentId, userId);
+            return roster?.characters ?? null;
+          },
         }
       : {}),
   });
 
   const formats = createFormatsService({ db: deps.db });
+  const rosters = createRostersService({ db: deps.db });
   const messages = createMessagesService({ db: deps.db });
   const events = createTournamentEventsGateway(deps.logger);
 
