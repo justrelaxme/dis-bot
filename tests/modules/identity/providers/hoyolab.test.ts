@@ -307,3 +307,126 @@ describe('оружие и артефакты в составе', () => {
     expect(result.ok && result.characters[0]?.sets.map((set) => set.pieces)).toEqual([3, 2]);
   });
 });
+
+/**
+ * Два запроса вместо одного. `character/list` отдаёт всех персонажей аккаунта, но без
+ * снаряжения; `character/detail` добирает оружие и артефакты. Раньше бот звал единственный
+ * `character` — эндпоинт, который HoYoLAB давно разделил, и держался он на честном слове.
+ *
+ * Ни один из двух не имеет отношения к витрине профиля: витрина — это восемь слотов, которые
+ * игрок выставляет сам, и читает её Enka. Летопись знает весь аккаунт.
+ */
+describe('состав читается двумя запросами', () => {
+  /** Заглушка, отвечающая по-разному на список и на детали. */
+  function twoStep(options: {
+    list: unknown[];
+    detail?: unknown[] | 'ошибка';
+    listKey?: 'avatars' | 'list';
+  }): { chronicle: ReturnType<typeof createHoyolabChronicle>; calls: { url: string; body: unknown }[] } {
+    const calls: { url: string; body: unknown }[] = [];
+    const json = async (url: string, init?: { body?: string }): Promise<unknown> => {
+      calls.push({ url, body: JSON.parse(init?.body ?? '{}') });
+      if (url.includes('character/detail')) {
+        if (options.detail === 'ошибка') throw new Error('детали не пришли');
+        return { retcode: 0, data: { list: options.detail ?? [] } };
+      }
+      const key = options.listKey ?? 'list';
+      return { retcode: 0, data: { [key]: options.list } };
+    };
+
+    return {
+      chronicle: createHoyolabChronicle({
+        client: { json } as unknown as FetchClient,
+        rateLimiter,
+        cookie: 'ltoken_v2=abc',
+        now: () => NOW,
+      }),
+      calls,
+    };
+  }
+
+  it('сначала спрашивает список, потом детали по его идентификаторам', async () => {
+    const { chronicle, calls } = twoStep({
+      list: [{ id: 10000046, name: 'Ху Тао', rarity: 5, level: 90, actived_constellation_num: 1 }],
+      detail: [
+        {
+          id: 10000046,
+          name: 'Ху Тао',
+          rarity: 5,
+          weapon: { name: 'Нефритовый секач', rarity: 5, affix_level: 1 },
+        },
+      ],
+    });
+
+    const result = await chronicle.roster('700000001');
+
+    expect(calls[0]?.url).toContain('character/list');
+    expect(calls[1]?.url).toContain('character/detail');
+    expect((calls[1]?.body as { character_ids?: number[] }).character_ids).toEqual([10000046]);
+    expect(result.ok && result.characters[0]?.weapon?.refinement).toBe(1);
+    // Уровень и созвездие приходят из списка и не теряются при слиянии с деталями.
+    expect(result.ok && result.characters[0]).toMatchObject({ level: 90, constellation: 1 });
+  });
+
+  /**
+   * Отказ на деталях состав не отменяет: без оружия цена посчитается по одним созвездиям —
+   * заниженная, но состав будет виден, и это лучше пустой страницы из-за одного вызова.
+   */
+  it('отказ на деталях оставляет список персонажей', async () => {
+    const { chronicle } = twoStep({
+      list: [{ id: 10000046, name: 'Ху Тао', rarity: 5, level: 90, actived_constellation_num: 2 }],
+      detail: 'ошибка',
+    });
+
+    const result = await chronicle.roster('700000001');
+
+    expect(result.ok && result.characters).toHaveLength(1);
+    expect(result.ok && result.characters[0]?.weapon).toBeUndefined();
+    expect(result.ok && result.characters[0]?.constellation).toBe(2);
+  });
+
+  /** Старый ответ клал персонажей в `avatars`, новый — в `list`. Понимать надо оба. */
+  it('список читается и под старым именем поля', async () => {
+    const { chronicle } = twoStep({
+      list: [{ id: 10000046, name: 'Ху Тао', rarity: 5 }],
+      listKey: 'avatars',
+    });
+
+    const result = await chronicle.roster('700000001');
+
+    expect(result.ok && result.characters).toHaveLength(1);
+  });
+
+  /** Артефакты у старого эндпоинта звались `reliquaries`, у нового — `relics`. */
+  it('артефакты читаются и под новым именем поля', async () => {
+    const { chronicle } = twoStep({
+      list: [{ id: 10000046, name: 'Ху Тао', rarity: 5 }],
+      detail: [
+        {
+          id: 10000046,
+          name: 'Ху Тао',
+          rarity: 5,
+          relics: [
+            { set: { name: 'Багровая ведьма пламени' } },
+            { set: { name: 'Багровая ведьма пламени' } },
+          ],
+        },
+      ],
+    });
+
+    const result = await chronicle.roster('700000001');
+
+    expect(result.ok && result.characters[0]?.sets).toEqual([
+      { name: 'Багровая ведьма пламени', pieces: 2 },
+    ]);
+  });
+
+  it('пустой аккаунт не тянет второй запрос', async () => {
+    const { chronicle, calls } = twoStep({ list: [] });
+
+    const result = await chronicle.roster('700000001');
+
+    expect(result.ok && result.characters).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+});

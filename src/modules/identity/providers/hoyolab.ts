@@ -32,6 +32,22 @@ import type { Limit, RateLimiter } from '../../../core/rate-limit.js';
 const CHRONICLE_BASE = 'https://bbs-api-os.hoyolab.com/game_record/genshin/api';
 
 /**
+ * Состав читается двумя запросами, и это не прихоть.
+ *
+ * `character/list` отдаёт **всех** персонажей аккаунта — с уровнем и созвездием, но без
+ * снаряжения. `character/detail` по их идентификаторам добирает надетое оружие с огранкой и
+ * артефакты. Раньше существовал один эндпоинт `character`, который отдавал всё сразу; бот звал
+ * именно его, и это была ошибка — HoYoLAB давно разделил вызовы, и старый путь держится на
+ * честном слове.
+ *
+ * Важное, о чём легко ошибиться: ни один из этих двух не имеет отношения к витрине профиля.
+ * Витрина — это восемь слотов, которые игрок выставляет сам (её задаёт отдельный
+ * `character/top`), и читает её Enka. Летопись знает весь аккаунт целиком.
+ */
+const LIST_PATH = 'character/list';
+const DETAIL_PATH = 'character/detail';
+
+/**
  * Соль для подписи зарубежного HoYoLAB и версия клиента, которой представляется запрос.
  * Обе величины — из сетевого обмена сайта HoYoLAB, а не из документации: документации нет.
  * Если состав перестал приходить с жалобой на подпись, менять надо здесь.
@@ -107,13 +123,26 @@ const avatarSchema = z.object({
    * означает «неизвестно», а не «нет».
    */
   weapon: weaponSchema.optional(),
+  /** Старый эндпоинт звал их `reliquaries`, новый `character/detail` — `relics`. Ждём оба. */
   reliquaries: z.array(reliquarySchema).optional(),
+  relics: z.array(reliquarySchema).optional(),
 });
 
+/**
+ * Ответ приходит под разными именами в разных версиях API: старый `character` клал персонажей
+ * в `avatars`, `character/list` и `character/detail` — в `list`. Принимаем оба: разница
+ * косметическая, а падать из-за неё значило бы остаться без состава на ровном месте.
+ */
 const rosterSchema = z.object({
   retcode: z.number(),
   message: z.string().optional(),
-  data: z.object({ avatars: z.array(avatarSchema) }).nullable().optional(),
+  data: z
+    .object({
+      avatars: z.array(avatarSchema).optional(),
+      list: z.array(avatarSchema).optional(),
+    })
+    .nullable()
+    .optional(),
 });
 
 export interface OwnedWeapon {
@@ -214,11 +243,10 @@ export function createHoyolabChronicle(deps: HoyolabDeps) {
       const server = serverForUid(uid);
       if (!server) return { ok: false, reason: 'unsupported-region' };
 
-      await deps.rateLimiter.acquire('hoyolab', CHRONICLE_LIMITS);
-
-      let body: z.infer<typeof rosterSchema>;
-      try {
-        body = await deps.client.json<z.infer<typeof rosterSchema>>(`${CHRONICLE_BASE}/character`, {
+      /** Один запрос к Летописи: заголовки, подпись и квота у них общие. */
+      const ask = async (path: string, payload: Record<string, unknown>): Promise<z.infer<typeof rosterSchema>> => {
+        await deps.rateLimiter.acquire('hoyolab', CHRONICLE_LIMITS);
+        return deps.client.json<z.infer<typeof rosterSchema>>(`${CHRONICLE_BASE}/${path}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -228,9 +256,14 @@ export function createHoyolabChronicle(deps: HoyolabDeps) {
             'x-rpc-client_type': CLIENT_TYPE,
             'x-rpc-language': 'ru-ru',
           },
-          body: JSON.stringify({ role_id: uid, server }),
+          body: JSON.stringify({ role_id: uid, server, ...payload }),
           schema: rosterSchema,
         });
+      };
+
+      let body: z.infer<typeof rosterSchema>;
+      try {
+        body = await ask(LIST_PATH, {});
       } catch {
         return { ok: false, reason: 'unavailable' };
       }
@@ -239,7 +272,28 @@ export function createHoyolabChronicle(deps: HoyolabDeps) {
         return { ok: false, reason: PRIVATE_CODES.has(body.retcode) ? 'private' : 'unavailable' };
       }
 
-      const characters = body.data.avatars
+      const listed = body.data.avatars ?? body.data.list ?? [];
+
+      /**
+       * Снаряжение добирается вторым запросом. Отказ здесь состав не отменяет: без оружия
+       * цена посчитается по одним созвездиям — заниженная, но состав будет виден, и это
+       * лучше, чем пустая страница из-за одного неудачного вызова.
+       */
+      let detailed = listed;
+      if (listed.length > 0) {
+        try {
+          const detail = await ask(DETAIL_PATH, { character_ids: listed.map((avatar) => avatar.id) });
+          const full = detail.retcode === 0 ? (detail.data?.list ?? detail.data?.avatars ?? []) : [];
+          if (full.length > 0) {
+            const byId = new Map(full.map((avatar) => [avatar.id, avatar]));
+            detailed = listed.map((avatar) => ({ ...avatar, ...(byId.get(avatar.id) ?? {}) }));
+          }
+        } catch {
+          // Намеренно тихо: список персонажей уже есть, а снаряжение — уточнение к нему.
+        }
+      }
+
+      const characters = detailed
         .map((avatar) => ({
           id: String(avatar.id),
           name: avatar.name,
@@ -260,7 +314,7 @@ export function createHoyolabChronicle(deps: HoyolabDeps) {
                 },
               }
             : {}),
-          sets: setsOf(avatar.reliquaries),
+          sets: setsOf(avatar.reliquaries ?? avatar.relics),
         }))
         .sort((a, b) => b.rarity - a.rarity || b.level - a.level || a.name.localeCompare(b.name, 'ru'));
 
