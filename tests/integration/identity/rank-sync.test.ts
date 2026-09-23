@@ -90,6 +90,8 @@ describe('RankSyncService', () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'riot-lol', mode: 'solo-duo', previous: null }),
     );
+    // Первый снимок после привязки — не рост: расти было не от чего.
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ climbed: false }));
   });
 
   it('НЕ публикует rank.changed, когда ранг не изменился', async () => {
@@ -132,6 +134,13 @@ describe('RankSyncService', () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ previous: { tier: 'GOLD', division: 'III' }, current: { tier: 'GOLD', division: 'II' } }),
     );
+    // GOLD III → GOLD II — подъём: на этом стоит достижение «Растёт».
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ climbed: true }));
+
+    handler.mockClear();
+    current = rank('SILVER', 'I');
+    await sync.syncAccount(account);
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ climbed: false }));
   });
 
   it('пропускает аккаунт провайдера с ручным рангом', async () => {

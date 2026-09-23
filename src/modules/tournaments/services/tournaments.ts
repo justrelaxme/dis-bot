@@ -121,6 +121,29 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
     });
   }
 
+  /**
+   * Старт — в шину: прогрессия начисляет опыт за участие и выдаёт «Дебют» и «Капитана».
+   * Капитаны — только у команд, собранных руками: капитан, назначенный автосбором, команду
+   * не собирал, и достижение «Собрал команду» было бы неправдой.
+   */
+  async function publishStarted(tournament: TournamentRow, entrantIds: number[]): Promise<void> {
+    if (!deps.bus || entrantIds.length === 0) return;
+    const rows = await db
+      .select({ userId: tournamentEntrantMembers.userId, captainUserId: tournamentEntrants.captainUserId })
+      .from(tournamentEntrantMembers)
+      .innerJoin(tournamentEntrants, eq(tournamentEntrants.id, tournamentEntrantMembers.entrantId))
+      .where(inArray(tournamentEntrantMembers.entrantId, entrantIds));
+
+    const handPicked = tournament.entryMode === 'team' && !tournament.autoTeams;
+    await deps.bus.emit('tournament.started', {
+      guildId: tournament.guildId,
+      tournamentId: tournament.id,
+      entrants: entrantIds.length,
+      participantUserIds: [...new Set(rows.map((row) => row.userId))],
+      captainUserIds: handPicked ? [...new Set(rows.map((row) => row.captainUserId))] : [],
+    });
+  }
+
   async function byId(tournamentId: number): Promise<TournamentRow> {
     const [row] = await db.select().from(tournaments).where(eq(tournaments.id, tournamentId));
     if (!row) throw new UserError('Турнир не найден.');
@@ -1003,10 +1026,14 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
           }),
         );
 
-        await tx
+        // CAS по состоянию: ручной старт и автостарт по времени могут прийти в одну минуту, и
+        // второй должен откатиться целиком, а не построить вторую сетку поверх первой.
+        const [begun] = await tx
           .update(tournaments)
           .set({ state: 'running', format, startedAt: new Date(), updatedAt: new Date() })
-          .where(eq(tournaments.id, tournamentId));
+          .where(and(eq(tournaments.id, tournamentId), eq(tournaments.state, 'registration')))
+          .returning({ id: tournaments.id });
+        if (!begun) throw new UserError('Этот турнир уже стартовал.');
       });
 
       // Пропуски проводим сразу и в порядке зависимостей: участник, оказавшийся один в
@@ -1022,6 +1049,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         await settleWalkover(shape, match, lone);
       }
 
+      await publishStarted(tournament, seeded.map((entrant) => entrant.entrantId));
       return this.bracket(tournamentId);
     },
 

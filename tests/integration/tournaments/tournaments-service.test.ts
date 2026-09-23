@@ -876,3 +876,77 @@ describe('ручные регистрации к старту', () => {
     expect(ids).not.toContain(cycleOwned.tournamentId);
   });
 });
+
+/**
+ * Старт — в шину: прогрессия начисляет опыт за участие и выдаёт «Дебют». Раньше события не
+ * было, и эти награды не выдавались никогда.
+ */
+describe('событие о старте', () => {
+  it('публикуется со всеми участниками, отметившимися в сетку', async () => {
+    const bus = new EventBus(logger);
+    const started: Array<{ participantUserIds: string[]; captainUserIds: string[]; entrants: number }> = [];
+    bus.on('tournament.started', async (payload) => {
+      started.push(payload);
+    });
+
+    const { users } = await startTournament({ registered: 4, checkedIn: 3, bus });
+
+    expect(started).toHaveLength(1);
+    expect(started[0]?.entrants).toBe(3);
+    // Неотметившийся в сетку не попал — и опыта за участие не получает.
+    expect(started[0]?.participantUserIds.sort()).toEqual(users.slice(0, 3).sort());
+    // Одиночки — не капитаны собранных команд.
+    expect(started[0]?.captainUserIds).toEqual([]);
+  });
+
+  /** Ручной старт и автостарт по времени в одну минуту: второй откатывается целиком. */
+  it('второй старт отказывает и сетку не перестраивает', async () => {
+    const bus = new EventBus(logger);
+    let events = 0;
+    bus.on('tournament.started', async () => {
+      events += 1;
+    });
+    const { service, tournamentId } = await startTournament({ registered: 4, bus });
+    const before = (await service.bracket(tournamentId)).matches.length;
+
+    await expect(service.start(tournamentId, new Map())).rejects.toThrow(/не в состоянии регистрации|уже стартовал/);
+
+    expect((await service.bracket(tournamentId)).matches).toHaveLength(before);
+    expect(events).toBe(1);
+  });
+});
+
+describe('одновременный старт', () => {
+  it('из двух одновременных стартов проходит ровно один', async () => {
+    const service = createTournamentsService({ db: pg.db });
+    guildCounter += 1;
+    const tournament = await service.create({
+      guildId: `75000000000000${String(guildCounter).padStart(4, '0')}`,
+      name: 'Гонка стартов',
+      game: 'dota2',
+      format: 'single-elim',
+      entryMode: 'solo',
+      teamSize: 1,
+      maxEntrants: 8,
+      seeding: 'rank',
+      bestOf: 1,
+      requireVerified: false,
+      createdBy: 'organizer',
+    });
+    await service.openRegistration(tournament.id, new Date(Date.now() + 3_600_000));
+    for (let index = 0; index < 4; index += 1) {
+      const user = `76${String(guildCounter).padStart(8, '0')}${String(index).padStart(8, '0')}`;
+      await service.createEntrant(tournament.id, user, `Игрок ${index + 1}`);
+      await service.checkIn(tournament.id, user);
+    }
+
+    const results = await Promise.allSettled([
+      service.start(tournament.id, new Map()),
+      service.start(tournament.id, new Map()),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    // Одна сетка на четверых — три матча, а не шесть.
+    expect((await service.bracket(tournament.id)).matches).toHaveLength(3);
+  });
+});

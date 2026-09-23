@@ -78,6 +78,7 @@ describe('модуль identity', () => {
         mode: 'solo-duo',
         previous: null,
         current: { tier: 'GOLD', division: 'II' },
+        climbed: false,
       }),
     ).resolves.toBeUndefined();
   });
@@ -187,6 +188,7 @@ describe('обработчик rank.changed уважает verified_at (закр
       mode: 'solo-duo',
       previous: null,
       current: { tier: 'GOLD', division: 'II' },
+      climbed: false,
     });
   }
 

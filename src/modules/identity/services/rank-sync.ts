@@ -3,7 +3,7 @@ import type { Database } from '../../../core/db/client.js';
 import type { EventBus } from '../../../core/events/bus.js';
 import type { Logger } from '../../../core/logger.js';
 import { canFetchRank, type GameProvider, type RankInfo } from '../providers/provider.js';
-import { hasRankChanged } from '../ranks/compare.js';
+import { hasRankChanged, rankScore } from '../ranks/compare.js';
 import { gameAccounts, type ProviderId } from '../schema.js';
 import type { GameAccountRow, LinkingService } from './linking.js';
 
@@ -65,6 +65,7 @@ export function createRankSyncService(deps: RankSyncDeps): RankSyncService {
         mode: rank.mode,
         previous: before ? { tier: before.tier, division: before.division } : null,
         current: { tier: rank.tier, division: rank.division },
+        climbed: before !== null && rankScore(rank) > rankScore(before),
       });
     }
 
@@ -103,6 +104,7 @@ export function createRankSyncService(deps: RankSyncDeps): RankSyncService {
         mode: prev.mode,
         previous: { tier: prev.tier, division: prev.division },
         current: { tier: null, division: null },
+        climbed: false,
       });
     }
 

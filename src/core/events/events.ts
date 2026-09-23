@@ -23,10 +23,27 @@ export interface BotEvents {
     mode: string;
     previous: { tier: string | null; division: string | null } | null;
     current: { tier: string | null; division: string | null };
+    /**
+     * Ранг вырос по сравнению с прошлым снимком. Считает тот, кто умеет сравнивать ранги, —
+     * модуль личности; подписчику (прогрессии) незачем знать шкалы всех игр. Первый снимок
+     * после привязки ростом не считается: расти было не от чего.
+     */
+    climbed: boolean;
   };
 
   'tournament.created': { guildId: string; tournamentId: number; game: string };
-  'tournament.started': { guildId: string; tournamentId: number; entrants: number };
+  /**
+   * Турнир стартовал. Люди — списками, как и у `tournament.finished`: прогрессии нужны те,
+   * кому начислять. `captainUserIds` — только капитаны команд, собранных руками: капитан,
+   * которого назначил автосбор, команду не собирал.
+   */
+  'tournament.started': {
+    guildId: string;
+    tournamentId: number;
+    entrants: number;
+    participantUserIds: string[];
+    captainUserIds: string[];
+  };
   /**
    * `winnerUserIds` — состав победителя списком, а не идентификатор участника: подписчику
    * (прогрессии) нужны люди, которым начислять, и лезть за ними в таблицы турниров он бы

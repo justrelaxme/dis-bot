@@ -18,12 +18,12 @@ import {
   MIN_MESSAGE_LENGTH,
   VOICE_MIN_PARTNERS,
   XP_PER_MESSAGE,
-  XP_TOURNAMENT_WIN,
   isNightOwlHour,
   progressToNext,
 } from './rules.js';
 import { createProgressionService, type ProgressionService } from './service.js';
 import { purchaseRole } from './shop.js';
+import { onRankChanged, onTournamentFinished, onTournamentStarted } from './tournaments.js';
 import { applyVoiceTransition } from './voice.js';
 
 /** Снятие просроченных покупок — раз в 10 минут: точность до минуты здесь не нужна. */
@@ -229,16 +229,20 @@ export function createProgressionModule(deps: ProgressionModuleDeps): BotModule 
         await progression.grantAchievement(payload.guildId, payload.userId, 'linked').catch(() => null);
       });
 
-      ctx.bus.on('tournament.finished', async (payload) => {
-        for (const userId of payload.winnerUserIds) {
-          await progression.award(payload.guildId, userId, XP_TOURNAMENT_WIN, 'tournament-win', {
-            tournamentId: payload.tournamentId,
-          });
-          await progression.grantAchievement(payload.guildId, userId, 'champion').catch(() => null);
+      ctx.bus.on('tournament.started', (payload) => onTournamentStarted(progression, payload));
+      ctx.bus.on('tournament.finished', (payload) => onTournamentFinished(progression, payload));
+
+      // Ранг — про игру, а не про сервер: награда на тех серверах, где человек есть.
+      ctx.bus.on('rank.changed', async (payload) => {
+        if (!payload.climbed) return;
+        const guildIds: string[] = [];
+        for (const guild of ctx.client.guilds.cache.values()) {
+          if (await guild.members.fetch(payload.userId).catch(() => null)) guildIds.push(guild.id);
         }
+        await onRankChanged(progression, guildIds, payload);
       });
 
-      ctx.logger.info('прогрессия подписалась на привязки и турниры');
+      ctx.logger.info('прогрессия подписалась на привязки, турниры и ранги');
     },
   };
 }

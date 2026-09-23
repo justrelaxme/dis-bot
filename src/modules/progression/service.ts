@@ -214,6 +214,18 @@ export function createProgressionService(deps: { db: Database }) {
       });
     },
 
+    /**
+     * Сколько раз человек получал опыт по этой причине — за всё время, а не за сезон. Нужно
+     * достижениям «за постоянство»: три победы остаются тремя победами и после смены сезона.
+     */
+    async countEvents(guildId: string, userId: string, reason: XpReason): Promise<number> {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(xpEvents)
+        .where(and(eq(xpEvents.guildId, guildId), eq(xpEvents.userId, userId), eq(xpEvents.reason, reason)));
+      return row?.count ?? 0;
+    },
+
     async grantAchievement(guildId: string, userId: string, code: string): Promise<AchievementRow | null> {
       const definition = achievementByCode(code);
       if (!definition) throw new Error(`неизвестное достижение: ${code}`);
