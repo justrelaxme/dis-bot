@@ -34,8 +34,8 @@ export function createCastCommand(deps: {
         throw new UserError('Трансляцией управляет организатор: «Управление сервером» или роль из `/tournament settings`.');
       }
 
-      const tournament = await deps.tournaments.current(guild.id);
-      if (!tournament) throw new UserError('Сейчас на сервере нет турнира — показывать нечего.');
+      const tournament = await deps.tournaments.onAir(guild.id);
+      if (!tournament) throw new UserError('На сервере нет ни идущего, ни доигранного турнира — показывать нечего.');
 
       const grant = await deps.grants.issue({ guildId: guild.id, userId: interaction.user.id, scope: 'cast' });
       const overlay = `${deps.publicBaseUrl}/cast/t/${tournament.id}`;

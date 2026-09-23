@@ -96,7 +96,7 @@ export async function buildMatchCard(deps: PlayDeps, match: MatchRow): Promise<M
   const captainB = view.entrants.find((row) => row.id === match.entrantBId)?.captainUserId;
   const past =
     captainA && captainB
-      ? await deps.tournaments.headToHead(view.tournament.guildId, captainA, captainB, match.id).catch(() => null)
+      ? await deps.tournaments.headToHead(view.tournament.guildId, captainA, captainB, match.id, view.tournament.entryMode).catch(() => null)
       : null;
 
   return {

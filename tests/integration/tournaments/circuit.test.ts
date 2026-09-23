@@ -50,6 +50,34 @@ async function finishedTournament(guildId: string, players: number) {
   return { tournamentId: tournament.id, users };
 }
 
+/** Дуэль двух заданных игроков: побеждает `winner`. Турнир доигран, очки ещё не начислены. */
+async function duel(guildId: string, users: [string, string], winner: 0 | 1, entryMode: 'solo' | 'team' = 'solo') {
+  counter += 1;
+  const service = createTournamentsService({ db: pg.db });
+  const tournament = await service.create({
+    guildId,
+    name: `Дуэль ${counter}`,
+    game: 'dota2',
+    format: 'single-elim',
+    entryMode,
+    teamSize: 1,
+    maxEntrants: 4,
+    seeding: 'rank',
+    bestOf: 1,
+    requireVerified: false,
+    createdBy: 'organizer',
+  });
+  await service.openRegistration(tournament.id, new Date(Date.now() + 3_600_000));
+  const ids: number[] = [];
+  for (const user of users) {
+    ids.push((await service.createEntrant(tournament.id, user, entryMode === 'solo' ? `Игрок ${user.slice(-2)}` : `Команда ${user.slice(-2)}`)).id);
+    await service.checkIn(tournament.id, user);
+  }
+  const view = await service.start(tournament.id, new Map(ids.map((id, index) => [id, 10 - index])));
+  await service.resolve(view.matches[0]!.id, 'organizer', ids[winner]!);
+  return tournament.id;
+}
+
 describe('сезонная серия', () => {
   it('без открытого сезона очки не начисляются', async () => {
     const circuit = createCircuitService({ db: pg.db });
@@ -90,6 +118,69 @@ describe('сезонная серия', () => {
     expect(season.championUserId).toBe(second.users[0]);
     expect(await circuit.open(guildId)).toBeNull();
     expect((await circuit.champions(guildId))[0]?.name).toBe('Зима');
+  });
+
+  it('ничья на вершине: сам чемпиона не назначает, по явному выбору — только из равных', async () => {
+    const circuit = createCircuitService({ db: pg.db });
+    const guildId = '840000000000000005';
+    const a = '841000000000000051';
+    const b = '841000000000000052';
+    const outsider = '841000000000000053';
+    await circuit.start(guildId, 'Ничья');
+    await circuit.award(await duel(guildId, [a, b], 0));
+    await circuit.award(await duel(guildId, [a, b], 1));
+
+    // По 8 очков, по титулу, лучшее место — первое у обоих: правила чемпиона не называют.
+    await expect(circuit.close(guildId)).rejects.toThrow(/Первое место делят/);
+    await expect(circuit.close(guildId, { pick: outsider })).rejects.toThrow(/только одного из делящих/);
+    expect(await circuit.open(guildId)).not.toBeNull();
+
+    const { season, table } = await circuit.close(guildId, { pick: b });
+    expect(season.championUserId).toBe(b);
+    expect(table[0]?.userId).toBe(b);
+  });
+
+  it('при одном лидере выбрать чемпиона руками нельзя', async () => {
+    const circuit = createCircuitService({ db: pg.db });
+    const guildId = '840000000000000006';
+    const a = '841000000000000061';
+    const b = '841000000000000062';
+    await circuit.start(guildId, 'Без ничьей');
+    await circuit.award(await duel(guildId, [a, b], 0));
+
+    await expect(circuit.close(guildId, { pick: b })).rejects.toThrow(/лидер один/);
+  });
+
+  it('потерянное начисление страховка находит, а начисленное — нет', async () => {
+    const circuit = createCircuitService({ db: pg.db });
+    const guildId = '840000000000000007';
+    // Турнир до начала сезона не в счёт: сезон — с момента старта.
+    const before = await duel(guildId, ['841000000000000071', '841000000000000072'], 0);
+    await circuit.start(guildId, 'Страховка');
+    const lost = await duel(guildId, ['841000000000000071', '841000000000000072'], 0);
+    const counted = await duel(guildId, ['841000000000000071', '841000000000000072'], 1);
+    await circuit.award(counted);
+
+    const pending = await circuit.unawarded(100);
+    expect(pending).toContain(lost);
+    expect(pending).not.toContain(counted);
+    expect(pending).not.toContain(before);
+
+    await circuit.award(lost);
+    expect(await circuit.unawarded(100)).not.toContain(lost);
+  });
+
+  it('игрок команды без имени получает его при закрытии — чемпион уходит в зал славы по имени', async () => {
+    const circuit = createCircuitService({ db: pg.db });
+    const guildId = '840000000000000008';
+    const captain = '841000000000000081';
+    await circuit.start(guildId, 'Команды');
+    await circuit.award(await duel(guildId, [captain, '841000000000000082'], 0, 'team'));
+    expect((await circuit.unnamed(100)).some((row) => row.userId === captain)).toBe(true);
+
+    const { season } = await circuit.close(guildId, { names: new Map([[captain, 'Капитан Медведей']]) });
+
+    expect(season.championName).toBe('Капитан Медведей');
   });
 
   it('второй сезон, пока идёт первый, не начинается', async () => {

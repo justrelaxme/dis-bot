@@ -1,4 +1,5 @@
-import type { GuildMember } from 'discord.js';
+import { and, eq } from 'drizzle-orm';
+import { DiscordAPIError, RESTJSONErrorCodes, type GuildMember, type PartialGuildMember } from 'discord.js';
 import { Cache, type CachedValue, type SwrOptions } from '../../core/cache.js';
 import type { Config } from '../../core/config.js';
 import type { Cooldown } from '../../core/cooldown.js';
@@ -6,7 +7,7 @@ import type { Database } from '../../core/db/client.js';
 import type { EventBus } from '../../core/events/bus.js';
 import type { FetchClient } from '../../core/http/fetch-client.js';
 import type { Logger } from '../../core/logger.js';
-import type { BotModule } from '../../core/module.js';
+import type { BotModule, EventHandler } from '../../core/module.js';
 import type { RateLimiter } from '../../core/rate-limit.js';
 import { createCardCommand } from './commands/card.js';
 import { createLinkCommand, type IdentityDeps } from './commands/link.js';
@@ -19,10 +20,14 @@ import { createProviderRegistry } from './providers/index.js';
 import { createLinkingService } from './services/linking.js';
 import { createRankSyncService } from './services/rank-sync.js';
 import { createRoleMappingService } from './services/role-mapping.js';
+import { playerPages } from './schema.js';
 
 /** Значения из спеки: пачка на 100 аккаунтов каждые 30 минут. */
 const SYNC_CRON = '*/30 * * * *';
 const SYNC_BATCH_SIZE = 100;
+
+/** Ночная проверка страниц игроков: ушедшие, пока бот был выключен. */
+const PLAYER_PAGES_SWEEP_CRON = '23 4 * * *';
 
 /**
  * "Прозрачный" кэш для реестра провайдеров синхронизации (находки 1 и 2 итогового
@@ -149,12 +154,49 @@ export function createIdentityModule(deps: IdentityModuleDeps): BotModule {
       createCardCommand({ db: deps.db, publicBaseUrl: deps.config.PUBLIC_BASE_URL }),
     ],
 
+    /**
+     * Ушедший с сервера не может выполнить `/card off` — значит, его страница закрывается сама.
+     * Согласие давалось как участником сервера, и после ухода витрине незачем его показывать.
+     */
+    events: [
+      {
+        event: 'guildMemberRemove',
+        async handle(_ctx, member: GuildMember | PartialGuildMember): Promise<void> {
+          await deps.db
+            .delete(playerPages)
+            .where(and(eq(playerPages.guildId, member.guild.id), eq(playerPages.userId, member.id)));
+        },
+      } satisfies EventHandler<'guildMemberRemove'>,
+    ],
+
     jobs: [
       {
         name: 'identity:rank-sync',
         cron: SYNC_CRON,
         run: async () => {
           await rankSync.syncBatch(SYNC_BATCH_SIZE);
+        },
+      },
+      {
+        // Страховка для ушедших, пока бот был выключен: событие об уходе тогда не приходит.
+        // Удаляется только тот, про кого Discord прямо ответил «такого участника нет»: сетевой
+        // сбой не повод закрывать чужую страницу.
+        name: 'identity:player-pages-sweep',
+        cron: PLAYER_PAGES_SWEEP_CRON,
+        async run(ctx) {
+          for (const row of await deps.db.select().from(playerPages)) {
+            const guild = ctx.client.guilds.cache.get(row.guildId);
+            if (!guild) continue;
+            const gone = await guild.members.fetch(row.userId).then(
+              () => false,
+              (error: unknown) => error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownMember,
+            );
+            if (gone) {
+              await deps.db
+                .delete(playerPages)
+                .where(and(eq(playerPages.guildId, row.guildId), eq(playerPages.userId, row.userId)));
+            }
+          }
         },
       },
     ],

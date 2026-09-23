@@ -7,6 +7,7 @@ const view = (over: Partial<PlayerView> = {}): PlayerView => ({
   season: null,
   achievements: [],
   ranks: null,
+  accounts: null,
   showAccounts: false,
   ...over,
 });

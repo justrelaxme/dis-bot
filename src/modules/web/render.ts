@@ -1,6 +1,7 @@
 import type { RankScale } from '../identity/schema.js';
 import { EVENT_SIZE_LABELS, eventSize } from '../tournaments/bracket.js';
 import { TOURNAMENT_GAME_LABELS } from '../tournaments/games.js';
+import { sharedPlaces } from '../tournaments/services/circuit.js';
 import { standingsOf } from '../tournaments/standings.js';
 import type { EntrantRow, MatchRow, TournamentGame, TournamentRow } from '../tournaments/schema.js';
 import { GAME_IDENTITY, SERVER_BAND, SERVER_CREDIT } from './art.js';
@@ -726,10 +727,12 @@ export function renderSeason(input: {
 <p class="lede">Сейчас сезон не идёт. Когда организатор начнёт его командой <code>/season start</code>, каждый доигранный турнир будет приносить очки всем, кто в нём играл.</p>`;
   }
   const since = input.season.startedAt.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+  // Равные по очкам, титулам и лучшему месту делят место: таблица не ставит одного выше молча.
+  const places = sharedPlaces(input.table);
   const rows = input.table
     .map(
       (row, index) => `<tr style="--delay:${index * 18}ms">
-<td class="pos">${index + 1}</td>
+<td class="pos">${places[index]}</td>
 <td class="acct">${row.name ? escape(row.name) : '<span class="dim">игрок</span>'}</td>
 <td class="num">${row.points}</td>
 <td class="num">${row.tournaments}</td>
@@ -764,6 +767,8 @@ export interface PlayerView {
   achievements: { title: string; description: string; earnedAt: Date }[];
   /** `null` — игрок ранги не показывает. */
   ranks: (LeaderboardEntry & { game: string })[] | null;
+  /** Ники без рангов: игрок разрешил показать аккаунты, но не ранги. */
+  accounts: { game: string; displayName: string }[] | null;
   /** Показывать ли ник аккаунта рядом с рангом: это отдельное согласие. */
   showAccounts: boolean;
 }
@@ -846,6 +851,22 @@ ${tiles
           .join('\n')}</tbody>
 </table></div>`;
 
+  const accounts =
+    view.ranks !== null || !view.accounts || view.accounts.length === 0
+      ? ''
+      : `<h2>Аккаунты</h2>
+<div class="scroll"><table>
+<thead><tr><th>Игра</th><th>Аккаунт</th></tr></thead>
+<tbody>${view.accounts
+          .map(
+            (row, index) => `<tr style="--delay:${index * 18}ms">
+<td>${escape(row.game)}</td>
+<td class="acct">${escape(row.displayName)}</td>
+</tr>`,
+          )
+          .join('\n')}</tbody>
+</table></div>`;
+
   return `<p class="eyebrow">Карточка игрока</p>
 <h1>${escape(view.name)}</h1>
 <p class="lede">Турнирный след на этом сервере. Страницу открыл сам игрок и может закрыть её в любой момент.</p>
@@ -853,5 +874,5 @@ ${strip}
 <h2>Последние турниры</h2>
 ${recent}
 ${achievements}
-${ranks}`;
+${ranks}${accounts}`;
 }

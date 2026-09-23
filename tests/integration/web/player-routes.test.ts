@@ -149,8 +149,16 @@ describe('карточка игрока', () => {
     expect((await get()).body).toContain('СекретныйНик');
   });
 
-  it('скрыл ранги — нет ни ранга, ни ника', async () => {
+  it('ники без рангов: ник виден, ранг — нет', async () => {
     await consent({ showAccounts: true, showRanks: false });
+
+    const body = (await get()).body;
+    expect(body).not.toContain('Legend 3');
+    expect(body).toContain('СекретныйНик');
+  });
+
+  it('ни ников, ни рангов — нет ни того, ни другого', async () => {
+    await consent({ showAccounts: false, showRanks: false });
 
     const body = (await get()).body;
     expect(body).not.toContain('Legend 3');

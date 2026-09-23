@@ -58,6 +58,7 @@ const AUTO_CONFIRM_BATCH_SIZE = 20;
  * один, и прогон по нему это два запроса «кому нужна ветка» и «кому нужен драфт».
  */
 const RECONCILE_CRON = '* * * * *';
+const CIRCUIT_CATCHUP_CRON = '*/10 * * * *';
 
 /**
  * Ручные регистрации проверяются каждую минуту: напоминание и старт привязаны к минуте, и при
@@ -398,6 +399,39 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
         cron: MATCH_FLOW_CRON,
         async run(ctx): Promise<void> {
           await runMatchFlow(play, ctx.client, ctx.logger, new Date());
+        },
+      },
+      {
+        /**
+         * Страховка сезонной серии. Очки начисляются по событию конца турнира, а имена игроков
+         * команд подтягиваются в фоне, — и то и другое теряется при сбое базы или перезапуске в
+         * неудачный момент. Раз в десять минут доигранные турниры сезона без очков получают
+         * очки (`award` идемпотентен), а игроки без имени — имя из Discord.
+         */
+        name: 'tournaments:circuit-catchup',
+        cron: CIRCUIT_CATCHUP_CRON,
+        async run(ctx): Promise<void> {
+          for (const tournamentId of await circuit.unawarded()) {
+            const result = await circuit.award(tournamentId).catch((error: unknown) => {
+              ctx.logger.error({ err: error, tournamentId }, 'очки сезонной серии снова не начислены');
+              return null;
+            });
+            if (result && result.awarded > 0) {
+              ctx.logger.info({ tournamentId, awarded: result.awarded }, 'очки серии начислены страховочной джобой');
+            }
+          }
+          const missing = await circuit.unnamed();
+          for (const guildId of new Set(missing.map((row) => row.guildId))) {
+            const guild = ctx.client.guilds.cache.get(guildId);
+            if (!guild) continue;
+            const rows = missing.filter((row) => row.guildId === guildId);
+            const found = await guild.members.fetch({ user: [...new Set(rows.map((row) => row.userId))] }).catch(() => null);
+            if (!found) continue;
+            for (const row of rows) {
+              const member = found.get(row.userId);
+              if (member) await circuit.nameUnnamed(row.tournamentId, row.userId, member.displayName);
+            }
+          }
         },
       },
       {

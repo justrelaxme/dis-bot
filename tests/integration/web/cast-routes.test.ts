@@ -4,7 +4,7 @@ import { Cache } from '../../../src/core/cache.js';
 import { loadConfig } from '../../../src/core/config.js';
 import { createLogger } from '../../../src/core/logger.js';
 import { createTournamentsService } from '../../../src/modules/tournaments/services/tournaments.js';
-import { registerCastRoutes, type CastPayload } from '../../../src/modules/web/cast.js';
+import { createCastStateService, registerCastRoutes, type CastPayload } from '../../../src/modules/web/cast.js';
 import { createGrantsService } from '../../../src/modules/web/grants.js';
 import { withPostgres } from '../../helpers/postgres.js';
 import { withRedis } from '../../helpers/redis.js';
@@ -130,6 +130,34 @@ describe('пульт', () => {
     const payload = (await server.inject({ method: 'GET', url: `/api/cast/${tournamentId}` })).json<CastPayload>();
     expect(payload.requested).toBe('bracket');
     expect(payload.featured?.id).toBe(matchIds[0]);
+  });
+
+  it('доигранный матч кастера отпускает табло: сцена возвращается к автоматике', async () => {
+    const grants = createGrantsService({ db: pg.db });
+    const grant = await grants.issue({ guildId: GUILD, userId: '810000000000000012', scope: 'cast' });
+    await server.inject({ method: 'POST', url: `/api/cast/${grant.token}`, payload: { scene: 'auto', featuredMatchId: matchIds[1] } });
+    expect((await server.inject({ method: 'GET', url: `/api/cast/${tournamentId}` })).json<CastPayload>().featured?.id).toBe(matchIds[1]);
+
+    const service = createTournamentsService({ db: pg.db });
+    const match = (await service.bracket(tournamentId)).matches.find((row) => row.id === matchIds[1])!;
+    await service.resolve(match.id, 'organizer', match.entrantAId!);
+
+    const payload = (await server.inject({ method: 'GET', url: `/api/cast/${tournamentId}` })).json<CastPayload>();
+    expect(payload.featured?.id).not.toBe(matchIds[1]);
+    expect(payload.featured?.live ?? false).toBe(false);
+  });
+
+  it('выбор пульта не переезжает на новый турнир: отсчёт, сцена и матч сбрасываются', async () => {
+    const states = createCastStateService(pg.db);
+    await states.set('800000000000000077', { tournamentId: 1, scene: 'soon', featuredMatchId: 5, countdownAt: new Date('2026-09-20T18:00:00Z') }, 'кастер');
+
+    const next = await states.set('800000000000000077', { tournamentId: 2, featuredMatchId: 9 }, 'кастер');
+    expect(next).toMatchObject({ tournamentId: 2, scene: 'auto', featuredMatchId: 9, countdownAt: null });
+
+    // Тот же турнир — выбор сохраняется.
+    await states.set('800000000000000077', { tournamentId: 2, scene: 'bracket' }, 'кастер');
+    const same = await states.set('800000000000000077', { tournamentId: 2, countdownAt: new Date('2026-09-27T18:00:00Z') }, 'кастер');
+    expect(same).toMatchObject({ scene: 'bracket', featuredMatchId: 9 });
   });
 
   it('неизвестная сцена — отказ, а не молчаливое «сама»', async () => {

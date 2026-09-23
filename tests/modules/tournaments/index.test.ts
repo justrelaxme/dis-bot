@@ -41,6 +41,7 @@ describe('модуль tournaments', () => {
     expect(botModule.jobs?.map((j) => j.name).sort()).toEqual([
       'tournaments:abandon',
       'tournaments:auto-confirm',
+      'tournaments:circuit-catchup',
       'tournaments:cycle',
       'tournaments:draft-timeout',
       'tournaments:match-flow',

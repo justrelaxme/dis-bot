@@ -4,7 +4,7 @@ import type { Cache } from '../../core/cache.js';
 import type { Database } from '../../core/db/client.js';
 import type { Logger } from '../../core/logger.js';
 import { verificationPossible } from '../identity/providers/provider.js';
-import { playerPages } from '../identity/schema.js';
+import { gameAccounts, playerPages } from '../identity/schema.js';
 import { ACHIEVEMENTS } from '../progression/rules.js';
 import { achievements } from '../progression/schema.js';
 import { rankScore } from '../identity/ranks/compare.js';
@@ -18,7 +18,7 @@ import {
   type TournamentGame,
 } from '../tournaments/schema.js';
 import { TITLE_BONUS } from '../tournaments/placements.js';
-import { createCircuitService } from '../tournaments/services/circuit.js';
+import { createCircuitService, sharedPlaces } from '../tournaments/services/circuit.js';
 import { finishedTournaments, playerRecord, titlesByTeam } from '../tournaments/services/records.js';
 import {
   page,
@@ -346,7 +346,7 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
     if (!consent) return hidden();
 
     const html = await cached(`web:player:${userId}:${consent.updatedAt.getTime()}`, async () => {
-      const [record, season, earned, ranks] = await Promise.all([
+      const [record, season, earned, ranks, accounts] = await Promise.all([
         playerRecord(db, deps.guildId, userId),
         circuit.open(deps.guildId),
         db
@@ -355,6 +355,7 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
           .where(and(eq(achievements.guildId, deps.guildId), eq(achievements.userId, userId)))
           .orderBy(desc(achievements.earnedAt)),
         consent.showRanks ? playerRanks(userId) : Promise.resolve(null),
+        !consent.showRanks && consent.showAccounts ? playerAccounts(userId) : Promise.resolve(null),
       ]);
       const table = season ? await circuit.standings(season.id, 1_000) : [];
       const place = table.findIndex((row) => row.userId === userId);
@@ -364,12 +365,13 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
         renderPlayer({
           name: consent.displayName,
           record,
-          season: season && place >= 0 ? { name: season.name, place: place + 1, points: table[place]?.points ?? 0 } : null,
+          season: season && place >= 0 ? { name: season.name, place: sharedPlaces(table)[place] ?? place + 1, points: table[place]?.points ?? 0 } : null,
           achievements: earned.flatMap((row) => {
             const def = ACHIEVEMENTS.find((item) => item.code === row.code);
             return def ? [{ title: def.title, description: def.description, earnedAt: row.earnedAt }] : [];
           }),
           ranks,
+          accounts,
           showAccounts: consent.showAccounts,
         }),
         {
@@ -381,6 +383,18 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
     });
     return reply.type('text/html; charset=utf-8').send(html);
   });
+
+  /** Привязки без рангов — когда игрок разрешил показать ники, но не ранги. */
+  async function playerAccounts(userId: string): Promise<PlayerView['accounts']> {
+    const rows = await db
+      .select({ provider: gameAccounts.provider, displayName: gameAccounts.displayName, verifiedAt: gameAccounts.verifiedAt })
+      .from(gameAccounts)
+      .where(eq(gameAccounts.userId, userId))
+      .orderBy(gameAccounts.provider);
+    return rows
+      .filter((row) => row.verifiedAt !== null || UNVERIFIABLE.includes(row.provider))
+      .map((row) => ({ game: PROVIDER_GAMES[row.provider] ?? row.provider, displayName: row.displayName }));
+  }
 
   /** Последний ранг по каждому аккаунту и режиму — по тем же правилам, что в лидерборде. */
   async function playerRanks(userId: string): Promise<PlayerView['ranks']> {

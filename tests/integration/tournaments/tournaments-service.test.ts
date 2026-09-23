@@ -1325,4 +1325,40 @@ describe('личные встречи', () => {
     // Чужой сервер — чужая история.
     expect((await service.headToHead('859999999999999999', '851000000000000001', '851000000000000002')).games).toBe(0);
   });
+
+  it('техническая победа при неявке — не встреча, командные матчи — не дуэли', async () => {
+    const guildId = '850000000000000002';
+    const service = createTournamentsService({ db: pg.db });
+    const users = ['852000000000000001', '852000000000000002'];
+    const meet = async (entryMode: 'solo' | 'team', settle: 'resolve' | 'walkover'): Promise<void> => {
+      const tournament = await service.create({
+        guildId,
+        name: 'Встреча',
+        game: 'dota2',
+        format: 'single-elim',
+        entryMode,
+        teamSize: 1,
+        maxEntrants: 4,
+        seeding: 'rank',
+        bestOf: 1,
+        requireVerified: false,
+        createdBy: 'organizer',
+      });
+      await service.openRegistration(tournament.id, new Date(Date.now() + 3_600_000));
+      const ids: number[] = [];
+      for (const user of users) {
+        ids.push((await service.createEntrant(tournament.id, user, user)).id);
+        await service.checkIn(tournament.id, user);
+      }
+      const view = await service.start(tournament.id, new Map(ids.map((id, index) => [id, 10 - index])));
+      await service[settle](view.matches[0]!.id, 'organizer', ids[0]!);
+    };
+
+    await meet('solo', 'resolve');
+    await meet('solo', 'walkover');
+    await meet('team', 'resolve');
+
+    expect(await service.headToHead(guildId, users[0]!, users[1]!, undefined, 'solo')).toEqual({ games: 1, winsA: 1, winsB: 0 });
+    expect(await service.headToHead(guildId, users[0]!, users[1]!, undefined, 'team')).toEqual({ games: 1, winsA: 1, winsB: 0 });
+  });
 });

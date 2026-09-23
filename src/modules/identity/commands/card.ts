@@ -10,8 +10,14 @@ import { playerPages } from '../schema.js';
  *
  * Страница `/p/:id` показывает турнирный след: титулы, матчи, место в сезоне, достижения. По
  * умолчанию её нет: связка Discord-аккаунта с игровым — личные данные, и выставлять её без
- * спроса нельзя. Игровые аккаунты и ранги — отдельными переключателями: турнирный след и так
- * виден в сетках, а аккаунт и ранг человек показывает, только если сам захотел.
+ * спроса нельзя. Игровые аккаунты и ранги — отдельными переключателями, оба по умолчанию
+ * выключены: турнирный след и так виден в сетках, а аккаунт и ранг человек показывает, только
+ * если сам захотел. Ранг без ника — не анонимность: публичный лидерборд показывает ник рядом с
+ * рангом, и при шестнадцати игроках строку с тем же рангом найти несложно. Поэтому об этом
+ * говорится прямо — в описании переключателя и в ответе.
+ *
+ * Страница пропадает и сама, когда участник уходит с сервера: выключить её командой он уже не
+ * сможет (см. модуль identity).
  *
  * Ответ эфемерный: это настройка, а не объявление.
  */
@@ -29,7 +35,7 @@ export function createCardCommand(deps: { db: Database; publicBaseUrl: string })
             option.setName('accounts').setDescription('Показывать привязанные игровые аккаунты (ник в игре). По умолчанию — нет'),
           )
           .addBooleanOption((option) =>
-            option.setName('ranks').setDescription('Показывать ранги. По умолчанию — да'),
+            option.setName('ranks').setDescription('Показывать ранги (по рангу ник находится в лидерборде). По умолчанию — нет'),
           ),
       )
       .addSubcommand((sub) => sub.setName('off').setDescription('Закрыть страницу — ссылка перестанет открываться')),
@@ -51,7 +57,7 @@ export function createCardCommand(deps: { db: Database; publicBaseUrl: string })
       const values = {
         displayName: (member?.displayName ?? interaction.user.displayName).slice(0, 80),
         showAccounts: interaction.options.getBoolean('accounts') ?? false,
-        showRanks: interaction.options.getBoolean('ranks') ?? true,
+        showRanks: interaction.options.getBoolean('ranks') ?? false,
         updatedAt: new Date(),
       };
       await deps.db
@@ -63,6 +69,9 @@ export function createCardCommand(deps: { db: Database; publicBaseUrl: string })
         content: [
           `Твоя страница: ${url}`,
           `Показывается: турнирный след, сезон, достижения${values.showRanks ? ', ранги' : ''}${values.showAccounts ? ', игровые ники' : ''}.`,
+          ...(values.showRanks && !values.showAccounts
+            ? ['Имей в виду: публичный лидерборд показывает ник рядом с рангом, так что по рангу ник можно найти.']
+            : []),
           'Поменять — `/card on` с другими переключателями, закрыть — `/card off`.',
         ].join('\n'),
       });

@@ -1,4 +1,4 @@
-import { asc, desc, eq } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { Cache } from '../../core/cache.js';
 import type { Database } from '../../core/db/client.js';
@@ -109,10 +109,26 @@ export function createCastStateService(db: Database) {
         updatedBy: by,
         updatedAt: new Date(),
       };
+      // Выбор относится к турниру. Пульт переключился на новый турнир — сцена, матч и отсчёт
+      // прошлого не переезжают вместе с ним: недельный отсчёт «до начала» показал бы нули.
+      // Решается в одном запросе, чтобы два нажатия подряд не разошлись.
+      const sameTournament = sql`${castStates.tournamentId} = ${patch.tournamentId}`;
+      const keep = <T>(column: typeof castStates.scene | typeof castStates.featuredMatchId | typeof castStates.countdownAt, fallback: T) =>
+        sql`case when ${sameTournament} then ${column} else ${fallback} end`;
       const [row] = await db
         .insert(castStates)
         .values({ guildId, ...values })
-        .onConflictDoUpdate({ target: castStates.guildId, set: values })
+        .onConflictDoUpdate({
+          target: castStates.guildId,
+          set: {
+            scene: patch.scene ?? keep(castStates.scene, 'auto'),
+            featuredMatchId: patch.featuredMatchId !== undefined ? patch.featuredMatchId : keep(castStates.featuredMatchId, null),
+            countdownAt: patch.countdownAt !== undefined ? patch.countdownAt : keep(castStates.countdownAt, null),
+            tournamentId: patch.tournamentId,
+            updatedBy: by,
+            updatedAt: values.updatedAt,
+          },
+        })
         .returning();
       if (!row) throw new Error('состояние трансляции не сохранилось');
       return row;
@@ -151,9 +167,12 @@ export async function buildCastPayload(
   const upperRounds = Math.max(0, ...matches.filter((m) => m.bracket === 'upper').map((m) => m.round));
   const lowerRounds = Math.max(0, ...matches.filter((m) => m.bracket === 'lower').map((m) => m.round));
 
+  // Матч кастера держит табло, пока он не доигран: после финала матча сцена возвращается к
+  // автоматике — иначе табло навсегда осталось бы на прошлом матче, а пьедестал не показался бы.
   const chosen = own?.featuredMatchId ? matches.find((match) => match.id === own.featuredMatchId) ?? null : null;
+  const isOn = (match: MatchRow): boolean => match.liveAt !== null && match.winnerEntrantId === null;
   const featuredMatch: MatchRow | null =
-    chosen && chosen.entrantAId !== null && chosen.entrantBId !== null
+    chosen && chosen.entrantAId !== null && chosen.entrantBId !== null && chosen.winnerEntrantId === null && chosen.state !== 'void'
       ? chosen
       : (() => {
           const picked = pickFeatured(matches);
@@ -167,7 +186,7 @@ export async function buildCastPayload(
   const requested: CastSceneRequest = pinned ?? (own && isCastSceneRequest(own.scene) ? own.scene : 'auto');
   const scene = resolveScene(requested, {
     tournamentState: tournament.state,
-    featured: featuredMatch ? { live: featuredMatch.liveAt !== null, draftActive } : null,
+    featured: featuredMatch ? { live: isOn(featuredMatch), draftActive } : null,
   });
 
   const box = (match: MatchRow): CastBox => ({
@@ -178,7 +197,7 @@ export async function buildCastPayload(
     scoreA: match.scoreA,
     scoreB: match.scoreB,
     state: match.state,
-    live: match.liveAt !== null && match.winnerEntrantId === null,
+    live: isOn(match),
   });
   const columns = (bracket: 'upper' | 'lower'): CastBox[][] => {
     const rounds = bracket === 'upper' ? upperRounds : lowerRounds;
@@ -194,14 +213,18 @@ export async function buildCastPayload(
     const votesOf = (id: number): number => votes.find((row) => row.entrantId === id)?.votes ?? 0;
     const captainA = entrant(featuredMatch.entrantAId)?.captainUserId;
     const captainB = entrant(featuredMatch.entrantBId)?.captainUserId;
-    const past = captainA && captainB ? await deps.headToHead(tournament.guildId, captainA, captainB, featuredMatch.id) : null;
+    // Личные встречи — украшение табло: их сбой не должен останавливать всю сцену.
+    const past =
+      captainA && captainB
+        ? await deps.headToHead(tournament.guildId, captainA, captainB, featuredMatch.id, tournament.entryMode).catch(() => null)
+        : null;
     featured = {
       id: featuredMatch.id,
       label: roundLabel(featuredMatch, upperRounds, lowerRounds),
       a: { name: nameOf(featuredMatch.entrantAId) ?? '?', seed: entrant(featuredMatch.entrantAId)?.seed ?? null, score: featuredMatch.scoreA },
       b: { name: nameOf(featuredMatch.entrantBId) ?? '?', seed: entrant(featuredMatch.entrantBId)?.seed ?? null, score: featuredMatch.scoreB },
       state: featuredMatch.state,
-      live: featuredMatch.liveAt !== null,
+      live: isOn(featuredMatch),
       votes: { a: votesOf(featuredMatch.entrantAId), b: votesOf(featuredMatch.entrantBId) },
       history: past && past.games > 0 ? past : null,
     };
@@ -299,19 +322,8 @@ export function registerCastRoutes(server: FastifyInstance, deps: CastRoutesDeps
     return reply.header('cache-control', 'no-store').send(payload);
   });
 
-  /**
-   * Турнир пульта: идущий или в регистрации, а если таких нет — последний. Пульт показывают и
-   * после финала: пьедестал — тоже сцена.
-   */
-  async function current(guildId: string) {
-    const rows = await deps.db
-      .select()
-      .from(tournaments)
-      .where(eq(tournaments.guildId, guildId))
-      .orderBy(desc(tournaments.id))
-      .limit(10);
-    return rows.find((row) => row.state === 'running' || row.state === 'registration') ?? rows[0] ?? null;
-  }
+  /** Турнир пульта — тот же, что выдаёт `/cast`: правило одно, в сервисе турниров. */
+  const current = (guildId: string) => matches.onAir(guildId);
 
   server.get<{ Params: { token: string } }>('/cast/control/:token', async (request, reply) => {
     const grant = await grants.owner(request.params.token, 'cast');

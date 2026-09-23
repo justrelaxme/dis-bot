@@ -564,6 +564,29 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
     },
 
     /**
+     * Турнир трансляции: идущий или в регистрации, а если таких нет — последний доигранный.
+     * После финала трансляция ещё идёт — пьедестал тоже сцена. Черновик и отменённый турнир
+     * показывать нечем. Правило одно на `/cast` и пульт: иначе пульт писал бы выбор в один
+     * турнир, а сцена показывала другой.
+     */
+    async onAir(guildId: string): Promise<TournamentRow | null> {
+      const [live] = await db
+        .select()
+        .from(tournaments)
+        .where(and(eq(tournaments.guildId, guildId), inArray(tournaments.state, ['registration', 'running'])))
+        .orderBy(asc(tournaments.id))
+        .limit(1);
+      if (live) return live;
+      const [last] = await db
+        .select()
+        .from(tournaments)
+        .where(and(eq(tournaments.guildId, guildId), eq(tournaments.state, 'finished')))
+        .orderBy(desc(tournaments.id))
+        .limit(1);
+      return last ?? null;
+    },
+
+    /**
      * Ручные турниры в регистрации, у которых время старта уже наступило или наступит до
      * `until`. Турниры суточного автомата сюда не попадают: их стартует сам автомат, и два
      * старта одного турнира с разных путей дали бы отказ на втором — каждую минуту.
@@ -1591,13 +1614,18 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
      * Бот знает исход каждого матча, но до сих пор не умел сказать «вы играли семь раз, счёт
      * 4:3», а именно это помнят и о чём спорят перед игрой. Сторона матча — участник, а
      * человек за ним — капитан: у одиночек это сам игрок, у команд — тот, кто её собрал.
-     * Проход без игры по пропуску в сетке встречей не считается: соперника там не было.
+     * Проход без игры по пропуску в сетке встречей не считается: соперника там не было. Не
+     * считаются и техническая победа при неявке (игры не было), и матчи отменённого турнира.
+     * Встречи одиночек и встречи капитанов команд — разные истории: «1 — 0» из командного
+     * матча в карточке дуэли выглядело бы как сыгранная дуэль, поэтому считается только свой
+     * формат участия.
      */
     async headToHead(
       guildId: string,
       userA: string,
       userB: string,
       excludeMatchId?: number,
+      entryMode?: TournamentRow['entryMode'],
     ): Promise<{ games: number; winsA: number; winsB: number }> {
       const result = await db.execute<{ winner_captain: string }>(sql`
         select case when w.id = ea.id then ea.captain_user_id else eb.captain_user_id end as winner_captain
@@ -1607,8 +1635,13 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
         join ${tournamentEntrants} eb on eb.id = m.entrant_b_id
         join ${tournamentEntrants} w on w.id = m.winner_entrant_id
         where t.guild_id = ${guildId}
+          and t.state <> 'cancelled'
+          ${entryMode ? sql`and t.entry_mode = ${entryMode}` : sql``}
           and m.state in ('confirmed', 'walkover')
           and m.id <> ${excludeMatchId ?? 0}
+          and not exists (
+            select 1 from ${tournamentMatchReports} r where r.match_id = m.id and r.action = 'walkover'
+          )
           and (
             (ea.captain_user_id = ${userA} and eb.captain_user_id = ${userB})
             or (ea.captain_user_id = ${userB} and eb.captain_user_id = ${userA})

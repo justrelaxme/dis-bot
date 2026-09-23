@@ -117,7 +117,7 @@ export const playerPages = pgTable(
     /** Имя на странице — отображаемое имя на сервере в момент включения. */
     displayName: text('display_name').notNull(),
     showAccounts: boolean('show_accounts').notNull().default(false),
-    showRanks: boolean('show_ranks').notNull().default(true),
+    showRanks: boolean('show_ranks').notNull().default(false),
     enabledAt: timestamp('enabled_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, notExists, sql } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
 import { UserError } from '../../../core/errors.js';
 import { circuitPoints as pointsFor, placementsOf } from '../placements.js';
@@ -32,6 +32,33 @@ export interface CircuitStanding {
   best: number;
 }
 
+type Ranked = Pick<CircuitStanding, 'points' | 'titles' | 'best'>;
+
+/** Равны ли двое по всем правилам таблицы: очки, затем титулы, затем лучшее место. */
+function level(a: Ranked, b: Ranked): boolean {
+  return a.points === b.points && a.titles === b.titles && a.best === b.best;
+}
+
+/**
+ * Места в таблице с делёжкой: равные по всем правилам делят место («1, 1, 3»). Порядок строк
+ * внутри равных детерминирован (по id), но это порядок показа, а не место — иначе одного из
+ * двух равных таблица молча ставила бы выше.
+ */
+export function sharedPlaces(table: readonly Ranked[]): number[] {
+  const places: number[] = [];
+  table.forEach((row, index) => {
+    const previous = table[index - 1];
+    places.push(previous && level(previous, row) ? places[index - 1]! : index + 1);
+  });
+  return places;
+}
+
+/** Все, кто делит первое место. Больше одного — чемпиона правилами не определить. */
+export function tiedLeaders<T extends Ranked>(table: readonly T[]): T[] {
+  const first = table[0];
+  return first ? table.filter((row) => level(row, first)) : [];
+}
+
 export function createCircuitService(deps: { db: Database }) {
   const { db } = deps;
 
@@ -57,11 +84,14 @@ export function createCircuitService(deps: { db: Database }) {
       .from(circuitPoints)
       .where(eq(circuitPoints.seasonId, seasonId))
       .groupBy(circuitPoints.userId)
-      // При равенстве очков выше тот, у кого больше титулов, затем — лучшее место.
+      // При равенстве очков выше тот, у кого больше титулов, затем — лучшее место. Последний
+      // ключ — id: без него порядок равных Postgres выбирал бы сам, и от запроса к запросу он
+      // мог меняться. Место при этом равные делят (`sharedPlaces`).
       .orderBy(
         desc(sql`sum(${circuitPoints.points})`),
         desc(sql`count(*) filter (where ${circuitPoints.place} = 1)`),
         asc(sql`min(${circuitPoints.place})`),
+        asc(circuitPoints.userId),
       )
       .limit(limit);
     return rows;
@@ -82,19 +112,89 @@ export function createCircuitService(deps: { db: Database }) {
       return row;
     },
 
-    /** Закрыть сезон: лидер таблицы становится чемпионом. */
-    async close(guildId: string): Promise<{ season: CircuitSeasonRow; table: CircuitStanding[] }> {
+    /**
+     * Закрыть сезон: лидер таблицы становится чемпионом.
+     *
+     * Если первое место делят несколько человек по всем правилам (очки, титулы, лучшее место),
+     * правила чемпиона не называют — и бот не назначает его сам. Организатор решает, как
+     * выбрать (например, матчем), и называет чемпиона явно: `pick` должен быть одним из равных.
+     *
+     * `names` — имена из Discord для тех, у кого их в таблице нет (игроки команд): чемпион
+     * записывается в зал славы по имени, и «не определён» там был бы неправдой.
+     */
+    async close(
+      guildId: string,
+      options: { pick?: string; names?: ReadonlyMap<string, string> } = {},
+    ): Promise<{ season: CircuitSeasonRow; table: CircuitStanding[] }> {
       const current = await open(guildId);
       if (!current) throw new UserError('Открытого сезона нет — начать: `/season start`.');
+      for (const [userId, name] of options.names ?? []) {
+        await db
+          .update(circuitPoints)
+          .set({ displayName: name.slice(0, 80) })
+          .where(and(eq(circuitPoints.seasonId, current.id), eq(circuitPoints.userId, userId), isNull(circuitPoints.displayName)));
+      }
       const table = await standings(current.id, 50);
-      const champion = table[0] ?? null;
+      const leaders = tiedLeaders(table);
+      let champion = leaders[0] ?? null;
+      if (options.pick !== undefined) {
+        champion = leaders.find((row) => row.userId === options.pick) ?? null;
+        if (!champion) {
+          throw new UserError(
+            leaders.length > 1
+              ? `Чемпионом можно назвать только одного из делящих первое место: ${leaders.map((row) => `<@${row.userId}>`).join(', ')}.`
+              : 'Чемпиона называют руками только при ничьей на первом месте. Сейчас лидер один — закрой сезон без `champion:`.',
+          );
+        }
+      } else if (leaders.length > 1) {
+        const first = leaders[0]!;
+        throw new UserError(
+          `Первое место делят ${leaders.map((row) => `<@${row.userId}>`).join(', ')}: по ${first.points} очков, титулов ${first.titles}, лучшее место ${first.best}. ` +
+            'Правила чемпиона не называют. Решите, как выбрать (например, матчем), и закройте сезон с `champion:`.',
+        );
+      }
       const [closed] = await db
         .update(circuitSeasons)
         .set({ closedAt: new Date(), championUserId: champion?.userId ?? null, championName: champion?.name ?? null })
         .where(and(eq(circuitSeasons.id, current.id), isNull(circuitSeasons.closedAt)))
         .returning();
       if (!closed) throw new UserError('Сезон уже закрыт.');
-      return { season: closed, table };
+      // Чемпион — первой строкой: при ничьей названный руками может стоять в таблице ниже.
+      const ordered = champion ? [champion, ...table.filter((row) => row.userId !== champion.userId)] : table;
+      return { season: closed, table: ordered };
+    },
+
+    /**
+     * Доигранные турниры открытого сезона, за которые очков нет: начисление по событию
+     * потерялось (сбой базы, перезапуск между финалом и начислением). Страховочная джоба
+     * начисляет их — `award` идемпотентен.
+     */
+    async unawarded(limit = 10): Promise<number[]> {
+      const rows = await db
+        .select({ id: tournaments.id })
+        .from(tournaments)
+        .innerJoin(circuitSeasons, and(eq(circuitSeasons.guildId, tournaments.guildId), isNull(circuitSeasons.closedAt)))
+        .where(
+          and(
+            eq(tournaments.state, 'finished'),
+            gte(tournaments.finishedAt, circuitSeasons.startedAt),
+            notExists(db.select({ one: sql`1` }).from(circuitPoints).where(eq(circuitPoints.tournamentId, tournaments.id))),
+          ),
+        )
+        .orderBy(asc(tournaments.id))
+        .limit(limit);
+      return rows.map((row) => row.id);
+    },
+
+    /** Игроки открытых сезонов без имени (игроки команд, чьё имя не подтянулось). */
+    async unnamed(limit = 50): Promise<{ guildId: string; tournamentId: number; userId: string }[]> {
+      const seasons = await db.select({ id: circuitSeasons.id }).from(circuitSeasons).where(isNull(circuitSeasons.closedAt));
+      if (seasons.length === 0) return [];
+      return db
+        .select({ guildId: circuitPoints.guildId, tournamentId: circuitPoints.tournamentId, userId: circuitPoints.userId })
+        .from(circuitPoints)
+        .where(and(inArray(circuitPoints.seasonId, seasons.map((row) => row.id)), isNull(circuitPoints.displayName)))
+        .limit(limit);
     },
 
     /**

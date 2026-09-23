@@ -1888,7 +1888,7 @@
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": true
+          "default": false
         },
         "enabled_at": {
           "name": "enabled_at",

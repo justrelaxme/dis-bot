@@ -59,10 +59,9 @@ describe('модуль identity', () => {
     expect(registry.commands.size).toBe(6);
   });
 
-  it('объявляет джобу синхронизации на каждые 30 минут', () => {
+  it('объявляет джобу синхронизации на каждые 30 минут и ночную проверку страниц игроков', () => {
     const jobs = moduleWith().module.jobs;
-    expect(jobs).toHaveLength(1);
-    expect(jobs?.[0]?.name).toBe('identity:rank-sync');
+    expect(jobs?.map((job) => job.name)).toEqual(['identity:rank-sync', 'identity:player-pages-sweep']);
     expect(jobs?.[0]?.cron).toBe('*/30 * * * *');
   });
 
