@@ -1,4 +1,5 @@
-import { bigserial, index, integer, jsonb, pgTable, text, timestamp, unique } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { bigserial, index, integer, jsonb, pgTable, text, timestamp, unique, uniqueIndex } from 'drizzle-orm/pg-core';
 
 /**
  * Прогрессия: опыт за активность, уровни, валюта, достижения, сезоны.
@@ -79,7 +80,12 @@ export const seasons = pgTable(
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp('ended_at', { withTimezone: true }),
   },
-  (table) => [index('progression_seasons_guild_idx').on(table.guildId, table.endedAt)],
+  (table) => [
+    index('progression_seasons_guild_idx').on(table.guildId, table.endedAt),
+    // Открытый сезон на сервере один. Без этого первые два начисления на новом сервере,
+    // пришедшие одновременно, заводили два «Первых сезона», и опыт расползался по ним.
+    uniqueIndex('progression_seasons_open_uq').on(table.guildId).where(sql`${table.endedAt} is null`),
+  ],
 );
 
 /** Достижения объявляются кодом, а выданные — хранятся здесь. */

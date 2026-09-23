@@ -70,9 +70,21 @@ export function createProgressionService(deps: { db: Database }) {
       .orderBy(desc(seasons.id));
     if (existing) return existing;
 
-    const [created] = await db.insert(seasons).values({ guildId, name: 'Первый сезон' }).returning();
-    if (!created) throw new Error('сезон не создался');
-    return created;
+    // Два первых обращения на новом сервере приходят одновременно — сообщение и голос. Сезон
+    // создаёт тот, кто успел; второй упирается в уникальность открытого сезона и читает его.
+    const [created] = await db
+      .insert(seasons)
+      .values({ guildId, name: 'Первый сезон' })
+      .onConflictDoNothing()
+      .returning();
+    if (created) return created;
+
+    const [raced] = await db
+      .select()
+      .from(seasons)
+      .where(and(eq(seasons.guildId, guildId), isNull(seasons.endedAt)));
+    if (!raced) throw new Error('сезон не создался');
+    return raced;
   }
 
   return {
