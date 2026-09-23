@@ -798,5 +798,22 @@ export const circuitPoints = pgTable(
   ],
 );
 
+/**
+ * Опубликованные итоги недели. Строка занимается до отправки: джоба тикает каждый час, и без
+ * отметки понедельник получил бы итог двенадцать раз.
+ */
+export const weeklyRecaps = pgTable(
+  'weekly_recaps',
+  {
+    id: serial('id').primaryKey(),
+    guildId: text('guild_id').notNull(),
+    /** Дата понедельника по часовому поясу сервера: неделя, за которую итог. */
+    weekOf: text('week_of').notNull(),
+    messageId: text('message_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique('weekly_recaps_week_uq').on(table.guildId, table.weekOf)],
+);
+
 export type CircuitSeasonRow = typeof circuitSeasons.$inferSelect;
 export type CircuitPointRow = typeof circuitPoints.$inferSelect;

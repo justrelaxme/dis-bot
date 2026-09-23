@@ -17,6 +17,7 @@ import {
 import { refreshMatchCard } from './discord/match-card.js';
 import { createMatchFlowHandler, runMatchFlow } from './discord/match-flow.js';
 import { closeDueRegistrations } from './discord/registration.js';
+import { runWeeklyRecap } from './discord/weekly.js';
 import { startTournament } from './discord/start.js';
 import { staffAlert } from './discord/staff.js';
 import { syncTournament } from './discord/sync.js';
@@ -33,6 +34,7 @@ import { createCycleService } from './services/cycle.js';
 import { createFormatsService } from './services/formats.js';
 import { createRostersService } from './services/rosters.js';
 import { createCircuitService } from './services/circuit.js';
+import { createRecapsService } from './services/recaps.js';
 import { createTournamentSettingsService } from './services/settings.js';
 import { createMessagesService } from './services/messages.js';
 import { createDotaVerifier } from './services/dota-verify.js';
@@ -62,6 +64,9 @@ const RECONCILE_CRON = '* * * * *';
  * тике реже старт съезжал бы вперёд, а напоминание могло бы не случиться вовсе.
  */
 const REGISTRATION_CLOSE_CRON = '* * * * *';
+
+/** Итог недели проверяется раз в час: публикуется в понедельник после полудня, один раз. */
+const WEEKLY_RECAP_CRON = '7 * * * *';
 
 /** Неявки и напоминания — раз в минуту: и то и другое привязано к минутам с начала матча. */
 const MATCH_FLOW_CRON = '* * * * *';
@@ -195,6 +200,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
 
   const settings = createTournamentSettingsService({ db: deps.db });
   const circuit = createCircuitService({ db: deps.db });
+  const recaps = createRecapsService({ db: deps.db, circuit });
   const staff = { settings, cache: deps.cache, logger: deps.logger };
 
   const play = {
@@ -369,6 +375,17 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
             },
             new Date(),
           );
+        },
+      },
+      {
+        /**
+         * Итог недели: в понедельник в полдень по часовому поясу сервера. Тикает каждый час —
+         * неделя занимается отметкой, и итог выходит один раз. Подробности — в `discord/weekly.ts`.
+         */
+        name: 'tournaments:weekly-recap',
+        cron: WEEKLY_RECAP_CRON,
+        async run(ctx): Promise<void> {
+          await runWeeklyRecap({ recaps, cycles }, ctx.client, ctx.logger, new Date());
         },
       },
       {

@@ -47,6 +47,7 @@ describe('модуль tournaments', () => {
       'tournaments:poll-finalize',
       'tournaments:reconcile',
       'tournaments:registration-close',
+      'tournaments:weekly-recap',
     ]);
     // Кнопки обслуживает сам модуль: роутер ядра занимается только slash-командами. Кнопки
     // регистрации и матча, кнопки хода матча («На месте», решения организатора), подсказки
