@@ -8,6 +8,7 @@ const PROVIDER_COMMANDS: Record<string, string> = {
   dota2: '`/link steam` — Dota 2',
   lol: '`/link riot` — League of Legends и TFT',
   valorant: '`/link valorant` — Valorant',
+  genshin: '`/link genshin` — Genshin Impact',
 };
 
 /**
@@ -70,7 +71,7 @@ export function firstStep(status: ServerStatus, settings: WelcomeSettingsRow): s
       'Выбери свою игру:',
       ...Object.values(PROVIDER_COMMANDS).map((line) => `• ${line}`),
       '',
-      'Steam подтверждается входом через сам Steam, Valorant — ручным вводом ранга. Пароль бот не видит и не спрашивает.',
+      'Steam подтверждается входом через сам Steam, Genshin — кодом в подписи профиля, Valorant — ручным вводом ранга. Пароль бот не видит и не спрашивает.',
     ].join('\n');
   }
 
