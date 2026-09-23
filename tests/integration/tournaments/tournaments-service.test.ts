@@ -681,3 +681,97 @@ describe('комнаты турнира для уборки', () => {
     expect(await mine.service.tournamentVoiceRooms(mine.tournamentId)).toEqual(['voice-мой']);
   });
 });
+
+/**
+ * Закрытие доигранного турнира в Discord — ровно один раз. Путей к финалу пять, и кнопка с
+ * джобой могут прийти к нему одновременно: второй «итог» в канале уже не отменить.
+ */
+describe('закрытие турнира синхронизатором', () => {
+  it('занять закрытие удаётся один раз', async () => {
+    const { service, tournamentId } = await startTournament({ registered: 2 });
+    await playToEnd(service, tournamentId);
+
+    const [first, second] = await Promise.all([
+      service.claimCloseOut(tournamentId),
+      service.claimCloseOut(tournamentId),
+    ]);
+
+    expect([first, second].filter((row) => row !== null)).toHaveLength(1);
+  });
+
+  it('идущий турнир закрыть нельзя — только доигранный', async () => {
+    const { service, tournamentId } = await startTournament({ registered: 4 });
+
+    await expect(service.claimCloseOut(tournamentId)).resolves.toBeNull();
+  });
+
+  /** Отменённый убирают сами пути отмены — синхронизатору там делать нечего. */
+  it('отмена сразу помечает турнир закрытым', async () => {
+    const { service, tournamentId } = await startTournament({ registered: 4 });
+
+    await service.cancel(tournamentId);
+
+    const [row] = await pg.db.select().from(tournamentsTable).where(eq(tournamentsTable.id, tournamentId));
+    expect(row?.closedOutAt).not.toBeNull();
+    await expect(service.claimCloseOut(tournamentId)).resolves.toBeNull();
+  });
+
+  it('в работу синхронизатору попадают идущие и незакрытые доигранные', async () => {
+    const running = await startTournament({ registered: 4 });
+    const finished = await startTournament({ registered: 2 });
+    await playToEnd(finished.service, finished.tournamentId);
+    const closed = await startTournament({ registered: 2 });
+    await playToEnd(closed.service, closed.tournamentId);
+    await closed.service.claimCloseOut(closed.tournamentId);
+
+    const ids = (await running.service.needingSync()).map((row) => row.id);
+
+    expect(ids).toContain(running.tournamentId);
+    expect(ids).toContain(finished.tournamentId);
+    expect(ids).not.toContain(closed.tournamentId);
+  });
+});
+
+/** Итог говорит, как закрылся финал: оговорка «по молчанию» верна только про молчание. */
+describe('как закрылся финал', () => {
+  it('подтверждение соперником', async () => {
+    const { service, tournamentId, users, entrantIds } = await startTournament({ registered: 2 });
+    const [final] = (await service.bracket(tournamentId)).matches;
+    await service.report(final!.id, users[0]!, entrantIds[0]!);
+    await service.confirm(final!.id, users[1]!);
+
+    await expect(service.finalClosure(tournamentId)).resolves.toBe('confirm');
+  });
+
+  it('решение организатора', async () => {
+    const { service, tournamentId, entrantIds } = await startTournament({ registered: 2 });
+    const [final] = (await service.bracket(tournamentId)).matches;
+    await service.resolve(final!.id, 'organizer', entrantIds[1]!);
+
+    await expect(service.finalClosure(tournamentId)).resolves.toBe('resolve');
+  });
+
+  /** Пропуск в сетке закрывает бот — финалом он не бывает и итог не описывает. */
+  it('проходы без игры по пропуску в сетке в расчёт не идут', async () => {
+    // Трое в сетке на четверых: у первого сида пропуск, и его проход записывает бот. Если
+    // финал никто не закрыл, отвечать нечего — а не «присуждено без игры».
+    const { service, tournamentId } = await startTournament({ registered: 3 });
+
+    await expect(service.finalClosure(tournamentId)).resolves.toBeNull();
+
+    await playToEnd(service, tournamentId);
+    await expect(service.finalClosure(tournamentId)).resolves.toBe('resolve');
+  });
+});
+
+describe('ветка матча', () => {
+  /** Две ветки на матч — два места для договорённостей: записывается только первая. */
+  it('записывается один раз, вторая попытка сообщает, что опоздала', async () => {
+    const { service, tournamentId } = await startTournament({ registered: 2 });
+    const [match] = (await service.bracket(tournamentId)).matches;
+
+    await expect(service.attachThread(match!.id, 'thread-first')).resolves.toBe(true);
+    await expect(service.attachThread(match!.id, 'thread-second')).resolves.toBe(false);
+    expect((await service.matchById(match!.id)).threadId).toBe('thread-first');
+  });
+});

@@ -8,7 +8,6 @@ import type { RateLimiter } from '../../core/rate-limit.js';
 import { createHoyolabChronicle } from '../identity/providers/hoyolab.js';
 import { createManageCommand } from './commands/manage.js';
 import {
-  advanceTournamentRooms,
   createButtonHandler,
   createCheckinCommand,
   createMatchCommand,
@@ -16,7 +15,7 @@ import {
   closeTournamentRooms,
   createTournamentRooms,
 } from './commands/play.js';
-import { closeTournamentPublic } from './discord/closing.js';
+import { syncTournament } from './discord/sync.js';
 import { createFormatAutocomplete } from './discord/autocomplete.js';
 import { createTournamentEventsGateway } from './discord/events.js';
 import { createTournamentPollCommand } from './commands/poll.js';
@@ -43,6 +42,12 @@ const POLL_FINALIZE_BATCH_SIZE = 20;
 /** Автоподтверждение результатов проверяется тем же тиком, что и голосования. */
 const AUTO_CONFIRM_CRON = '*/5 * * * *';
 const AUTO_CONFIRM_BATCH_SIZE = 20;
+
+/**
+ * Страховочный прогон синхронизатора — раз в минуту. Он дешёвый: идущий турнир на сервере
+ * один, и прогон по нему это два запроса «кому нужна ветка» и «кому нужен драфт».
+ */
+const RECONCILE_CRON = '* * * * *';
 
 /**
  * Суточный цикл проверяется каждую минуту: шаги привязаны к «14:00» и «20:00» в часовом
@@ -252,29 +257,47 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
           ctx.logger.info({ count: settled.length }, 'результаты приняты по молчанию соперника');
 
           // Матч турнира чаще всего закрывается именно здесь, а не кнопкой — и последний, и
-          // любой другой. Значит, эта джоба обязана делать обе вещи: убирать за завершённым
-          // турниром и догонять сетку у продолжающегося.
-          //
-          // Пока она не делала ни того ни другого, это выглядело так: голосовые комнаты
-          // оставались навсегда, а во втором круге у матчей не появлялось ни веток, ни
-          // драфта — то есть ссылки капитанам не приходили вовсе.
-          for (const { match, finished } of settled) {
+          // любой другой. Что после этого нужно турниру — ветка и драфт следующему матчу или
+          // уборка с итогом, — решает синхронизатор, общий для всех путей закрытия матча.
+          const touched = new Set(settled.map(({ match }) => match.tournamentId));
+          for (const tournamentId of touched) {
             try {
-              const tournament = await tournaments.byId(match.tournamentId);
+              const tournament = await tournaments.byId(tournamentId);
               const guild = await ctx.client.guilds.fetch(tournament.guildId).catch(() => null);
               if (!guild) continue;
-              if (!finished) {
-                await advanceTournamentRooms(play, guild, tournament.id);
-                continue;
-              }
-              await closeTournamentRooms(play, guild, tournament.id, ctx.logger);
-              await closeTournamentPublic(play, guild, tournament, ctx.logger);
+              await syncTournament(play, guild, tournament.id, ctx.logger);
             } catch (error) {
-              // Сбой уборки одного турнира не должен обрывать остальные принятые результаты.
+              // Сбой одного турнира не должен обрывать остальные принятые результаты: их
+              // догонит джоба tournaments:reconcile через минуту.
               ctx.logger.error(
-                { err: error, matchId: match.id },
-                'результат принят по молчанию, но догнать сетку или убрать за турниром не удалось',
+                { err: error, tournamentId },
+                'результат принят по молчанию, но догнать сетку или закрыть турнир не удалось',
               );
+            }
+          }
+        },
+      },
+      {
+        /**
+         * Страховка синхронизатора. Каждый путь закрытия матча зовёт его сам, но путь может не
+         * дойти: бот перезапустился посреди закрытия, Discord отказал, новый код забыл позвать.
+         * Раз в минуту идущие турниры догоняют ветки и драфты, а доигранные — закрываются, если
+         * этого ещё никто не сделал. Повторный прогон ничего не дублирует: синхронизатор
+         * идемпотентен, а закрытие занимается отметкой ровно один раз.
+         */
+        name: 'tournaments:reconcile',
+        cron: RECONCILE_CRON,
+        async run(ctx): Promise<void> {
+          for (const tournament of await tournaments.needingSync()) {
+            const guild = ctx.client.guilds.cache.get(tournament.guildId);
+            if (!guild) continue;
+            try {
+              const outcome = await syncTournament(play, guild, tournament.id, ctx.logger);
+              if (outcome === 'closed') {
+                ctx.logger.info({ tournamentId: tournament.id }, 'доигранный турнир закрыт страховочной джобой');
+              }
+            } catch (error) {
+              ctx.logger.error({ err: error, tournamentId: tournament.id }, 'синхронизация турнира не удалась');
             }
           }
         },

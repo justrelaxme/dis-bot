@@ -17,12 +17,19 @@ import { advanceTournamentRooms } from '../../../src/modules/tournaments/command
 
 const guild = {} as never;
 
-function depsWith(options: { needThread?: number[]; needDraft?: number[]; matchParentId?: string | null }) {
+function depsWith(options: {
+  needThread?: number[];
+  needDraft?: number[];
+  matchParentId?: string | null;
+  /** Успел ли этот путь первым записать ветку матча. */
+  attachWins?: boolean;
+}) {
   const matches = (ids: number[]): unknown[] =>
     ids.map((id) => ({ id, entrantAId: 1, entrantBId: 2, tournamentId: 7 }));
 
   const channels = {
     createMatchThread: vi.fn(async () => 'thread-1'),
+    deleteThread: vi.fn(async () => true),
   };
   const drafts = {
     matchesNeedingDraft: vi.fn(async () => matches(options.needDraft ?? [])),
@@ -39,7 +46,7 @@ function depsWith(options: { needThread?: number[]; needDraft?: number[]; matchP
     matchesNeedingThread: vi.fn(async () => matches(options.needThread ?? [])),
     bracket: vi.fn(async () => ({ entrants: [{ id: 1, displayName: 'А' }, { id: 2, displayName: 'Б' }] })),
     membersOf: vi.fn(async () => ['user-1']),
-    attachThread: vi.fn(async () => {}),
+    attachThread: vi.fn(async () => options.attachWins ?? true),
   };
 
   return { deps: { tournaments, channels, drafts } as never, channels, drafts, tournaments };
@@ -89,5 +96,26 @@ describe('матч стал играбельным', () => {
 
     expect(channels.createMatchThread).not.toHaveBeenCalled();
     expect(drafts.ensureForMatch).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Кнопка и джоба пришли к одному матчу одновременно и обе создали ветку. Записывается только
+   * первая, а вторая удаляется: две ветки на матч — два места для договорённостей.
+   */
+  it('ветку, которую опередили, удаляет, а не оставляет второй', async () => {
+    const { deps, channels } = depsWith({ needThread: [10], attachWins: false });
+
+    await advanceTournamentRooms(deps, guild, 7);
+
+    expect(channels.createMatchThread).toHaveBeenCalledTimes(1);
+    expect(channels.deleteThread).toHaveBeenCalledWith(guild, 'thread-1');
+  });
+
+  it('свою записанную ветку не трогает', async () => {
+    const { deps, channels } = depsWith({ needThread: [10], attachWins: true });
+
+    await advanceTournamentRooms(deps, guild, 7);
+
+    expect(channels.deleteThread).not.toHaveBeenCalled();
   });
 });

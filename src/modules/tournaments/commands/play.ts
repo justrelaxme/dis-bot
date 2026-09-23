@@ -29,8 +29,8 @@ import {
   teamPicker,
 } from '../discord/onboarding.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
-import { championOf } from '../discord/closing.js';
 import type { TournamentEventsGateway } from '../discord/events.js';
+import { syncTournament } from '../discord/sync.js';
 import { parseScore, type MatchScore } from '../score.js';
 import { hasUsableLink, linkCommandFor } from '../services/strength.js';
 import type { DotaVerifier } from '../services/dota-verify.js';
@@ -411,6 +411,9 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
                   : `Сетка: ${deps.publicBaseUrl}/t/${tournament.id}`,
               ].join('\n'),
             });
+            // Раньше здесь стоял голый return: матч закрывался, а следующий оставался без
+            // ветки и драфта, и финал, закрытый проверкой, не убирал комнаты и не объявлял итог.
+            await syncTournament(deps, guild, tournament.id, ctx.logger);
             return;
           }
 
@@ -470,8 +473,7 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
         content: `Матч №${matchId}: победа **${winner.displayName}**${subcommand === 'walkover' ? ' без игры' : ''}.${result.finished ? `\n\n🏆 Турнир завершён. Победитель — **${winner.displayName}**.` : ''}`,
       });
 
-      if (result.finished) await cleanup(deps, guild, tournament.id, ctx);
-      else await advanceTournamentRooms(deps, guild, tournament.id);
+      await syncTournament(deps, guild, tournament.id, ctx.logger);
     },
   };
 }
@@ -507,7 +509,12 @@ export async function ensureMatchThreads(deps: PlayDeps, guild: Guild, tournamen
       title: `Матч ${match.id}: ${nameOf(match.entrantAId)} — ${nameOf(match.entrantBId)}`,
       memberIds: [...a, ...b],
     });
-    if (threadId) await deps.tournaments.attachThread(match.id, threadId);
+    if (!threadId) continue;
+    // Ветку успел завести другой путь — наша лишняя: две ветки на матч это два места для
+    // договорённостей, и половина из них потеряется.
+    if (!(await deps.tournaments.attachThread(match.id, threadId))) {
+      await deps.channels.deleteThread(guild, threadId);
+    }
   }
 }
 
@@ -692,17 +699,6 @@ export async function closeTournamentRooms(
   };
   logger.info({ tournamentId, ...report, threads }, 'комнаты и сообщения турнира убраны');
   return report;
-}
-
-async function cleanup(deps: PlayDeps, guild: Guild, tournamentId: number, ctx: ModuleContext): Promise<void> {
-  await closeTournamentRooms(deps, guild, tournamentId, ctx.logger);
-  // Афишу во вкладке «События» надо снять здесь же, иначе турнир остаётся «идущим» навсегда.
-  // Итог объявляет сам обработчик кнопки, поэтому от публичного закрытия берём только афишу.
-  const tournament = await deps.tournaments.byId(tournamentId);
-  if (deps.events && tournament.scheduledEventId) {
-    const champion = await championOf(deps, tournamentId);
-    await deps.events.finish(guild, tournament.scheduledEventId, champion);
-  }
 }
 
 /**
@@ -905,11 +901,9 @@ async function handleButton(
       content: `Матч №${match.id} подтверждён: победа **${winner?.displayName ?? '?'}**.${finished ? `\n\n🏆 Турнир завершён. Победитель — **${winner?.displayName ?? '?'}**.` : ''}`,
     });
 
-    // Победитель продвинулся — у следующего матча появились оба соперника, значит ему
-    // нужна комната. А если это был последний матч, комнаты пора убирать: раньше этот
-    // путь уборку не запускал, и после турнира, закрытого кнопкой, каналы оставались.
-    if (finished) await cleanup(deps, guild, tournament.id, ctx);
-    else await advanceTournamentRooms(deps, guild, tournament.id);
+    // Победитель продвинулся — следующему матчу нужна комната и драфт, а если это был
+    // финал, турнир пора закрыть. Что именно нужно, решает синхронизатор, а не кнопка.
+    await syncTournament(deps, guild, tournament.id, ctx.logger);
     return;
   }
 

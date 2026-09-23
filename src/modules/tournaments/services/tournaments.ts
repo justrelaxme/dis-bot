@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
 import { auditLog } from '../../../core/db/schema/core.js';
 import { UserError } from '../../../core/errors.js';
@@ -36,6 +36,10 @@ import {
 
 /** Сколько ждать подтверждения соперника, прежде чем принять результат самому. */
 export const AUTO_CONFIRM_AFTER_MS = 60 * 60 * 1_000;
+
+/** Действия, которые закрывают матч, — в отличие от заявки и спора. */
+export const SETTLE_ACTIONS = ['confirm', 'resolve', 'walkover', 'auto-confirm', 'verified'] as const;
+export type SettleAction = (typeof SETTLE_ACTIONS)[number];
 
 export interface CreateTournamentInput {
   guildId: string;
@@ -607,11 +611,73 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       return stale;
     },
 
+    /**
+     * Отмена. Отметка о закрытии ставится сразу: каждый путь отмены убирает за турниром сам и
+     * тут же, а объявлять у отменённого нечего — синхронизатору здесь делать нечего.
+     */
     async cancel(tournamentId: number): Promise<void> {
+      const now = new Date();
       await db
         .update(tournaments)
-        .set({ state: 'cancelled', finishedAt: new Date(), updatedAt: new Date() })
+        .set({ state: 'cancelled', finishedAt: now, closedOutAt: now, updatedAt: now })
         .where(eq(tournaments.id, tournamentId));
+    },
+
+    /**
+     * Занять закрытие доигранного турнира. Отдаёт турнир только тому вызову, который занял
+     * отметку первым: кнопка подтверждения и джоба могут прийти к одному финалу одновременно,
+     * и без этого итог объявлялся бы дважды.
+     */
+    async claimCloseOut(tournamentId: number): Promise<TournamentRow | null> {
+      const [row] = await db
+        .update(tournaments)
+        .set({ closedOutAt: new Date() })
+        .where(
+          and(
+            eq(tournaments.id, tournamentId),
+            eq(tournaments.state, 'finished'),
+            isNull(tournaments.closedOutAt),
+          ),
+        )
+        .returning();
+      return row ?? null;
+    },
+
+    /**
+     * Турниры, которым синхронизатор ещё может быть нужен: идущие — у них могут появиться
+     * играбельные матчи без ветки и драфта — и доигранные, за которыми ещё не убрали.
+     */
+    async needingSync(): Promise<TournamentRow[]> {
+      return db
+        .select()
+        .from(tournaments)
+        .where(
+          sql`${tournaments.state} = 'running' or (${tournaments.state} = 'finished' and ${tournaments.closedOutAt} is null)`,
+        )
+        .orderBy(asc(tournaments.id));
+    },
+
+    /**
+     * Как закрылся последний матч турнира: подтверждением, молчанием, решением организатора
+     * или проверкой по данным игры. Нужно итогу: оговорка «принято по молчанию» верна только
+     * про молчание, и раньше она стояла под каждым итогом.
+     */
+    async finalClosure(tournamentId: number): Promise<SettleAction | null> {
+      const [row] = await db
+        .select({ action: tournamentMatchReports.action })
+        .from(tournamentMatchReports)
+        .innerJoin(tournamentMatches, eq(tournamentMatches.id, tournamentMatchReports.matchId))
+        .where(
+          and(
+            eq(tournamentMatches.tournamentId, tournamentId),
+            inArray(tournamentMatchReports.action, [...SETTLE_ACTIONS]),
+            // Проход без игры по пропуску в сетке делает сам бот, и финалом он не бывает.
+            sql`not (${tournamentMatchReports.actorId} = 'system' and ${tournamentMatchReports.action} = 'walkover')`,
+          ),
+        )
+        .orderBy(desc(tournamentMatchReports.id))
+        .limit(1);
+      return (row?.action as SettleAction | undefined) ?? null;
     },
 
     /**
@@ -954,8 +1020,18 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         .orderBy(asc(tournamentMatches.round), asc(tournamentMatches.slot));
     },
 
-    async attachThread(matchId: number, threadId: string): Promise<void> {
-      await db.update(tournamentMatches).set({ threadId }).where(eq(tournamentMatches.id, matchId));
+    /**
+     * Запоминает ветку матча, если её ещё нет. `false` — ветку уже успел завести другой путь,
+     * и только что созданную надо удалить: две ветки на матч — это два места, где соперники
+     * договариваются, и половина договорённостей потеряется.
+     */
+    async attachThread(matchId: number, threadId: string): Promise<boolean> {
+      const [row] = await db
+        .update(tournamentMatches)
+        .set({ threadId })
+        .where(and(eq(tournamentMatches.id, matchId), isNull(tournamentMatches.threadId)))
+        .returning({ id: tournamentMatches.id });
+      return row !== undefined;
     },
 
     /** Ветки закрытых матчей — чтобы архивировать их при уборке. */

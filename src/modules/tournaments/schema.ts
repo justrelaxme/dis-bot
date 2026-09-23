@@ -319,11 +319,35 @@ export const tournaments = pgTable(
     registrationClosesAt: timestamp('registration_closes_at', { withTimezone: true }),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
+    /**
+     * Когда за турниром убрали и объявили итог. Отдельно от `finishedAt`, потому что это
+     * разные события: турнир заканчивается в базе, а закрывается в Discord, и между ними
+     * может случиться что угодно — отказ Discord, перезапуск бота. Синхронизатор закрывает
+     * турнир ровно один раз: занимает эту отметку и только потом убирает и объявляет.
+     */
+    closedOutAt: timestamp('closed_out_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index('tournaments_guild_state_idx').on(table.guildId, table.state)],
 );
+
+/**
+ * Кто на сервере организует турниры и куда звать его, когда нужен человек.
+ *
+ * До этой таблицы организатором считался любой с правом «Управление сервером», а звать его
+ * было некуда: спор висел в ветке матча, пока кто-нибудь случайно не заглянет. Роль и канал
+ * штаба необязательны — без них бот зовёт владельца сервера, — но с ними спор приходит
+ * тем, кто его разберёт, и туда, где его увидят.
+ */
+export const tournamentSettings = pgTable('tournament_settings', {
+  guildId: text('guild_id').primaryKey(),
+  /** Роль организаторов: её упоминают в сигналах и ей разрешают решать споры. */
+  organizerRoleId: text('organizer_role_id'),
+  /** Канал штаба: сюда приходят споры, неявки и отказы, которые может исправить человек. */
+  staffChannelId: text('staff_channel_id'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 /**
  * Единое понятие для одиночек и команд — ключевое решение всей модели. Сетка сводит
@@ -552,6 +576,12 @@ export const tournamentSchedules = pgTable('tournament_schedules', {
   abilities: boolean('abilities').notNull().default(true),
   /** Собирает ли бот составы сам из записавшихся по одному. */
   autoTeams: boolean('auto_teams').notNull().default(false),
+  /**
+   * Потолок стоимости состава Genshin и число иммунов — из пресета, как и у ручного турнира.
+   * Пока их здесь не было, турнир по расписанию шёл без бюджета, даже если пресет его задавал.
+   */
+  costCap: integer('cost_cap'),
+  immunities: integer('immunities').notNull().default(0),
   requireVerified: boolean('require_verified').notNull().default(true),
   games: jsonb('games').$type<TournamentGame[]>().notNull(),
   announceChannelId: text('announce_channel_id'),
