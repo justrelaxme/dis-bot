@@ -19,6 +19,8 @@ import { tournaments } from '../src/modules/tournaments/schema.js';
 import { createTournamentsService } from '../src/modules/tournaments/services/tournaments.js';
 import { registerDraftRoutes } from '../src/modules/web/draft.js';
 import { registerWebRoutes } from '../src/modules/web/routes.js';
+import { registerCastRoutes } from '../src/modules/web/cast.js';
+import { createLiveHub, registerLiveRoutes } from '../src/modules/web/live.js';
 import { createDraftsService } from '../src/modules/tournaments/services/drafts.js';
 
 const PORT = Number.parseInt(process.env['PORT'] ?? '3000', 10);
@@ -237,6 +239,10 @@ async function main(): Promise<void> {
 
   registerWebRoutes(server, { db, cache, logger, guildId: GUILD });
   registerDraftRoutes(server, { db, cache, logger });
+  // Сцены трансляции и живой поток — те же, что у бота, чтобы оверлей можно было посмотреть.
+  const liveHub = createLiveHub();
+  registerLiveRoutes(server, { hub: liveHub });
+  registerCastRoutes(server, { db, cache, logger });
 
   const { tournamentId, vetoId, heroesId, duelId } = await seed(db);
 
@@ -275,6 +281,36 @@ async function main(): Promise<void> {
     ...(await draftLinks(duelId, 'valorant_1x1')),
   };
 
+  // Драфт Dota «в эфире»: обе стороны на месте, сделано несколько ходов — сцене драфта есть
+  // что показать. Выбор — первые доступные варианты, как сделал бы таймер.
+  {
+    const view = await bracketService.bracket(heroesId);
+    const match = view.matches.find((row) => row.state === 'ready');
+    const draft = match ? await drafts.byMatch(match.id) : null;
+    if (match && draft) {
+      await bracketService.markSidePresent(match.id, 'a');
+      await bracketService.markSidePresent(match.id, 'b');
+      await drafts.arm(match.id);
+      for (let step = 0; step < 6; step += 1) {
+        const state = await drafts.state((await drafts.byMatch(match.id)) ?? draft);
+        const current = state.view.current;
+        const option = state.view.available[0];
+        if (!current || !option) break;
+        await drafts.choose(draft.id, current.side, option.id, null);
+      }
+    }
+    // Матч Valorant начат — сцене табло нужен идущий матч.
+    const veto = (await bracketService.bracket(vetoId)).matches.find((row) => row.state === 'ready');
+    if (veto) await bracketService.startMatch(veto.id);
+  }
+  const [finished] = await db.select().from(tournaments).where(eq(tournaments.guildId, GUILD)).limit(1);
+  const cast = {
+    сцена_сетка: `http://localhost:${PORT}/cast/t/${tournamentId}?scene=bracket`,
+    сцена_драфт: `http://localhost:${PORT}/cast/t/${heroesId}?scene=draft`,
+    сцена_матч: `http://localhost:${PORT}/cast/t/${vetoId}?scene=match`,
+    сцена_пьедестал: finished ? `http://localhost:${PORT}/cast/t/${finished.id}?scene=podium` : '',
+  };
+
   await server.listen({ port: PORT, host: '0.0.0.0' });
 
   logger.info(
@@ -285,11 +321,13 @@ async function main(): Promise<void> {
       зал_славы: `http://localhost:${PORT}/hall`,
       лидерборд: `http://localhost:${PORT}/leaderboard/dota2`,
       ...links,
+      ...cast,
     },
     'витрина поднята, Ctrl+C останавливает и убирает демонстрационные данные',
   );
 
   const stop = async (): Promise<void> => {
+    liveHub.closeAll();
     // Убираем все турниры демонстрационного сервера, а не только последний: их теперь
     // несколько, и оставленные засоряли бы базу разработки при каждом запуске.
     await db.delete(tournaments).where(eq(tournaments.guildId, GUILD));

@@ -1,13 +1,14 @@
-import { index, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 
 /**
- * Что разрешает пропуск. Областей две, и они для разных людей: `formats` — организатору,
- * собирать форматы турниров, `roster` — игроку, заявлять свой состав на текущий турнир.
+ * Что разрешает пропуск. Областей три, и они для разных людей: `formats` — организатору,
+ * собирать форматы турниров, `roster` — игроку, заявлять свой состав на текущий турнир,
+ * `cast` — организатору, управлять сценами трансляции.
  *
  * Разделены намеренно. Ссылка — это и есть право, и пропуск игрока не должен открывать
  * настройки сервера просто потому, что оба живут в одной таблице.
  */
-export type WebGrantScope = 'formats' | 'roster';
+export type WebGrantScope = 'formats' | 'roster' | 'cast';
 
 /**
  * Пропуск на витрину — способ дать право что-то менять человеку, который на сайт не входил.
@@ -47,3 +48,23 @@ export const webGrants = pgTable(
 );
 
 export type WebGrantRow = typeof webGrants.$inferSelect;
+
+/**
+ * Что сейчас на трансляции сервера. Строка одна на сервер и необязательна: без неё сцены
+ * выбираются сами (`auto`), и пульт нужен, только чтобы переопределить выбор.
+ */
+export const castStates = pgTable('cast_states', {
+  guildId: text('guild_id').primaryKey(),
+  /** Турнир, к которому относится выбор. Выбор для прошлого турнира на новый не переносится. */
+  tournamentId: integer('tournament_id'),
+  /** `auto` или конкретная сцена. */
+  scene: text('scene').notNull().default('auto'),
+  /** Матч на табло, если его выбрал кастер. `null` — главный матч выбирается сам. */
+  featuredMatchId: integer('featured_match_id'),
+  /** Отсчёт на сцене «скоро начало». `null` — берётся время старта турнира. */
+  countdownAt: timestamp('countdown_at', { withTimezone: true }),
+  updatedBy: text('updated_by'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type CastStateRow = typeof castStates.$inferSelect;

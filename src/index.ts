@@ -23,6 +23,7 @@ import { registerSteamCallback } from './modules/identity/http/steam-callback.js
 import { registerDraftRoutes } from './modules/web/draft.js';
 import { createHoyolabChronicle } from './modules/identity/providers/hoyolab.js';
 import { registerFormatRoutes } from './modules/web/formats.js';
+import { registerCastRoutes } from './modules/web/cast.js';
 import { createLiveHub, registerLiveRoutes, wireLive } from './modules/web/live.js';
 import { registerRosterRoutes } from './modules/web/roster.js';
 import { registerWebRoutes } from './modules/web/routes.js';
@@ -239,6 +240,9 @@ registerDraftRoutes(http, { db, cache, logger, bus });
 const liveHub = createLiveHub();
 registerLiveRoutes(http, { hub: liveHub });
 wireLive({ bus, hub: liveHub, cache, logger });
+
+// Трансляция через Discord: сцена для Go Live и пульт к ней по ссылке от `/cast`.
+registerCastRoutes(http, { db, cache, logger, bus });
 
 // Конструктор форматов турнира — вторая и последняя страница, где что-то меняют. Право
 // даёт та же ссылка с токеном: организатор получает её командой `/tournament formats`.

@@ -179,6 +179,7 @@ const LIVE_EVENTS = [
   'tournament.cancelled',
   'tournament.entrants',
   'draft.changed',
+  'cast.changed',
 ] as const satisfies readonly (keyof BotEvents)[];
 
 /**

@@ -97,6 +97,8 @@ export interface BotEvents {
    */
   'match.reset': { guildId: string; tournamentId: number; matchId: number };
   'tournament.cancelled': { guildId: string; tournamentId: number };
+  /** Кастер переключил сцену или главный матч трансляции: открытая сцена перечитывает себя. */
+  'cast.changed': { guildId: string; tournamentId: number };
   /** Кто-то записался, вышел или отметился: во время регистрации витрина показывает список. */
   'tournament.entrants': { guildId: string; tournamentId: number };
   /** Ход драфта или его создание: витрина перечитывает полотно. */

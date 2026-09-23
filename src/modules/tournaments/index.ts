@@ -23,6 +23,7 @@ import { syncTournament } from './discord/sync.js';
 import { createFormatAutocomplete, createMatchAutocomplete } from './discord/autocomplete.js';
 import { createTournamentEventsGateway } from './discord/events.js';
 import { createTournamentPollCommand } from './commands/poll.js';
+import { createCastCommand } from './commands/cast.js';
 import { createRosterCommand } from './commands/roster.js';
 import { createStatsCommand } from './commands/stats.js';
 import { createChannelsGateway } from './discord/channels.js';
@@ -115,7 +116,7 @@ export interface TournamentsModuleDeps {
     issue(input: {
       guildId: string;
       userId: string;
-      scope: 'formats' | 'roster';
+      scope: 'formats' | 'roster' | 'cast';
     }): Promise<{ token: string; expiresAt: Date }>;
   };
 }
@@ -221,7 +222,10 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
       // Заявку собирает участник, а у `/tournament` стоит право «Управление сервером» — поэтому
       // своя команда, доступная всем.
       ...(deps.grants
-        ? [createRosterCommand({ tournaments, grants: deps.grants, publicBaseUrl: deps.publicBaseUrl })]
+        ? [
+            createRosterCommand({ tournaments, grants: deps.grants, publicBaseUrl: deps.publicBaseUrl }),
+            createCastCommand({ tournaments, staff, grants: deps.grants, publicBaseUrl: deps.publicBaseUrl }),
+          ]
         : []),
     ],
 
