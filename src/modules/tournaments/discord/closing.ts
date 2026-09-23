@@ -21,38 +21,6 @@ export interface ClosingDeps {
 }
 
 /**
- * Победитель турнира по его сетке. Отдельно от объявления, потому что нужен и афише: она
- * остаётся в списке прошедших событий, и без победителя не отвечает на единственный вопрос,
- * который к ней потом приходят.
- */
-export async function championOf(
-  deps: Pick<ClosingDeps, 'tournaments'>,
-  tournamentId: number,
-): Promise<string | null> {
-  const view = await deps.tournaments.bracket(tournamentId);
-  const places = standingsOf(view.matches);
-  if (places.championId === null) return null;
-  return view.entrants.find((entrant) => entrant.id === places.championId)?.displayName ?? null;
-}
-
-/**
- * Закрывает турнир снаружи: объявляет итог и снимает афишу. Вызывается и обработчиком кнопки,
- * и джобой автоподтверждения — у турнира два пути закрыться, и оба обязаны выглядеть одинаково.
- */
-export async function closeTournamentPublic(
-  deps: ClosingDeps,
-  guild: Guild,
-  tournament: TournamentRow,
-  logger: Logger,
-): Promise<void> {
-  const champion = await championOf(deps, tournament.id);
-  await announceFinish(deps, guild, tournament, logger);
-  if (deps.events && tournament.scheduledEventId) {
-    await deps.events.finish(guild, tournament.scheduledEventId, champion);
-  }
-}
-
-/**
  * Оговорка под итогом — как именно закрылся финал. Раньше под каждым итогом стояло «принято
  * по молчанию соперника», хотя так закрывалась лишь часть финалов: подтверждённый кнопкой
  * результат выглядел спорным, а решение организатора — чужим.
@@ -75,41 +43,60 @@ export function closureNote(action: SettleAction | null): string | null {
 }
 
 /**
- * Объявляет победителя в канале объявлений турнира. Если канал не задан или недоступен, молча
- * не объявляем: это не повод считать закрытие турнира неудавшимся.
+ * Итог турнира, собранный заранее: текст объявления и победитель для афиши.
+ *
+ * Сборка отделена от отправки ради повторов. Всё, что может упасть на базе, случается здесь —
+ * до того, как синхронизатор займёт отметку о закрытии, — и упавшая сборка просто повторится
+ * через минуту. А отправка идёт уже после отметки и ровно один раз: второй «итог» в канале не
+ * отменишь.
  */
-export async function announceFinish(
+export interface PreparedClosing {
+  /** Текст итога; `null` — объявлять нечего (нет канала или не определился победитель). */
+  message: string | null;
+  champion: string | null;
+}
+
+export async function prepareClosing(deps: ClosingDeps, tournament: TournamentRow): Promise<PreparedClosing> {
+  const view = await deps.tournaments.bracket(tournament.id);
+  const places = standingsOf(view.matches);
+  const nameOf = (id: number | null): string | null =>
+    id === null ? null : (view.entrants.find((entrant) => entrant.id === id)?.displayName ?? null);
+
+  const champion = nameOf(places.championId);
+  if (!champion || !tournament.announceChannelId) return { message: null, champion };
+
+  const runnerUp = nameOf(places.runnerUpId);
+  const third = nameOf(places.thirdId);
+  const lines = [`## ${tournament.name} — итог`, `🏆 **${champion}**`];
+  if (runnerUp) lines.push(`2. ${runnerUp}`);
+  // Третье место есть только там, где оно честно определено — при двойном устранении.
+  if (third) lines.push(`3. ${third}`);
+
+  const note = closureNote(await deps.tournaments.finalClosure(tournament.id));
+  lines.push('', ...(note ? [note] : []), `Сетка и места: ${deps.publicBaseUrl}/t/${tournament.id}`);
+  return { message: lines.join('\n'), champion };
+}
+
+/**
+ * Отправляет собранный итог и закрывает афишу. Только Discord, никаких чтений базы: отказ
+ * здесь не повторяется, поэтому пишется в лог, а не бросается.
+ */
+export async function publishClosing(
   deps: ClosingDeps,
   guild: Guild,
   tournament: TournamentRow,
+  prepared: PreparedClosing,
   logger: Logger,
 ): Promise<void> {
-  if (!tournament.announceChannelId) return;
-
-  try {
-    const channel = await guild.channels.fetch(tournament.announceChannelId).catch(() => null);
-    if (!channel || channel.type !== ChannelType.GuildText) return;
-
-    const view = await deps.tournaments.bracket(tournament.id);
-    const places = standingsOf(view.matches);
-    const nameOf = (id: number | null): string | null =>
-      id === null ? null : (view.entrants.find((entrant) => entrant.id === id)?.displayName ?? null);
-
-    const champion = nameOf(places.championId);
-    if (!champion) return;
-
-    const runnerUp = nameOf(places.runnerUpId);
-    const third = nameOf(places.thirdId);
-
-    const lines = [`## ${tournament.name} — итог`, `🏆 **${champion}**`];
-    if (runnerUp) lines.push(`2. ${runnerUp}`);
-    // Третье место есть только там, где оно честно определено — при двойном устранении.
-    if (third) lines.push(`3. ${third}`);
-    const note = closureNote(await deps.tournaments.finalClosure(tournament.id));
-    lines.push('', ...(note ? [note] : []), `Сетка и места: ${deps.publicBaseUrl}/t/${tournament.id}`);
-
-    await channel.send(lines.join('\n'));
-  } catch (error) {
-    logger.warn({ err: error, tournamentId: tournament.id }, 'не удалось объявить итог турнира');
+  if (prepared.message && tournament.announceChannelId) {
+    try {
+      const channel = await guild.channels.fetch(tournament.announceChannelId).catch(() => null);
+      if (channel && channel.type === ChannelType.GuildText) await channel.send(prepared.message);
+    } catch (error) {
+      logger.warn({ err: error, tournamentId: tournament.id }, 'не удалось объявить итог турнира');
+    }
+  }
+  if (deps.events && tournament.scheduledEventId) {
+    await deps.events.finish(guild, tournament.scheduledEventId, prepared.champion);
   }
 }

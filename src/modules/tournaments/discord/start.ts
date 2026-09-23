@@ -1,9 +1,12 @@
 import type { Guild } from 'discord.js';
 import type { Database } from '../../../core/db/client.js';
+import { UserError } from '../../../core/errors.js';
+import type { Logger } from '../../../core/logger.js';
 import { BRACKET_FORMAT_LABELS, EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
-import { createTournamentRooms, type PlayDeps } from '../commands/play.js';
+import type { PlayDeps } from '../commands/play.js';
 import { entrantStrengths } from '../services/strength.js';
 import type { BracketView } from '../services/tournaments.js';
+import { syncTournament } from './sync.js';
 
 /**
  * Старт турнира: автосбор, жеребьёвка, сетка, комнаты, афиша «идёт».
@@ -16,6 +19,7 @@ import type { BracketView } from '../services/tournaments.js';
 
 export interface StartDeps extends PlayDeps {
   db: Database;
+  logger: Logger;
 }
 
 export interface Assembled {
@@ -29,12 +33,33 @@ export interface StartedTournament {
   assembled: Assembled;
 }
 
-export async function startTournament(
-  deps: StartDeps,
-  guild: Guild,
-  tournamentId: number,
-): Promise<StartedTournament> {
+/**
+ * Один старт турнира за раз. Команда организатора и автостарт по времени могут прийти в одну
+ * минуту, и тогда автосбор составов — цепочка отдельных записей — шёл бы дважды навстречу
+ * себе: жеребьёвка увидела бы составы, собранные наполовину. Бот — один процесс, поэтому
+ * замка в памяти достаточно; сетку от второго построения дополнительно держит CAS в базе.
+ */
+const starting = new Map<number, Promise<unknown>>();
+
+export function startTournament(deps: StartDeps, guild: Guild, tournamentId: number): Promise<StartedTournament> {
+  const previous = starting.get(tournamentId) ?? Promise.resolve();
+  const run = previous.then(
+    () => startOnce(deps, guild, tournamentId),
+    () => startOnce(deps, guild, tournamentId),
+  );
+  const settled = run.catch(() => undefined);
+  starting.set(tournamentId, settled);
+  void settled.then(() => {
+    if (starting.get(tournamentId) === settled) starting.delete(tournamentId);
+  });
+  return run;
+}
+
+async function startOnce(deps: StartDeps, guild: Guild, tournamentId: number): Promise<StartedTournament> {
   const tournament = await deps.tournaments.byId(tournamentId);
+  // Проверка под замком: второй старт, дождавшийся первого, видит уже идущий турнир и не
+  // начинает автосбор заново.
+  if (tournament.state !== 'registration') throw new UserError('Этот турнир уже стартовал.');
 
   // Автосбор: одиночки превращаются в составы до жеребьёвки. Силу после этого считаем заново —
   // она теперь у команд, а не у отдельных людей, и старая карта указывала бы на участников,
@@ -48,12 +73,20 @@ export async function startTournament(
   const strengths = await entrantStrengths(deps.db, tournamentId, tournament.game);
   const view = await deps.tournaments.start(tournamentId, strengths);
 
-  // Комнаты — после того, как сетка уже в базе: отказ Discord не должен отменять построенную
-  // сетку. Недостающее догонит синхронизатор.
-  await createTournamentRooms(deps, guild, tournamentId);
+  // Всё дальше — уже после того, как сетка в базе, и старт отменить не может: отказ здесь
+  // только записывается, а комнаты достроит страховочная джоба синхронизатора. Раньше сбой
+  // на этом шаге обрывал весь старт — и объявление первого круга не уходило вовсе.
+  //
+  // Комнаты — через очередь синхронизатора, а не напрямую: иначе джоба, увидев идущий турнир,
+  // заводила бы ветки тем же матчам одновременно со стартом.
+  await syncTournament(deps, guild, tournamentId, deps.logger).catch((error: unknown) => {
+    deps.logger.error({ err: error, tournamentId }, 'турнир стартовал, но комнаты не создались — достроит синхронизатор');
+  });
 
   if (deps.events && view.tournament.scheduledEventId) {
-    await deps.events.begin(guild, view.tournament.scheduledEventId);
+    await deps.events.begin(guild, view.tournament.scheduledEventId).catch((error: unknown) => {
+      deps.logger.warn({ err: error, tournamentId }, 'афиша не перешла в «идёт»');
+    });
   }
 
   return { view, assembled };

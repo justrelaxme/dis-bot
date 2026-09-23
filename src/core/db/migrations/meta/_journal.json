@@ -183,6 +183,13 @@
       "when": 1790151678268,
       "tag": "0025_empty_rachel_grey",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1790153043391,
+      "tag": "0026_yellow_frightful_four",
+      "breakpoints": true
     }
   ]
 }

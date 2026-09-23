@@ -146,14 +146,14 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
       .addSubcommand((sub) =>
         sub
           .setName('settings')
-          .setDescription('Кто организует турниры и куда звать его на споры и неявки')
+          .setDescription('Кто организует турниры и куда звать его на споры и сбои')
           .addRoleOption((option) =>
             option.setName('organizer_role').setDescription('Роль, которая решает споры и получает сигналы'),
           )
           .addChannelOption((option) =>
             option
               .setName('staff_channel')
-              .setDescription('Канал штаба: сюда приходят споры, неявки и отказы')
+              .setDescription('Канал штаба: сюда приходят споры и сбои, которые бот сам не исправит')
               .addChannelTypes(ChannelType.GuildText),
           )
           .addStringOption((option) =>
@@ -289,10 +289,10 @@ async function settings(interaction: Interaction, guild: Guild, deps: ManageDeps
     content: [
       '## Турниры — кто организует',
       saved.organizerRoleId
-        ? `Организаторы: <@&${saved.organizerRoleId}> — решают споры и неявки наравне с «Управлением сервером».`
+        ? `Организаторы: <@&${saved.organizerRoleId}> — решают споры наравне с «Управлением сервером».`
         : 'Роль организаторов не задана: споры решают те, у кого «Управление сервером», а звать бот будет владельца.',
       saved.staffChannelId
-        ? `Штаб: <#${saved.staffChannelId}> — сюда приходят споры, неявки и отказы, которые бот сам не исправит.`
+        ? `Штаб: <#${saved.staffChannelId}> — сюда приходят споры и сбои, которые бот сам не исправит.`
         : 'Канал штаба не задан: сигналы уходят в канал объявлений турнира, а если его нет — владельцу в личку.',
       ...(problems.length > 0 ? ['', ...problems] : []),
     ].join(NL),
@@ -451,7 +451,7 @@ async function start(interaction: Interaction, guild: Guild, deps: ManageDeps, c
 
   // Тот же старт, что у расписания и у автостарта по времени: одна последовательность и один
   // текст объявления на все три пути.
-  const started = await startTournament({ ...deps, db: ctx.db }, guild, tournament.id);
+  const started = await startTournament({ ...deps, db: ctx.db, logger: ctx.logger }, guild, tournament.id);
   await interaction.editReply({ content: startAnnouncement(started, deps.publicBaseUrl) });
 }
 

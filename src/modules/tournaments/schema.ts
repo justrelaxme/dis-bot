@@ -344,7 +344,7 @@ export const tournamentSettings = pgTable('tournament_settings', {
   guildId: text('guild_id').primaryKey(),
   /** Роль организаторов: её упоминают в сигналах и ей разрешают решать споры. */
   organizerRoleId: text('organizer_role_id'),
-  /** Канал штаба: сюда приходят споры, неявки и отказы, которые может исправить человек. */
+  /** Канал штаба: сюда приходят споры и сбои, которые может исправить только человек. */
   staffChannelId: text('staff_channel_id'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -580,7 +580,7 @@ export const tournamentSchedules = pgTable('tournament_schedules', {
    * Потолок стоимости состава Genshin и число иммунов — из пресета, как и у ручного турнира.
    * Пока их здесь не было, турнир по расписанию шёл без бюджета, даже если пресет его задавал.
    */
-  costCap: integer('cost_cap'),
+  costCap: doublePrecision('cost_cap'),
   immunities: integer('immunities').notNull().default(0),
   requireVerified: boolean('require_verified').notNull().default(true),
   games: jsonb('games').$type<TournamentGame[]>().notNull(),

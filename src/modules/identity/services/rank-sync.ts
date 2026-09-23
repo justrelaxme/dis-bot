@@ -1,10 +1,10 @@
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
 import type { EventBus } from '../../../core/events/bus.js';
 import type { Logger } from '../../../core/logger.js';
 import { canFetchRank, type GameProvider, type RankInfo } from '../providers/provider.js';
-import { hasRankChanged, rankScore } from '../ranks/compare.js';
-import { gameAccounts, type ProviderId } from '../schema.js';
+import { hasRankChanged, rankStep } from '../ranks/compare.js';
+import { gameAccounts, rankSnapshots, type ProviderId } from '../schema.js';
 import type { GameAccountRow, LinkingService } from './linking.js';
 
 export interface RankSyncDeps {
@@ -28,6 +28,19 @@ export function createRankSyncService(deps: RankSyncDeps): RankSyncService {
   // одинаково и не расходились между собой.
   async function touch(accountId: number): Promise<void> {
     await db.update(gameAccounts).set({ updatedAt: new Date() }).where(eq(gameAccounts.id, accountId));
+  }
+
+  /**
+   * Лучшая ступень, на которой аккаунт уже бывал в этом режиме. Рост засчитывается только
+   * выше неё: иначе опыт за рост добывался бы по кругу — упасть на дивизион и вернуться,
+   * скрыть профиль (снимок без ранга) и открыть снова.
+   */
+  async function bestStep(accountId: number, mode: string): Promise<number> {
+    const rows = await db
+      .select()
+      .from(rankSnapshots)
+      .where(and(eq(rankSnapshots.accountId, accountId), eq(rankSnapshots.mode, mode)));
+    return rows.reduce((best, row) => Math.max(best, rankStep({ ...row, raw: row.raw ?? {} })), 0);
   }
 
   async function syncAccount(account: GameAccountRow): Promise<RankInfo[]> {
@@ -58,6 +71,9 @@ export function createRankSyncService(deps: RankSyncDeps): RankSyncService {
       const before = previous.find((r) => r.mode === rank.mode) ?? null;
       if (!hasRankChanged(before, rank)) continue;
 
+      // Лучшую ступень считаем до записи нового снимка — иначе он сравнивался бы сам с собой.
+      // Первый снимок после привязки ростом не считается: расти было не от чего.
+      const climbed = before !== null && rankStep(rank) > (await bestStep(account.id, rank.mode));
       await linking.saveRank(account.id, rank);
       await bus.emit('rank.changed', {
         userId: account.userId,
@@ -65,7 +81,7 @@ export function createRankSyncService(deps: RankSyncDeps): RankSyncService {
         mode: rank.mode,
         previous: before ? { tier: before.tier, division: before.division } : null,
         current: { tier: rank.tier, division: rank.division },
-        climbed: before !== null && rankScore(rank) > rankScore(before),
+        climbed,
       });
     }
 

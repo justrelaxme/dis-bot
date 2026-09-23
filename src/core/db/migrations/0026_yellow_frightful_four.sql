@@ -1,0 +1,1 @@
+ALTER TABLE "tournament_schedules" ALTER COLUMN "cost_cap" SET DATA TYPE double precision;

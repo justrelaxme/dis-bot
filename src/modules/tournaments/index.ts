@@ -129,7 +129,7 @@ export interface TournamentsModuleDeps {
  */
 export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule {
   const polls = createPollsService({ db: deps.db });
-  const tournaments = createTournamentsService({ db: deps.db, bus: deps.bus });
+  const tournaments = createTournamentsService({ db: deps.db, bus: deps.bus, logger: deps.logger });
   const cycles = createCycleService({ db: deps.db, logger: deps.logger });
   const channels = createChannelsGateway(deps.logger);
 
@@ -248,7 +248,8 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
               messages,
               events,
               publicBaseUrl: deps.publicBaseUrl,
-              start: (guild, tournamentId) => startTournament({ ...play, db: deps.db }, guild, tournamentId),
+              start: (guild, tournamentId) =>
+                startTournament({ ...play, db: deps.db, logger: ctx.logger }, guild, tournamentId),
               onCancelled: async (guild, tournamentId) => {
                 await closeTournamentRooms(play, guild, tournamentId, ctx.logger, 'delete');
               },
@@ -302,7 +303,14 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
         cron: REGISTRATION_CLOSE_CRON,
         async run(ctx): Promise<void> {
           await closeDueRegistrations(
-            { ...play, db: deps.db, client: ctx.client, logger: ctx.logger },
+            {
+              ...play,
+              db: deps.db,
+              client: ctx.client,
+              logger: ctx.logger,
+              // Сутки с запасом покрывают и окно напоминания, и два часа ожидания.
+              once: async (key) => (await deps.cache.incrementInWindow(key, 24 * 60 * 60 * 1_000)) === 1,
+            },
             new Date(),
           );
         },

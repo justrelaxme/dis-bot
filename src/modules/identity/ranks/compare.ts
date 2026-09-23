@@ -64,3 +64,12 @@ export function hasRankChanged(previous: RankInfo | null, next: RankInfo): boole
   if (next.division === null && previous.points !== next.points) return true;
   return false;
 }
+
+/**
+ * Ступень ранга — тир и дивизион без очков. Для вопроса «вырос ли человек» очки лишние: у
+ * тиров без дивизионов каждая прибавка очков меняла бы счёт, и рост засчитывался бы после
+ * каждой победы.
+ */
+export function rankStep(rank: RankInfo): number {
+  return rankScore({ ...rank, points: null });
+}

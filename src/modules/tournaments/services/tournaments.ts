@@ -3,6 +3,7 @@ import type { Database } from '../../../core/db/client.js';
 import { auditLog } from '../../../core/db/schema/core.js';
 import { UserError } from '../../../core/errors.js';
 import type { EventBus } from '../../../core/events/bus.js';
+import type { Logger } from '../../../core/logger.js';
 import {
   arrivalPlan,
   assignSeeds,
@@ -95,7 +96,7 @@ function required<T>(row: T | undefined, what: string): T {
   return row;
 }
 
-export function createTournamentsService(deps: { db: Database; bus?: EventBus }) {
+export function createTournamentsService(deps: { db: Database; bus?: EventBus; logger?: Logger }) {
   const { db } = deps;
 
   /**
@@ -128,6 +129,17 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
    */
   async function publishStarted(tournament: TournamentRow, entrantIds: number[]): Promise<void> {
     if (!deps.bus || entrantIds.length === 0) return;
+    // Турнир к этому моменту уже стартовал в базе, и сбой здесь не должен выглядеть как
+    // несостоявшийся старт: вызывающий не отправил бы объявление первого круга, а повторить
+    // старт уже нельзя. Потеря — только награды за участие; она записывается.
+    try {
+      await emitStarted(deps.bus, tournament, entrantIds);
+    } catch (error) {
+      deps.logger?.error({ err: error, tournamentId: tournament.id }, 'турнир стартовал, но событие о старте не опубликовано');
+    }
+  }
+
+  async function emitStarted(bus: EventBus, tournament: TournamentRow, entrantIds: number[]): Promise<void> {
     const rows = await db
       .select({ userId: tournamentEntrantMembers.userId, captainUserId: tournamentEntrants.captainUserId })
       .from(tournamentEntrantMembers)
@@ -135,7 +147,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       .where(inArray(tournamentEntrantMembers.entrantId, entrantIds));
 
     const handPicked = tournament.entryMode === 'team' && !tournament.autoTeams;
-    await deps.bus.emit('tournament.started', {
+    await bus.emit('tournament.started', {
       guildId: tournament.guildId,
       tournamentId: tournament.id,
       entrants: entrantIds.length,

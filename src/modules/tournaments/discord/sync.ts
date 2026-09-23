@@ -1,7 +1,7 @@
 import type { Guild } from 'discord.js';
 import type { Logger } from '../../../core/logger.js';
-import { advanceTournamentRooms, closeTournamentRooms, type PlayDeps } from '../commands/play.js';
-import { closeTournamentPublic } from './closing.js';
+import { closeTournamentRooms, createTournamentRooms, type PlayDeps } from '../commands/play.js';
+import { prepareClosing, publishClosing } from './closing.js';
 
 /**
  * Синхронизатор турнира: приводит Discord к тому, что записано в базе.
@@ -15,8 +15,8 @@ import { closeTournamentPublic } from './closing.js';
  *
  * Теперь пути ничего не решают — они зовут синхронизатор, а он смотрит на состояние:
  * - турнир идёт — у каждого играбельного матча должны быть ветка и драфт;
- * - турнир доигран и ещё не закрыт — убрать комнаты, объявить итог, снять афишу, ровно один
- *   раз (`claimCloseOut`).
+ * - турнир доигран и ещё не закрыт — убрать комнаты и собрать итог (это можно повторять), а
+ *   объявить итог и закрыть афишу ровно один раз (`claimCloseOut`).
  *
  * Функция идемпотентна: повторный вызов добирает то, что не вышло в прошлый раз, и не делает
  * лишнего. Поэтому её же раз в минуту зовёт джоба — страховка от путей, которые до неё не
@@ -58,18 +58,23 @@ async function syncOnce(deps: SyncDeps, guild: Guild, tournamentId: number, logg
   const tournament = await deps.tournaments.byId(tournamentId);
 
   if (tournament.state === 'running') {
-    await advanceTournamentRooms(deps, guild, tournamentId);
+    // Голосовые командам, ветки и драфты матчам. Всё идемпотентно: создаётся только то,
+    // чего ещё нет, — поэтому этот же прогон и достраивает комнаты, если старт оборвался.
+    await createTournamentRooms(deps, guild, tournamentId);
     return 'advanced';
   }
 
   if (tournament.state !== 'finished') return 'idle';
 
-  // Сперва занять, потом делать: повторное объявление итога хуже неубранной комнаты —
-  // комнату догонит уборка руками, а второй «🏆 итог» в канале уже не отменишь.
+  // Всё, что можно повторять, — до отметки: уборка идемпотентна, а итог только собирается,
+  // не отправляется. Упадёт что-то здесь — отметка не занята, и через минуту джоба повторит.
+  await closeTournamentRooms(deps, guild, tournamentId, logger);
+  const prepared = await prepareClosing(deps, tournament);
+
+  // Отправка — после отметки и ровно один раз: второй «итог» в канале уже не отменишь.
   const claimed = await deps.tournaments.claimCloseOut(tournamentId);
   if (!claimed) return 'idle';
 
-  await closeTournamentRooms(deps, guild, tournamentId, logger);
-  await closeTournamentPublic(deps, guild, claimed, logger);
+  await publishClosing(deps, guild, claimed, prepared, logger);
   return 'closed';
 }

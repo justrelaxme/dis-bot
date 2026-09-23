@@ -1,5 +1,4 @@
 import { ChannelType, type Client, type Guild, type TextChannel } from 'discord.js';
-import type { Logger } from '../../../core/logger.js';
 import { closeTournamentRooms } from '../commands/play.js';
 import type { TournamentRow } from '../schema.js';
 import { checkinReminder } from './onboarding.js';
@@ -14,8 +13,8 @@ import { startAnnouncement, startTournament, type StartDeps } from './start.js';
  * суточный автомат — он не начинает новый день, пока прошлый турнир не закрыт.
  *
  * Отметившихся меньше двоих — сразу не отменяем: организатор мог назначить время с запасом, а
- * люди ещё подходят. Предупреждаем в момент старта и ждём два часа; за это время хватит и
- * отметиться, и стартовать руками. Дальше — отмена: висящая регистрация хуже отменённой.
+ * люди ещё подходят. Предупреждаем в момент старта и ждём два часа: отметятся двое — турнир
+ * начнётся сам. Дальше — отмена: висящая регистрация хуже отменённой.
  */
 
 /** За сколько до старта напоминать неотметившимся — как у суточного автомата. */
@@ -24,34 +23,37 @@ export const REMINDER_LEAD_MS = 15 * 60 * 1_000;
 /** Сколько ждать после назначенного старта, если играть некому. */
 export const EMPTY_GRACE_MS = 2 * 60 * 60 * 1_000;
 
-/** Тик джобы — минута: шаги, привязанные к моменту, срабатывают в первую минуту окна. */
-const TICK_MS = 60 * 1_000;
-
 export type RegistrationStep = 'wait' | 'remind' | 'start' | 'warn' | 'cancel';
 
 /**
  * Что делать с регистрацией сейчас. Чистая функция: всё решение — арифметика времени и числа
  * отметившихся, и проверять его надо без Discord.
  *
- * Разовые шаги («напомнить», «предупредить») привязаны к первой минуте своего окна: джоба
- * тикает раз в минуту, и так каждый шаг случается ровно один раз без отдельной отметки в базе.
+ * «Напомнить» и «предупредить» отвечают на всё своё окно, а не на одну минуту: бот мог быть
+ * выключен ровно в ту минуту, или прошлый тик затянулся. Что сообщение уже ушло, помнит
+ * вызывающий (`once`), а не часы.
+ *
+ * Просрочка больше срока ожидания — отмена, даже если отметившихся хватает: такую
+ * регистрацию находит только бот, поднявшийся после долгого простоя, и стартовать турнир,
+ * назначенный на вчера, значит звать людей, которые давно разошлись.
  */
 export function registrationStep(closesAt: Date, now: Date, checkedIn: number): RegistrationStep {
   const lead = closesAt.getTime() - now.getTime();
 
-  if (lead > 0) {
-    return lead <= REMINDER_LEAD_MS && lead > REMINDER_LEAD_MS - TICK_MS ? 'remind' : 'wait';
-  }
-  if (checkedIn >= 2) return 'start';
+  if (lead > 0) return lead <= REMINDER_LEAD_MS ? 'remind' : 'wait';
 
   const overdue = -lead;
   if (overdue >= EMPTY_GRACE_MS) return 'cancel';
-  return overdue < TICK_MS ? 'warn' : 'wait';
+  return checkedIn >= 2 ? 'start' : 'warn';
 }
 
 export interface RegistrationDeps extends StartDeps {
   client: Client;
-  logger: Logger;
+  /**
+   * `true` только при первом вызове с этим ключом — чтобы напоминание и предупреждение
+   * уходили один раз за всё своё окно, а не каждую минуту.
+   */
+  once(key: string): Promise<boolean>;
 }
 
 async function announceChannel(client: Client, tournament: TournamentRow): Promise<TextChannel | null> {
@@ -105,6 +107,7 @@ async function stepFor(
   if (step === 'remind') {
     const waiting = entrants.filter((entrant) => entrant.checkedInAt === null);
     if (waiting.length === 0) return;
+    if (!(await deps.once(`registration:remind:${tournament.id}`))) return;
     // Напоминание живёт четверть часа и после старта не значит ничего — это сор.
     await remember(deps, tournament.id, await channel?.send(checkinReminder(waiting, 15)), true);
     return;
@@ -121,10 +124,11 @@ async function stepFor(
   const deadline = Math.floor((closesAt.getTime() + EMPTY_GRACE_MS) / 1_000);
 
   if (step === 'warn') {
+    if (!(await deps.once(`registration:warn:${tournament.id}`))) return;
     const sent = await channel?.send(
       [
         `**Время старта «${tournament.name}», а отметилось ${checked.length} — играть пока некому.**`,
-        `Жду до <t:${deadline}:t>: кто записан — жмите **Я готов**, организатор может стартовать руками \`/tournament start\`. Если к этому времени отметятся двое, турнир начнётся сам; нет — отменится.`,
+        `Жду до <t:${deadline}:t>: кто записан — жмите **Я готов**. Как только отметятся двое, турнир начнётся сам; не отметятся к этому времени — отменится.`,
       ].join('\n'),
     );
     await remember(deps, tournament.id, sent, true);
@@ -139,6 +143,8 @@ async function stepFor(
   await closeTournamentRooms(deps, guild, tournament.id, deps.logger, 'delete');
   await deps.tournaments.cancel(tournament.id);
   await channel?.send(
-    `«${tournament.name}» отменён: за два часа после назначенного старта отметилось ${checked.length}, а нужно хотя бы двое.`,
+    checked.length >= 2
+      ? `«${tournament.name}» отменён: время старта прошло больше двух часов назад, пока бот был недоступен. Созовите заново — \`/tournament create\`.`
+      : `«${tournament.name}» отменён: за два часа после назначенного старта отметилось ${checked.length}, а нужно хотя бы двое.`,
   );
 }

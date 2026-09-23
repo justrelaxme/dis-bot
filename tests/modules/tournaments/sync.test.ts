@@ -8,11 +8,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  */
 
 const play = vi.hoisted(() => ({
-  advanceTournamentRooms: vi.fn(async () => {}),
+  createTournamentRooms: vi.fn(async () => {}),
   closeTournamentRooms: vi.fn(async () => ({ rooms: { found: 0, removed: 0 }, threads: { found: 0, removed: 0 }, messages: 0 })),
 }));
 const closing = vi.hoisted(() => ({
-  closeTournamentPublic: vi.fn(async () => {}),
+  prepareClosing: vi.fn(async () => ({ message: 'итог', champion: 'Альфа' })),
+  publishClosing: vi.fn(async () => {}),
 }));
 
 vi.mock('../../../src/modules/tournaments/commands/play.js', () => play);
@@ -32,9 +33,10 @@ function depsFor(state: string, claim: unknown = { id: 7, state: 'finished' }) {
 }
 
 beforeEach(() => {
-  play.advanceTournamentRooms.mockReset().mockResolvedValue(undefined);
-  play.closeTournamentRooms.mockClear();
-  closing.closeTournamentPublic.mockClear();
+  play.createTournamentRooms.mockReset().mockResolvedValue(undefined);
+  play.closeTournamentRooms.mockReset().mockResolvedValue(undefined as never);
+  closing.prepareClosing.mockReset().mockResolvedValue({ message: 'итог', champion: 'Альфа' });
+  closing.publishClosing.mockClear();
 });
 
 describe('синхронизатор турнира', () => {
@@ -43,7 +45,7 @@ describe('синхронизатор турнира', () => {
 
     await expect(syncTournament(deps, guild, 7, logger)).resolves.toBe('advanced');
 
-    expect(play.advanceTournamentRooms).toHaveBeenCalledTimes(1);
+    expect(play.createTournamentRooms).toHaveBeenCalledTimes(1);
     expect(play.closeTournamentRooms).not.toHaveBeenCalled();
   });
 
@@ -55,7 +57,23 @@ describe('синхронизатор турнира', () => {
 
     expect(tournaments.claimCloseOut).toHaveBeenCalledWith(7);
     expect(play.closeTournamentRooms).toHaveBeenCalledTimes(1);
-    expect(closing.closeTournamentPublic).toHaveBeenCalledTimes(1);
+    expect(closing.publishClosing).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Сбой до отметки — отметка не занята, и через минуту джоба повторит. Раньше отметка
+   * занималась первой, и упавшая уборка не повторялась никогда: комнаты оставались, итога не
+   * было, афиша висела.
+   */
+  it('упавшая уборка или сборка итога не занимает отметку — следующий прогон повторит', async () => {
+    const { deps, tournaments } = depsFor('finished');
+    closing.prepareClosing.mockRejectedValueOnce(new Error('база моргнула'));
+
+    await expect(syncTournament(deps, guild, 7, logger)).rejects.toThrow('база моргнула');
+    expect(tournaments.claimCloseOut).not.toHaveBeenCalled();
+
+    await expect(syncTournament(deps, guild, 7, logger)).resolves.toBe('closed');
+    expect(closing.publishClosing).toHaveBeenCalledTimes(1);
   });
 
   /** Второй «итог» в канале уже не отменить — закрывает только тот, кто занял отметку. */
@@ -64,8 +82,7 @@ describe('синхронизатор турнира', () => {
 
     await expect(syncTournament(deps, guild, 7, logger)).resolves.toBe('idle');
 
-    expect(play.closeTournamentRooms).not.toHaveBeenCalled();
-    expect(closing.closeTournamentPublic).not.toHaveBeenCalled();
+    expect(closing.publishClosing).not.toHaveBeenCalled();
   });
 
   it('регистрацию и отменённый турнир не трогает', async () => {
@@ -74,7 +91,7 @@ describe('синхронизатор турнира', () => {
       await expect(syncTournament(deps, guild, 7, logger)).resolves.toBe('idle');
       expect(tournaments.claimCloseOut).not.toHaveBeenCalled();
     }
-    expect(play.advanceTournamentRooms).not.toHaveBeenCalled();
+    expect(play.createTournamentRooms).not.toHaveBeenCalled();
   });
 
   /**
@@ -84,7 +101,7 @@ describe('синхронизатор турнира', () => {
   it('прогоны одного турнира идут по одному, а не вместе', async () => {
     let inside = 0;
     let most = 0;
-    play.advanceTournamentRooms.mockImplementation(async () => {
+    play.createTournamentRooms.mockImplementation(async () => {
       inside += 1;
       most = Math.max(most, inside);
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -94,12 +111,12 @@ describe('синхронизатор турнира', () => {
 
     await Promise.all([1, 2, 3].map(() => syncTournament(deps, guild, 7, logger)));
 
-    expect(play.advanceTournamentRooms).toHaveBeenCalledTimes(3);
+    expect(play.createTournamentRooms).toHaveBeenCalledTimes(3);
     expect(most).toBe(1);
   });
 
   it('упавший прогон не останавливает следующий', async () => {
-    play.advanceTournamentRooms.mockRejectedValueOnce(new Error('Discord отказал'));
+    play.createTournamentRooms.mockRejectedValueOnce(new Error('Discord отказал'));
     const { deps } = depsFor('running');
 
     const first = syncTournament(deps, guild, 7, logger);

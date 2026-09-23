@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasRankChanged, rankScore } from '../../../../src/modules/identity/ranks/compare.js';
+import { hasRankChanged, rankScore, rankStep } from '../../../../src/modules/identity/ranks/compare.js';
 import { normalizeDotaRank } from '../../../../src/modules/identity/ranks/dota.js';
 import type { RankInfo } from '../../../../src/modules/identity/providers/provider.js';
 
@@ -79,5 +79,31 @@ describe('hasRankChanged', () => {
 
   it('считает изменением сдвиг очков у тира без дивизионов', () => {
     expect(hasRankChanged(riot('MASTER', null, 100), riot('MASTER', null, 250))).toBe(true);
+  });
+});
+
+/** Ступень — для вопроса «вырос ли»: очки внутри тира ростом не считаются. */
+describe('ступень ранга', () => {
+  const riot = (tier: string, division: string | null, points: number | null): RankInfo => ({
+    mode: 'solo-duo',
+    scale: 'riot-tier',
+    tier,
+    division,
+    points,
+    source: 'api',
+    raw: {},
+  });
+
+  it('очки не меняют ступень, даже у тира без дивизионов', () => {
+    expect(rankStep(riot('MASTER', null, 10))).toBe(rankStep(riot('MASTER', null, 400)));
+  });
+
+  it('дивизион и тир — меняют', () => {
+    expect(rankStep(riot('GOLD', 'II', 0))).toBeGreaterThan(rankStep(riot('GOLD', 'III', 99)));
+    expect(rankStep(riot('PLATINUM', 'IV', 0))).toBeGreaterThan(rankStep(riot('GOLD', 'I', 99)));
+  });
+
+  it('счёт с очками при этом прежний', () => {
+    expect(rankScore(riot('MASTER', null, 400))).toBeGreaterThan(rankScore(riot('MASTER', null, 10)));
   });
 });

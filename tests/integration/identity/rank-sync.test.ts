@@ -141,6 +141,18 @@ describe('RankSyncService', () => {
     current = rank('SILVER', 'I');
     await sync.syncAccount(account);
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ climbed: false }));
+
+    // Вернулся на уже взятую ступень — не рост: иначе опыт добывался бы по кругу.
+    handler.mockClear();
+    current = rank('GOLD', 'II');
+    await sync.syncAccount(account);
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ climbed: false }));
+
+    // Выше лучшей ступени — рост.
+    handler.mockClear();
+    current = rank('GOLD', 'I');
+    await sync.syncAccount(account);
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ climbed: true }));
   });
 
   it('пропускает аккаунт провайдера с ручным рангом', async () => {
