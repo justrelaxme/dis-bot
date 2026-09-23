@@ -9,6 +9,7 @@ import {
   type ButtonInteraction,
   type Guild,
   type Interaction,
+  type MessageMentionOptions,
   type TextChannel,
 } from 'discord.js';
 import type { Database } from '../../core/db/client.js';
@@ -31,6 +32,8 @@ const GAME_LABELS: Record<LfgGame, string> = {
   lol: 'League of Legends',
   tft: 'Teamfight Tactics',
   valorant: 'Valorant',
+  // Genshin — кооператив: зовут в мир на боссов и материалы, не больше четверых.
+  genshin: 'Genshin Impact',
   other: 'Другое',
 };
 
@@ -150,6 +153,38 @@ export function createLfgModule(deps: LfgModuleDeps): BotModule {
     }
   }
 
+  /**
+   * Доступ в голосовой канал сбора идёт за составом. Канал создаётся с правами для тех,
+   * кто был в сборе при заполнении, — и без этого пришедший на освободившееся место не мог
+   * зайти в комнату своего же сбора, а ушедший сохранял доступ в чужую.
+   *
+   * Отказ Discord не отменяет запись в базе, как и у карточки: состав важнее комнаты.
+   */
+  async function syncVoiceAccess(
+    ctx: ModuleContext,
+    guild: Guild,
+    post: LfgPostRow,
+    userId: string,
+    seated: boolean,
+  ): Promise<void> {
+    if (!post.voiceChannelId) return;
+    try {
+      const channel = await guild.channels.fetch(post.voiceChannelId);
+      if (!channel || channel.type !== ChannelType.GuildVoice) return;
+      if (seated) {
+        await channel.permissionOverwrites.edit(
+          userId,
+          { ViewChannel: true, Connect: true, Speak: true },
+          { reason: `Сбор ${post.id}: занял место` },
+        );
+      } else {
+        await channel.permissionOverwrites.delete(userId, `Сбор ${post.id}: освободил место`);
+      }
+    } catch (error) {
+      ctx.logger.warn({ err: error, postId: post.id, userId }, 'не удалось обновить доступ к голосовому сбора');
+    }
+  }
+
   function buttonHandler(): EventHandler<'interactionCreate'> {
     return {
       event: 'interactionCreate',
@@ -188,7 +223,10 @@ export function createLfgModule(deps: LfgModuleDeps): BotModule {
       const { post, members } = await lfg.join(postId, interaction.user.id);
       const card = postCard(post, members);
       await interaction.update({ content: card.content, components: card.components });
-      if (post.state === 'full') await createVoice(ctx, guild, post, members);
+      // Канал уже есть — значит, это замена ушедшего: пускаем в готовую комнату. Нет — он
+      // создаётся при заполнении сразу на весь состав.
+      if (post.voiceChannelId) await syncVoiceAccess(ctx, guild, post, interaction.user.id, true);
+      else if (post.state === 'full') await createVoice(ctx, guild, post, members);
       return;
     }
 
@@ -196,6 +234,7 @@ export function createLfgModule(deps: LfgModuleDeps): BotModule {
       const { post, members } = await lfg.leave(postId, interaction.user.id);
       const card = postCard(post, members);
       await interaction.update({ content: card.content, components: card.components });
+      await syncVoiceAccess(ctx, guild, post, interaction.user.id, false);
       return;
     }
 
@@ -245,6 +284,20 @@ export function createLfgModule(deps: LfgModuleDeps): BotModule {
       },
     ],
   };
+}
+
+/**
+ * Канал сборов, если он настроен, это не текущий канал и в него можно писать текстом.
+ * null — карточка остаётся там, где вызвали команду.
+ */
+async function boardChannel(
+  ctx: ModuleContext,
+  configuredId: string | null,
+  hereId: string,
+): Promise<TextChannel | null> {
+  if (!configuredId || configuredId === hereId) return null;
+  const channel = await ctx.client.channels.fetch(configuredId).catch(() => null);
+  return channel && channel.type === ChannelType.GuildText ? (channel as TextChannel) : null;
 }
 
 function lfgCommand(
@@ -332,25 +385,57 @@ function lfgCommand(
           const note = interaction.options.getString('note');
           const minutes = interaction.options.getInteger('minutes') ?? settings.defaultTtlMinutes;
 
+          // Канал ищем до открытия сбора: открытие может отказать (лимит, второй сбор), и
+          // тогда трогать Discord незачем.
+          const board = await boardChannel(ctx, settings.channelId, interaction.channelId);
+
           const { post, members } = await lfg.open({
             guildId,
             hostUserId: userId,
             game,
             mode,
             slots,
-            channelId: settings.channelId ?? interaction.channelId,
+            channelId: board?.id ?? interaction.channelId,
             ttlMinutes: minutes,
             ...(note ? { note } : {}),
           });
 
           const pingRole = await lfg.pingRole(guildId, game);
           const rendered = card(post, members);
-          const message = await interaction.editReply({
+          const allowedMentions: MessageMentionOptions = pingRole ? { roles: [pingRole] } : { parse: [] };
+          const payload = {
             content: pingRole ? `<@&${pingRole}>\n${rendered.content}` : rendered.content,
             components: rendered.components,
-            allowedMentions: pingRole ? { roles: [pingRole] } : { parse: [] },
-          });
-          await lfg.attachMessage(post.id, message.id);
+            allowedMentions,
+          };
+
+          /**
+           * Карточка идёт в канал сборов из `/lfg-setup here`: его для того и заводят, чтобы
+           * сборы жили в одном месте и подписчики знали, где их ждать. Раньше карточка
+           * уходила ответом туда, где вызвали команду, а записывался канал сборов — и
+           * перерисовка, закрытие и джоба истечения молча искали сообщение не там.
+           *
+           * Записывается всегда канал, где карточка оказалась на деле: если в канал сборов
+           * написать не вышло, она остаётся здесь, и запись следует за ней.
+           */
+          const posted = board
+            ? await board.send(payload).catch((error: unknown) => {
+                ctx.logger.warn({ err: error, channelId: board.id }, 'не удалось объявить сбор в канале сборов');
+                return null;
+              })
+            : null;
+
+          if (posted) {
+            await lfg.attachMessage(post.id, posted.channelId, posted.id);
+            await interaction.editReply({
+              content: `Сбор объявлен в <#${posted.channelId}>: ${posted.url}`,
+              allowedMentions: { parse: [] },
+            });
+            return;
+          }
+
+          const message = await interaction.editReply(payload);
+          await lfg.attachMessage(post.id, message.channelId, message.id);
           return;
         }
 

@@ -15,6 +15,12 @@ export const MAX_SLOTS = 10;
 export const MIN_SLOTS = 2;
 export const MAX_TTL_MINUTES = 720;
 
+/**
+ * Потолок мест там, где игра жёстче общего: в мир Genshin больше четверых не зайдёт, и
+ * сбор «нужно 6» собрал бы двоих лишних, которым играть негде.
+ */
+const GAME_MAX_SLOTS: Partial<Record<LfgGame, number>> = { genshin: 4 };
+
 export interface PostWithRoster {
   post: LfgPostRow;
   members: string[];
@@ -103,8 +109,9 @@ export function createLfgService(deps: { db: Database }) {
       channelId: string;
       ttlMinutes: number;
     }): Promise<PostWithRoster> {
-      if (input.slots < MIN_SLOTS || input.slots > MAX_SLOTS) {
-        throw new UserError(`Мест должно быть от ${MIN_SLOTS} до ${MAX_SLOTS}.`);
+      const maxSlots = GAME_MAX_SLOTS[input.game] ?? MAX_SLOTS;
+      if (input.slots < MIN_SLOTS || input.slots > maxSlots) {
+        throw new UserError(`Мест должно быть от ${MIN_SLOTS} до ${maxSlots}.`);
       }
 
       const existing = await db
@@ -141,8 +148,13 @@ export function createLfgService(deps: { db: Database }) {
       return { post, members: [input.hostUserId] };
     },
 
-    async attachMessage(postId: number, messageId: string): Promise<void> {
-      await db.update(lfgPosts).set({ messageId }).where(eq(lfgPosts.id, postId));
+    /**
+     * Где карточка на самом деле лежит — канал вместе с сообщением. По этой паре карточку
+     * перерисовывают и закрывают; канал, записанный отдельно от сообщения, однажды
+     * разойдётся с ним, и обновления будут молча уходить в пустоту.
+     */
+    async attachMessage(postId: number, channelId: string, messageId: string): Promise<void> {
+      await db.update(lfgPosts).set({ channelId, messageId }).where(eq(lfgPosts.id, postId));
     },
 
     async attachVoice(postId: number, voiceChannelId: string): Promise<void> {

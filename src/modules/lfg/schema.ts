@@ -9,7 +9,7 @@ import { bigserial, index, integer, pgTable, text, timestamp, unique } from 'dri
  * а не остаются висеть до перезапуска.
  */
 
-export type LfgGame = 'dota2' | 'lol' | 'tft' | 'valorant' | 'other';
+export type LfgGame = 'dota2' | 'lol' | 'tft' | 'valorant' | 'genshin' | 'other';
 
 export type LfgState = 'open' | 'full' | 'closed' | 'expired';
 
