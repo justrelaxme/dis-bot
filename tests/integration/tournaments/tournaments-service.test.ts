@@ -775,3 +775,104 @@ describe('ветка матча', () => {
     expect((await service.matchById(match!.id)).threadId).toBe('thread-first');
   });
 });
+
+/**
+ * Жеребьёвка «случайно» раньше сохранялась и показывалась, но сетка всё равно строилась по
+ * силе. Проверяем подстановкой своего случая: сильнейший должен оказаться не первым.
+ */
+describe('случайная жеребьёвка', () => {
+  async function registered(seeding: 'random' | 'rank') {
+    const service = createTournamentsService({ db: pg.db });
+    guildCounter += 1;
+    const tournament = await service.create({
+      guildId: `71000000000000${String(guildCounter).padStart(4, '0')}`,
+      name: 'Жеребьёвка',
+      game: 'dota2',
+      format: 'single-elim',
+      entryMode: 'solo',
+      teamSize: 1,
+      maxEntrants: 8,
+      seeding,
+      bestOf: 1,
+      requireVerified: false,
+      createdBy: 'organizer',
+    });
+    await service.openRegistration(tournament.id, new Date(Date.now() + 3_600_000));
+    const ids: number[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const user = `9${String(guildCounter).padStart(8, '0')}${String(index).padStart(8, '0')}`;
+      ids.push((await service.createEntrant(tournament.id, user, `Игрок ${index + 1}`)).id);
+      await service.checkIn(tournament.id, user);
+    }
+    // Сила убывает: первый созданный — сильнейший.
+    const strengths = new Map(ids.map((id, index) => [id, 1_000 - index * 100]));
+    return { service, tournamentId: tournament.id, ids, strengths };
+  }
+
+  it('при случайной сильнейший не обязан быть первым сидом', async () => {
+    const { service, tournamentId, ids, strengths } = await registered('random');
+    // Кубик выпадает по возрастанию — значит, первым сидом станет последний созданный.
+    const rolls = [0.1, 0.2, 0.3, 0.4];
+    const view = await service.start(tournamentId, strengths, () => rolls.shift() ?? 0);
+
+    const seedOf = (id: number): number | null => view.entrants.find((entrant) => entrant.id === id)?.seed ?? null;
+    expect(seedOf(ids[3]!)).toBe(1);
+    expect(seedOf(ids[0]!)).toBe(4);
+  });
+
+  it('по силе — сильнейший первый, что бы ни выпало на кубике', async () => {
+    const { service, tournamentId, ids, strengths } = await registered('rank');
+    const view = await service.start(tournamentId, strengths, () => 0.99);
+
+    expect(view.entrants.find((entrant) => entrant.id === ids[0])?.seed).toBe(1);
+  });
+});
+
+/**
+ * Ручные регистрации, у которых наступило время старта. Турниры суточного автомата сюда не
+ * попадают: их стартует сам автомат, и второй старт с другого пути отказывал бы каждую минуту.
+ */
+describe('ручные регистрации к старту', () => {
+  async function inRegistration(closesInMs: number) {
+    const service = createTournamentsService({ db: pg.db });
+    guildCounter += 1;
+    const guildId = `72000000000000${String(guildCounter).padStart(4, '0')}`;
+    const tournament = await service.create({
+      guildId,
+      name: 'Регистрация',
+      game: 'dota2',
+      format: 'single-elim',
+      entryMode: 'solo',
+      teamSize: 1,
+      maxEntrants: 8,
+      seeding: 'rank',
+      bestOf: 1,
+      requireVerified: false,
+      createdBy: 'organizer',
+    });
+    await service.openRegistration(tournament.id, new Date(Date.now() + closesInMs));
+    return { service, guildId, tournamentId: tournament.id };
+  }
+
+  it('наступившее время попадает, далёкое — нет', async () => {
+    const due = await inRegistration(-60_000);
+    const later = await inRegistration(3 * 3_600_000);
+
+    const ids = (await due.service.manualRegistrationsClosingBy(new Date())).map((row) => row.id);
+
+    expect(ids).toContain(due.tournamentId);
+    expect(ids).not.toContain(later.tournamentId);
+  });
+
+  it('турнир суточного автомата не попадает', async () => {
+    const cycleOwned = await inRegistration(-60_000);
+    await pg.db.execute(sql`
+      insert into tournament_cycles (guild_id, cycle_date, stage, tournament_id)
+      values (${cycleOwned.guildId}, current_date, 'registration', ${cycleOwned.tournamentId})
+    `);
+
+    const ids = (await cycleOwned.service.manualRegistrationsClosingBy(new Date())).map((row) => row.id);
+
+    expect(ids).not.toContain(cycleOwned.tournamentId);
+  });
+});

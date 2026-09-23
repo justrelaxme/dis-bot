@@ -1,8 +1,8 @@
 import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type Guild } from 'discord.js';
 import { UserError } from '../../../core/errors.js';
 import type { CommandDefinition, ModuleContext } from '../../../core/module.js';
-import { BRACKET_FORMAT_LABELS, EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
-import { closeTournamentRooms, createTournamentRooms, type CleanupReport } from './play.js';
+import { BRACKET_FORMAT_LABELS } from '../bracket.js';
+import { closeTournamentRooms, type CleanupReport } from './play.js';
 import type { ChannelsGateway } from '../discord/channels.js';
 import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentFormat, TournamentFormatRow, TournamentGame } from '../schema.js';
@@ -10,8 +10,8 @@ import { parseClock, type CycleService } from '../services/cycle.js';
 import { bricksOf, type FormatsService } from '../services/formats.js';
 import { defaultName, launchTournament } from '../services/launch.js';
 import { explainAnnounceFailure, type TournamentEventsGateway } from '../discord/events.js';
+import { startAnnouncement, startTournament } from '../discord/start.js';
 import type { MessagesService } from '../services/messages.js';
-import { entrantStrengths } from '../services/strength.js';
 import type { TournamentsService } from '../services/tournaments.js';
 
 const REGISTRATION_HOURS_DEFAULT = 4;
@@ -381,75 +381,10 @@ async function start(interaction: Interaction, guild: Guild, deps: ManageDeps, c
   const tournament = await deps.tournaments.current(guild.id);
   if (!tournament) throw new UserError('Сейчас нет турнира, который можно стартовать.');
 
-  // Автосбор: одиночки превращаются в составы до жеребьёвки. Силу после этого считаем заново —
-  // она теперь у команд, а не у отдельных людей, и старая карта указывала бы на участников,
-  // которых больше нет.
-  let assembled = { teams: 0, benched: [] as string[] };
-  if (tournament.autoTeams) {
-    const before = await entrantStrengths(ctx.db, tournament.id, tournament.game);
-    assembled = await deps.tournaments.assembleTeams(tournament.id, before);
-  }
-
-  const strengths = await entrantStrengths(ctx.db, tournament.id, tournament.game);
-  const view = await deps.tournaments.start(tournament.id, strengths);
-  const active = view.entrants.filter((entrant) => entrant.withdrawnAt === null && entrant.seed !== null);
-  const size = eventSize(active.length);
-
-  // Комнаты создаём после того, как сетка уже в базе: отказ Discord не должен отменять
-  // построенную сетку. Та же функция вызывается при старте по расписанию.
-  await createTournamentRooms(deps, guild, tournament.id);
-
-  // Только верхняя сетка: у нижней в момент старта соперников ещё нет — они появятся
-  // из проигравших, а первый круг объявления это про то, кто играет сейчас.
-  const firstRound = view.matches.filter((match) => match.bracket === 'upper' && match.round === 1);
-
-  const pairs = firstRound
-    .filter((match) => match.entrantAId !== null && match.entrantBId !== null)
-    .map((match) => {
-      const a = view.entrants.find((entrant) => entrant.id === match.entrantAId);
-      const b = view.entrants.find((entrant) => entrant.id === match.entrantBId);
-      return `• ${a?.displayName ?? '?'} — ${b?.displayName ?? '?'}`;
-    });
-
-  const byes = firstRound
-    .filter((match) => match.state === 'walkover')
-    .map((match) => {
-      const lone = match.winnerEntrantId;
-      const entrant = view.entrants.find((row) => row.id === lone);
-      return `• ${entrant?.displayName ?? '?'} проходит без игры`;
-    });
-
-  // Формат берётся из турнира после старта: при двух отметившихся двойное устранение
-  // выродилось в выбывание, и обещать второй шанс, которого не будет, нельзя.
-  const doubleElim = view.tournament.format === 'double-elim';
-
-  await interaction.editReply({
-    content: [
-      `## ${tournament.name} — старт`,
-      `${EVENT_SIZE_LABELS[size]} · ${active.length} участников · ${BRACKET_FORMAT_LABELS[view.tournament.format]} · жеребьёвка по силе состава`,
-      ...(assembled.teams > 0
-        ? [
-            '',
-            `Составы собрал бот: ${assembled.teams} по ${view.tournament.teamSize}, раздача по силе.`,
-            ...(assembled.benched.length > 0
-              ? [
-                  `Не хватило на полный состав: ${assembled.benched.map((id) => `<@${id}>`).join(', ')} — в сетку не попали.`,
-                ]
-              : []),
-          ]
-        : []),
-      '',
-      '**Первый круг:**',
-      ...pairs,
-      ...(byes.length > 0 ? ['', ...byes] : []),
-      '',
-      doubleElim
-        ? 'Проигравший не уходит: он попадает в нижнюю сетку и может дойти до финала оттуда. Выбывание — со второго поражения.'
-        : 'Одно поражение — и всё: сетка на выбывание.',
-      `Победитель матча пишет \`/match report\`, соперник подтверждает. Молчание час — результат принимается сам.`,
-      `Сетка: ${deps.publicBaseUrl}/t/${tournament.id}`,
-    ].join('\n'),
-  });
+  // Тот же старт, что у расписания и у автостарта по времени: одна последовательность и один
+  // текст объявления на все три пути.
+  const started = await startTournament({ ...deps, db: ctx.db }, guild, tournament.id);
+  await interaction.editReply({ content: startAnnouncement(started, deps.publicBaseUrl) });
 }
 
 async function cancel(
@@ -522,6 +457,10 @@ async function schedule(interaction: Interaction, guild: Guild, deps: ManageDeps
     patch['abilities'] = base.abilities;
     patch['autoTeams'] = base.autoTeams;
     patch['requireVerified'] = base.requireVerified;
+    // Бюджет и иммуны Genshin тоже часть формата. Пока их здесь не было, турнир по
+    // расписанию шёл без потолка, даже если пресет его задавал.
+    patch['costCap'] = base.costCap;
+    patch['immunities'] = base.immunities;
   }
 
   const enabled = interaction.options.getBoolean('enabled');

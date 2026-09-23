@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
 import type { Database } from '../../../core/db/client.js';
 import { auditLog } from '../../../core/db/schema/core.js';
 import { UserError } from '../../../core/errors.js';
@@ -19,6 +19,7 @@ import {
 import { scoreDisagrees, type MatchScore } from '../score.js';
 import { autoTeamName, formTeams, type Signup } from '../teams.js';
 import {
+  tournamentCycles,
   tournamentEntrantMembers,
   tournamentEntrants,
   tournamentMatchReports,
@@ -463,6 +464,26 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
         .where(and(eq(tournaments.guildId, guildId), inArray(tournaments.state, ['registration', 'running'])))
         .orderBy(asc(tournaments.id));
       return row ?? null;
+    },
+
+    /**
+     * Ручные турниры в регистрации, у которых время старта уже наступило или наступит до
+     * `until`. Турниры суточного автомата сюда не попадают: их стартует сам автомат, и два
+     * старта одного турнира с разных путей дали бы отказ на втором — каждую минуту.
+     */
+    async manualRegistrationsClosingBy(until: Date): Promise<TournamentRow[]> {
+      return db
+        .select()
+        .from(tournaments)
+        .where(
+          and(
+            eq(tournaments.state, 'registration'),
+            sql`${tournaments.registrationClosesAt} is not null`,
+            lte(tournaments.registrationClosesAt, until),
+            sql`not exists (select 1 from ${tournamentCycles} where ${tournamentCycles.tournamentId} = ${tournaments.id})`,
+          ),
+        )
+        .orderBy(asc(tournaments.registrationClosesAt));
     },
 
     async openRegistration(tournamentId: number, closesAt: Date): Promise<void> {
@@ -910,7 +931,15 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
      *
      * В сетку идут только отметившиеся и не снявшиеся: чек-ин обязывающий.
      */
-    async start(tournamentId: number, strengths: Map<number, number>): Promise<BracketView> {
+    async start(
+      tournamentId: number,
+      strengths: Map<number, number>,
+      /**
+       * Источник случая для жеребьёвки `random`. Внедряется ради тестов: проверить, что
+       * жеребьёвка действительно случайная, а не по силе, можно только подставив свой.
+       */
+      random: () => number = Math.random,
+    ): Promise<BracketView> {
       const tournament = await byId(tournamentId);
       if (tournament.state !== 'registration') {
         throw new UserError('Этот турнир не в состоянии регистрации.');
@@ -926,8 +955,18 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       // витрина и подсказки говорили то же, что построено.
       const format = effectiveFormat(eligible.length, tournament.format);
 
+      // Случайная жеребьёвка — это сила, выпавшая на кубике, а не отдельный алгоритм: сетка
+      // раскладывается тем же кодом, и отличается только то, кто окажется первым сидом.
+      // Раньше настройка сохранялась и показывалась, но жеребьёвка всё равно шла по силе.
       const seeded = assignSeeds(
-        eligible.map((entrant) => ({ entrantId: entrant.id, strength: strengths.get(entrant.id) ?? 0 })),
+        eligible.map((entrant) => ({
+          entrantId: entrant.id,
+          // Целым числом: сила хранится в `seed_score`, а колонка целая.
+          strength:
+            tournament.seeding === 'random'
+              ? Math.floor(random() * 1_000_000)
+              : (strengths.get(entrant.id) ?? 0),
+        })),
       );
       const planned = buildBracket(seeded, format);
 

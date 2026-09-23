@@ -1,14 +1,14 @@
 import { ChannelType, PermissionFlagsBits, type Client, type Guild, type TextChannel } from 'discord.js';
 import type { Database } from '../../../core/db/client.js';
 import type { Logger } from '../../../core/logger.js';
-import { TOURNAMENT_GAME_LABELS } from '../games.js';
+import { TOURNAMENT_GAMES, TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { ScheduleRow, TournamentGame } from '../schema.js';
 import { checkinReminder, registrationPanel } from '../discord/onboarding.js';
+import { startAnnouncement, type StartedTournament } from '../discord/start.js';
 import type { TournamentEventsGateway } from '../discord/events.js';
-import { eventLabel, localParts, parseClock, type CycleService } from './cycle.js';
+import { localParts, parseClock, type CycleService } from './cycle.js';
 import type { MessagesService } from './messages.js';
 import type { PollsService } from './polls.js';
-import { entrantStrengths } from './strength.js';
 import type { TournamentsService } from './tournaments.js';
 
 export interface RunnerDeps {
@@ -27,8 +27,11 @@ export interface RunnerDeps {
    * будет, и вечер пройдёт как обычно.
    */
   events?: TournamentEventsGateway;
-  /** Создание комнат: голосовые командам и ветки матчам. */
-  onStarted(guild: Guild, tournamentId: number): Promise<void>;
+  /**
+   * Старт: автосбор, жеребьёвка, сетка, комнаты, афиша. Колбэком, а не вызовом: старт общий с
+   * ручной командой (`discord/start.ts`) и знает про Discord, а цикл — нет.
+   */
+  start(guild: Guild, tournamentId: number): Promise<StartedTournament>;
   /**
    * Уборка за отменённым турниром. Отдельным колбэком, как и создание комнат: цикл не знает
    * ни про Discord-каналы, ни про сообщения, и знать не должен.
@@ -166,7 +169,7 @@ async function runGuild(
         [
           `**Сегодняшний турнир не начинаем:** не закрыт предыдущий — «${unfinished.name}».`,
           'Пока он открыт, новый заводить нельзя: участники оказались бы в двух сетках сразу, и по `/match report` было бы не понять, к какому турниру он относится.',
-          'Дожмите его результаты или закройте `/tournament manage cancel` — завтра цикл пойдёт как обычно.',
+          'Дожмите его результаты или закройте `/tournament cancel` — завтра цикл пойдёт как обычно.',
         ].join('\n'),
       );
       return;
@@ -185,13 +188,16 @@ async function runGuild(
         [
           '**Турнир сегодня не начался: боту некуда объявлять.**',
           'Расписание включено, но канал объявлений не задан — без него бот не может ни открыть регистрацию, ни позвать людей.',
-          'Задать канал: `/tournament schedule announce_channel:#канал`. После этого цикл пойдёт со следующего дня сам.',
+          'Задать канал: выполните `/tournament schedule` в том канале, где должны идти объявления, — бот запомнит его. После этого цикл пойдёт со следующего дня сам.',
         ].join('\n'),
       );
       return;
     }
 
-    const games = schedule.games.length > 0 ? schedule.games : (['dota2', 'lol', 'valorant'] as TournamentGame[]);
+    // Предлагаем только то, во что играют сейчас. LoL и TFT бот по-прежнему понимает — в
+    // старых расписаниях они могли остаться, — но голосовать за снятую дисциплину незачем.
+    const offered = schedule.games.filter((game) => TOURNAMENT_GAMES.includes(game));
+    const games: TournamentGame[] = offered.length > 0 ? offered : [...TOURNAMENT_GAMES];
     const message = await channel.send({
       content: 'Выбираем дисциплину на сегодня.',
       poll: {
@@ -240,6 +246,11 @@ async function runGuild(
       seeding: 'rank',
       bestOf: schedule.bestOf,
       abilities: schedule.abilities,
+      // Всё, что задаёт формат, едет в турнир целиком. Пока автосбор, бюджет и иммуны сюда не
+      // попадали, турнир по расписанию шёл без них, хотя расписание их помнило.
+      autoTeams: schedule.autoTeams,
+      costCap: schedule.costCap,
+      immunities: schedule.immunities,
       requireVerified: schedule.requireVerified,
       createdBy: client.user?.id ?? 'system',
       ...(schedule.announceChannelId ? { announceChannelId: schedule.announceChannelId } : {}),
@@ -343,59 +354,10 @@ async function runGuild(
 
     await deps.cycles.bumpEmptyDays(schedule.guildId, false);
 
-    // Сила состава считается по рангам этапа 1: сервису турниров про ранги знать не надо,
-    // поэтому мост получает базу напрямую.
-    const tournament = await deps.tournaments.byId(cycle.tournamentId);
-    let strengths = await entrantStrengths(deps.db, cycle.tournamentId, tournament.game);
-
-    // Автосбор: одиночки превращаются в составы до жеребьёвки. Силу после этого считаем
-    // заново — она теперь у команд, а не у отдельных людей, и старая карта указывала бы на
-    // участников, которых больше нет.
-    if (tournament.autoTeams) {
-      const assembled = await deps.tournaments.assembleTeams(cycle.tournamentId, strengths);
-      if (assembled.teams > 0) {
-        strengths = await entrantStrengths(deps.db, cycle.tournamentId, tournament.game);
-        await channel?.send(
-          [
-            `Собрал ${assembled.teams} ${assembled.teams === 1 ? 'состав' : 'состава'} из тех, кто отметился. Раздача по силе, чтобы вышло ровно.`,
-            ...(assembled.benched.length > 0
-              ? [
-                  `Не хватило на полный состав: ${assembled.benched.map((id) => `<@${id}>`).join(', ')}. В сетку не попали — играть неполной командой против полной не турнир. В следующий раз приходите чуть раньше.`,
-                ]
-              : []),
-          ].join('\n'),
-        );
-      }
-    }
-
-    const view = await deps.tournaments.start(cycle.tournamentId, strengths);
+    const started = await deps.start(guild, cycle.tournamentId);
     await deps.cycles.updateCycle(cycle.id, { stage: 'running' });
-    await deps.onStarted(guild, cycle.tournamentId);
-    if (deps.events && view.tournament.scheduledEventId) {
-      await deps.events.begin(guild, view.tournament.scheduledEventId);
-    }
 
-    const seeded = view.entrants.filter((entrant) => entrant.seed !== null);
-    const pairs = view.matches
-      .filter((match) => match.round === 1 && match.entrantAId !== null && match.entrantBId !== null)
-      .map((match) => {
-        const nameOf = (id: number | null): string =>
-          view.entrants.find((entrant) => entrant.id === id)?.displayName ?? '?';
-        return `• ${nameOf(match.entrantAId)} — ${nameOf(match.entrantBId)}`;
-      });
-
-    const startMessage = await channel?.send(
-      [
-        `## ${view.tournament.name} — старт`,
-        `${eventLabel(seeded.length)} · ${seeded.length} участников · жеребьёвка по силе состава`,
-        '',
-        '**Первый круг:**',
-        ...pairs,
-        '',
-        'Победитель матча пишет `/match report`, соперник подтверждает кнопкой. Молчание час — результат принимается сам.',
-        `Сетка: ${deps.publicBaseUrl}/t/${view.tournament.id}`,
-      ].join('\n'),
-    );
+    const startMessage = await channel?.send(startAnnouncement(started, deps.publicBaseUrl));
     // Пары первого круга — запись, а не сор: по ним потом восстанавливают, кто с кем играл.
     if (startMessage) await remember(cycle.tournamentId, startMessage, false);
     return;

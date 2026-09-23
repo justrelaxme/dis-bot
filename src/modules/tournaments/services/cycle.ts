@@ -3,6 +3,7 @@ import type { Database } from '../../../core/db/client.js';
 import type { Logger } from '../../../core/logger.js';
 import { EVENT_SIZE_LABELS, eventSize } from '../bracket.js';
 import { tournamentCycles, tournamentSchedules, type CycleRow, type ScheduleRow } from '../schema.js';
+import { TOURNAMENT_GAMES } from '../games.js';
 
 /** Сколько дней подряд без участников терпим, прежде чем встать на паузу. */
 export const EMPTY_DAYS_LIMIT = 3;
@@ -63,7 +64,7 @@ export function createCycleService(deps: CycleServiceDeps) {
     async upsertSchedule(guildId: string, patch: Partial<Omit<ScheduleRow, 'guildId'>>): Promise<ScheduleRow> {
       const [row] = await db
         .insert(tournamentSchedules)
-        .values({ guildId, games: patch.games ?? ['dota2', 'lol', 'valorant'], ...patch })
+        .values({ guildId, games: patch.games ?? [...TOURNAMENT_GAMES], ...patch })
         .onConflictDoUpdate({
           target: tournamentSchedules.guildId,
           set: { ...patch, updatedAt: new Date() },

@@ -44,6 +44,7 @@ describe('модуль tournaments', () => {
       'tournaments:draft-timeout',
       'tournaments:poll-finalize',
       'tournaments:reconcile',
+      'tournaments:registration-close',
     ]);
     // Кнопки состава, подтверждение результата и подсказки имён форматов обслуживает сам
     // модуль: роутер ядра занимается только slash-командами. Оба обработчика слушают одно и

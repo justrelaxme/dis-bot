@@ -13,8 +13,9 @@ import {
   createMatchCommand,
   createTeamCommand,
   closeTournamentRooms,
-  createTournamentRooms,
 } from './commands/play.js';
+import { closeDueRegistrations } from './discord/registration.js';
+import { startTournament } from './discord/start.js';
 import { syncTournament } from './discord/sync.js';
 import { createFormatAutocomplete } from './discord/autocomplete.js';
 import { createTournamentEventsGateway } from './discord/events.js';
@@ -48,6 +49,12 @@ const AUTO_CONFIRM_BATCH_SIZE = 20;
  * один, и прогон по нему это два запроса «кому нужна ветка» и «кому нужен драфт».
  */
 const RECONCILE_CRON = '* * * * *';
+
+/**
+ * Ручные регистрации проверяются каждую минуту: напоминание и старт привязаны к минуте, и при
+ * тике реже старт съезжал бы вперёд, а напоминание могло бы не случиться вовсе.
+ */
+const REGISTRATION_CLOSE_CRON = '* * * * *';
 
 /**
  * Суточный цикл проверяется каждую минуту: шаги привязаны к «14:00» и «20:00» в часовом
@@ -232,9 +239,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
               messages,
               events,
               publicBaseUrl: deps.publicBaseUrl,
-              onStarted: async (guild, tournamentId) => {
-                await createTournamentRooms(play, guild, tournamentId);
-              },
+              start: (guild, tournamentId) => startTournament({ ...play, db: deps.db }, guild, tournamentId),
               onCancelled: async (guild, tournamentId) => {
                 await closeTournamentRooms(play, guild, tournamentId, ctx.logger, 'delete');
               },
@@ -275,6 +280,22 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
               );
             }
           }
+        },
+      },
+      {
+        /**
+         * Время регистрации ручного турнира наступило — старт сам, как и обещает панель. Раньше
+         * это время записывалось и не читалось: турнир ждал `/tournament start`, а висящая
+         * регистрация к тому же блокировала суточный автомат. Подробности — в
+         * `discord/registration.ts`.
+         */
+        name: 'tournaments:registration-close',
+        cron: REGISTRATION_CLOSE_CRON,
+        async run(ctx): Promise<void> {
+          await closeDueRegistrations(
+            { ...play, db: deps.db, client: ctx.client, logger: ctx.logger },
+            new Date(),
+          );
         },
       },
       {
