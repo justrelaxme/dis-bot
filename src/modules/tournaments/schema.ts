@@ -708,3 +708,4 @@ export type MatchRow = typeof tournamentMatches.$inferSelect;
 export type PollRow = typeof tournamentPolls.$inferSelect;
 export type CycleRow = typeof tournamentCycles.$inferSelect;
 export type ScheduleRow = typeof tournamentSchedules.$inferSelect;
+export type TournamentSettingsRow = typeof tournamentSettings.$inferSelect;

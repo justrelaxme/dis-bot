@@ -1073,6 +1073,24 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus })
       return row !== undefined;
     },
 
+    /**
+     * Ветки незакрытых матчей участника. Нужны замене: пришедший посреди турнира должен
+     * попасть в ветку матча, который его команда сейчас играет, а ушедший — выйти из неё.
+     */
+    async openThreadsOf(entrantId: number): Promise<string[]> {
+      const rows = await db
+        .select({ threadId: tournamentMatches.threadId })
+        .from(tournamentMatches)
+        .where(
+          and(
+            sql`(${tournamentMatches.entrantAId} = ${entrantId} or ${tournamentMatches.entrantBId} = ${entrantId})`,
+            inArray(tournamentMatches.state, ['ready', 'reported', 'disputed']),
+            sql`${tournamentMatches.threadId} is not null`,
+          ),
+        );
+      return rows.map((row) => row.threadId).filter((id): id is string => id !== null);
+    },
+
     /** Ветки закрытых матчей — чтобы архивировать их при уборке. */
     async closedThreads(tournamentId: number): Promise<string[]> {
       const rows = await db

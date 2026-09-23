@@ -68,6 +68,12 @@ export interface ChannelsGateway {
     userId: string;
     allowed: boolean;
   }): Promise<void>;
+  /**
+   * Добавляет человека в ветку матча или убирает из неё. Та же замена, что и у голосовой
+   * комнаты: ветка идущего матча создавалась по составу на момент, когда матч стал
+   * играбельным, и пришедший на замену не видел, где соперники договариваются о лобби.
+   */
+  setThreadMember(input: { guild: Guild; threadId: string; userId: string; present: boolean }): Promise<void>;
 }
 
 /** Discord обрезает имена каналов; режем сами, чтобы имя оставалось узнаваемым. */
@@ -146,6 +152,17 @@ export function createChannelsGateway(logger: Logger): ChannelsGateway {
         if (thread?.isThread()) await thread.setArchived(true, 'Матч завершён');
       } catch (error) {
         logger.warn({ err: error, threadId }, 'не удалось заархивировать ветку матча');
+      }
+    },
+
+    async setThreadMember(input): Promise<void> {
+      try {
+        const thread = await input.guild.channels.fetch(input.threadId);
+        if (!thread?.isThread()) return;
+        if (input.present) await thread.members.add(input.userId);
+        else await thread.members.remove(input.userId);
+      } catch (error) {
+        logger.warn({ err: error, threadId: input.threadId, userId: input.userId }, 'не удалось поменять участника ветки матча');
       }
     },
 

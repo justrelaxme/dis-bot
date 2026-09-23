@@ -16,6 +16,7 @@ import {
 } from './commands/play.js';
 import { closeDueRegistrations } from './discord/registration.js';
 import { startTournament } from './discord/start.js';
+import { staffAlert } from './discord/staff.js';
 import { syncTournament } from './discord/sync.js';
 import { createFormatAutocomplete } from './discord/autocomplete.js';
 import { createTournamentEventsGateway } from './discord/events.js';
@@ -27,6 +28,7 @@ import { createDiscordPollGateway } from './discord/poll-gateway.js';
 import { createCycleService } from './services/cycle.js';
 import { createFormatsService } from './services/formats.js';
 import { createRostersService } from './services/rosters.js';
+import { createTournamentSettingsService } from './services/settings.js';
 import { createMessagesService } from './services/messages.js';
 import { createDotaVerifier } from './services/dota-verify.js';
 import { createDraftsService } from './services/drafts.js';
@@ -182,12 +184,16 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
   const messages = createMessagesService({ db: deps.db });
   const events = createTournamentEventsGateway(deps.logger);
 
+  const settings = createTournamentSettingsService({ db: deps.db });
+  const staff = { settings, cache: deps.cache, logger: deps.logger };
+
   const play = {
     tournaments,
     channels,
     drafts,
     messages,
     events,
+    staff,
     publicBaseUrl: deps.publicBaseUrl,
     ...(dotaVerifier ? { dotaVerifier } : {}),
   };
@@ -198,7 +204,10 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
     name: 'tournaments',
 
     commands: [
-      createManageCommand({ ...play, cycles, formats, ...(deps.grants ? { grants: deps.grants } : {}) }, poll.execute),
+      createManageCommand(
+        { ...play, cycles, formats, settings, ...(deps.grants ? { grants: deps.grants } : {}) },
+        poll.execute,
+      ),
       createTeamCommand(play),
       createMatchCommand(play),
       createCheckinCommand(play),
@@ -319,6 +328,13 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
               }
             } catch (error) {
               ctx.logger.error({ err: error, tournamentId: tournament.id }, 'синхронизация турнира не удалась');
+              // Джоба повторит через минуту, но если отказ стойкий (нет прав, удалён канал),
+              // повторы ничего не дадут — нужен человек. Раз в час, а не каждую минуту.
+              await staffAlert(staff, guild, {
+                tournament,
+                text: `⚠️ Турнир «${tournament.name}»: не выходит ${tournament.state === 'finished' ? 'закрыть турнир (убрать комнаты и объявить итог)' : 'завести ветки или драфт следующим матчам'} — ${error instanceof Error ? error.message : String(error)}. Бот повторяет каждую минуту; если причина в правах бота, повторы не помогут.`,
+                dedupeKey: `sync:${tournament.id}`,
+              }).catch(() => undefined);
             }
           }
         },

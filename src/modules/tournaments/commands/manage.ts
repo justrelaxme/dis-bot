@@ -1,4 +1,4 @@
-import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type Guild } from 'discord.js';
+import { ChannelType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type Guild } from 'discord.js';
 import { UserError } from '../../../core/errors.js';
 import type { CommandDefinition, ModuleContext } from '../../../core/module.js';
 import { BRACKET_FORMAT_LABELS } from '../bracket.js';
@@ -12,6 +12,7 @@ import { defaultName, launchTournament } from '../services/launch.js';
 import { explainAnnounceFailure, type TournamentEventsGateway } from '../discord/events.js';
 import { startAnnouncement, startTournament } from '../discord/start.js';
 import type { MessagesService } from '../services/messages.js';
+import type { TournamentSettingsService } from '../services/settings.js';
 import type { TournamentsService } from '../services/tournaments.js';
 
 const REGISTRATION_HOURS_DEFAULT = 4;
@@ -42,6 +43,8 @@ export interface ManageDeps {
    */
   formats?: FormatsService;
   grants?: { issue(input: { guildId: string; userId: string; scope: 'formats' }): Promise<{ token: string; expiresAt: Date }> };
+  /** Роль организаторов и канал штаба. Необязательны: без них зовут владельца сервера. */
+  settings?: TournamentSettingsService;
 }
 
 function requireGuild(guild: Guild | null): Guild {
@@ -142,6 +145,26 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
       .addSubcommand((sub) => sub.setName('info').setDescription('Что сейчас происходит с турниром'))
       .addSubcommand((sub) =>
         sub
+          .setName('settings')
+          .setDescription('Кто организует турниры и куда звать его на споры и неявки')
+          .addRoleOption((option) =>
+            option.setName('organizer_role').setDescription('Роль, которая решает споры и получает сигналы'),
+          )
+          .addChannelOption((option) =>
+            option
+              .setName('staff_channel')
+              .setDescription('Канал штаба: сюда приходят споры, неявки и отказы')
+              .addChannelTypes(ChannelType.GuildText),
+          )
+          .addStringOption((option) =>
+            option
+              .setName('reset')
+              .setDescription('Сбросить настройку')
+              .addChoices({ name: 'Роль организаторов', value: 'role' }, { name: 'Канал штаба', value: 'channel' }),
+          ),
+      )
+      .addSubcommand((sub) =>
+        sub
           .setName('schedule')
           .setDescription('Ежедневный автомат: голосование, регистрация и старт без организатора')
           .addBooleanOption((option) =>
@@ -225,12 +248,57 @@ export function createManageCommand(deps: ManageDeps, pollExecute: CommandDefini
         await schedule(interaction, guild, deps);
         return;
       }
+      if (subcommand === 'settings') {
+        await settings(interaction, guild, deps);
+        return;
+      }
       throw new UserError('Неизвестная подкоманда.');
     },
   };
 }
 
 type Interaction = Parameters<CommandDefinition['execute']>[0];
+
+/**
+ * Роль организаторов и канал штаба. Ответ всегда показывает итоговое состояние, а не только
+ * то, что поменяли: организатор должен видеть, куда бот будет звать, — и сразу узнать, если
+ * написать туда бот не сможет.
+ */
+async function settings(interaction: Interaction, guild: Guild, deps: ManageDeps): Promise<void> {
+  if (!deps.settings) throw new UserError('Настройки турниров на этом сервере недоступны.');
+
+  const role = interaction.options.getRole('organizer_role');
+  const channel = interaction.options.getChannel('staff_channel');
+  const reset = interaction.options.getString('reset');
+
+  const saved = await deps.settings.update(guild.id, {
+    ...(role ? { organizerRoleId: role.id } : reset === 'role' ? { organizerRoleId: null } : {}),
+    ...(channel ? { staffChannelId: channel.id } : reset === 'channel' ? { staffChannelId: null } : {}),
+  });
+
+  const problems: string[] = [];
+  if (saved.staffChannelId) {
+    const staff = await guild.channels.fetch(saved.staffChannelId).catch(() => null);
+    const me = guild.members.me;
+    if (!staff?.isSendable() || !me || !staff.permissionsFor(me)?.has(PermissionFlagsBits.SendMessages)) {
+      problems.push(`⚠️ Писать в <#${saved.staffChannelId}> бот не может — выдайте ему там право «Отправлять сообщения», иначе сигналы уйдут в канал объявлений или владельцу в личку.`);
+    }
+  }
+
+  await interaction.editReply({
+    content: [
+      '## Турниры — кто организует',
+      saved.organizerRoleId
+        ? `Организаторы: <@&${saved.organizerRoleId}> — решают споры и неявки наравне с «Управлением сервером».`
+        : 'Роль организаторов не задана: споры решают те, у кого «Управление сервером», а звать бот будет владельца.',
+      saved.staffChannelId
+        ? `Штаб: <#${saved.staffChannelId}> — сюда приходят споры, неявки и отказы, которые бот сам не исправит.`
+        : 'Канал штаба не задан: сигналы уходят в канал объявлений турнира, а если его нет — владельцу в личку.',
+      ...(problems.length > 0 ? ['', ...problems] : []),
+    ].join(NL),
+    allowedMentions: { parse: [] },
+  });
+}
 
 const NL = String.fromCharCode(10);
 

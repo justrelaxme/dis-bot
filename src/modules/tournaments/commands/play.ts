@@ -3,7 +3,6 @@ import {
   ButtonBuilder,
   ButtonStyle,
   MessageFlags,
-  PermissionFlagsBits,
   SlashCommandBuilder,
   type ButtonInteraction,
   type Guild,
@@ -30,6 +29,7 @@ import {
 } from '../discord/onboarding.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentEventsGateway } from '../discord/events.js';
+import { isOrganizer, staffAlert, type StaffDeps } from '../discord/staff.js';
 import { syncTournament } from '../discord/sync.js';
 import { parseScore, type MatchScore } from '../score.js';
 import { hasUsableLink, linkCommandFor } from '../services/strength.js';
@@ -67,6 +67,11 @@ export interface PlayDeps {
   messages?: MessagesService;
   /** Афиша во вкладке «События». Необязательна: без права её просто не будет. */
   events?: TournamentEventsGateway;
+  /**
+   * Позвать организатора: спор, неявка, отказ, который бот сам не исправит. Необязателен —
+   * без него споры по-прежнему решает «Управление сервером», просто никто не зовёт.
+   */
+  staff?: StaffDeps;
 }
 
 function requireGuild(guild: Guild | null): Guild {
@@ -199,6 +204,13 @@ export function createTeamCommand(deps: PlayDeps): CommandDefinition {
             userId: target.id,
             allowed: subcommand === 'add',
           });
+        }
+        // И ветку идущего матча: она собиралась по составу на момент, когда матч стал
+        // играбельным, и замена не видела, где соперники договариваются о лобби.
+        if (change.duringTournament) {
+          for (const threadId of await deps.tournaments.openThreadsOf(change.entrant.id)) {
+            await deps.channels.setThreadMember({ guild, threadId, userId: target.id, present: subcommand === 'add' });
+          }
         }
 
         const tail = change.duringTournament
@@ -451,12 +463,12 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
 
       // Организаторские подкоманды: проверяем право здесь, а не на уровне команды —
       // иначе /match report тоже стал бы админским.
-      const member = interaction.member;
-      const canManage =
-        member !== null && 'permissions' in member && typeof member.permissions !== 'string'
-          ? member.permissions.has(PermissionFlagsBits.ManageGuild)
-          : false;
-      if (!canManage) throw new UserError('Это может только организатор турнира.');
+      // Организатор — «Управление сервером» или роль организаторов из `/tournament settings`:
+      // споры могут разбирать и те, кому доверили турниры, но не весь сервер.
+      const settings = (await deps.staff?.settings.get(guild.id).catch(() => null)) ?? null;
+      if (!isOrganizer(interaction.member, settings)) {
+        throw new UserError('Это может только организатор турнира.');
+      }
 
       const matchId = interaction.options.getInteger('match', true);
       const winnerName = interaction.options.getString('winner', true).trim().toLowerCase();
@@ -910,6 +922,23 @@ async function handleButton(
   const match = await deps.tournaments.dispute(id, interaction.user.id);
   await interaction.update({ components: [] });
   await interaction.followUp({
-    content: `Матч №${match.id} оспорен. Организатор разберёт: \`/match resolve match:${match.id} winner:<название>\`.`,
+    content: `Матч №${match.id} оспорен. Организатора уже позвал — он разберёт здесь же.`,
   });
+
+  // Раньше спор ждал в закрытой ветке матча, пока организатор случайно туда не заглянет.
+  // Теперь он приходит туда, где его увидят, — в штаб, с упоминанием организаторов.
+  if (deps.staff) {
+    const view = await deps.tournaments.bracket(tournament.id);
+    const nameOf = (entrantId: number | null): string =>
+      view.entrants.find((entrant) => entrant.id === entrantId)?.displayName ?? '?';
+    await staffAlert(deps.staff, guild, {
+      tournament,
+      text: [
+        `⚖️ **Спор в матче №${match.id}** «${tournament.name}»: ${nameOf(match.entrantAId)} — ${nameOf(match.entrantBId)}.`,
+        `Заявлена победа **${nameOf(match.reportedWinnerId)}**, оспорил <@${interaction.user.id}>.${match.threadId ? ` Ветка матча: <#${match.threadId}>.` : ''}`,
+        `Решить: \`/match resolve match:${match.id} winner:<название>\`.`,
+      ].join('\n'),
+      dedupeKey: `dispute:${match.id}`,
+    });
+  }
 }
