@@ -14,6 +14,7 @@ import {
   createTeamCommand,
   closeTournamentRooms,
 } from './commands/play.js';
+import { createMatchFlowHandler, runMatchFlow } from './discord/match-flow.js';
 import { closeDueRegistrations } from './discord/registration.js';
 import { startTournament } from './discord/start.js';
 import { staffAlert } from './discord/staff.js';
@@ -57,6 +58,9 @@ const RECONCILE_CRON = '* * * * *';
  * тике реже старт съезжал бы вперёд, а напоминание могло бы не случиться вовсе.
  */
 const REGISTRATION_CLOSE_CRON = '* * * * *';
+
+/** Неявки и напоминания — раз в минуту: и то и другое привязано к минутам с начала матча. */
+const MATCH_FLOW_CRON = '* * * * *';
 
 /**
  * Суточный цикл проверяется каждую минуту: шаги привязаны к «14:00» и «20:00» в часовом
@@ -220,7 +224,17 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
         : []),
     ],
 
-    events: [createButtonHandler(play), createFormatAutocomplete({ formats })],
+    events: [createButtonHandler(play), createMatchFlowHandler(play), createFormatAutocomplete({ formats })],
+
+    async setup(ctx): Promise<void> {
+      // Матч начался — пошёл таймер драфта. Слушатель, а не вызов: начать матч может кнопка в
+      // ветке, кнопка на странице драфта и организатор, и таймер обязан пойти в любом случае.
+      ctx.bus.on('match.live', async (payload) => {
+        await drafts.arm(payload.matchId).catch((error: unknown) => {
+          ctx.logger.error({ err: error, matchId: payload.matchId }, 'матч начался, но таймер драфта не запустился');
+        });
+      });
+    },
 
     jobs: [
       {
@@ -314,6 +328,18 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
             },
             new Date(),
           );
+        },
+      },
+      {
+        /**
+         * Ход матча: неявка дольше десяти минут — в штаб с кнопками решения, заявленный и не
+         * подтверждённый результат — напоминание сопернику за четверть часа до того, как он
+         * примется сам. Подробности — в `discord/match-flow.ts`.
+         */
+        name: 'tournaments:match-flow',
+        cron: MATCH_FLOW_CRON,
+        async run(ctx): Promise<void> {
+          await runMatchFlow(play, ctx.client, ctx.logger, new Date());
         },
       },
       {

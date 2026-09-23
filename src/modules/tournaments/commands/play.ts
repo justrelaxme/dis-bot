@@ -29,6 +29,7 @@ import {
 } from '../discord/onboarding.js';
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentEventsGateway } from '../discord/events.js';
+import { postMatchCards } from '../discord/match-card.js';
 import { isOrganizer, staffAlert, type StaffDeps } from '../discord/staff.js';
 import { syncTournament } from '../discord/sync.js';
 import { parseScore, type MatchScore } from '../score.js';
@@ -573,7 +574,7 @@ async function ensureMatchDrafts(deps: PlayDeps, guild: Guild, tournamentId: num
             `Твоя ссылка: ${base}?as=${token}`,
             '',
             '**Она личная — не пересылай её сопернику:** кто откроет ссылку, тот и ходит за твою команду.',
-            'На каждый ход минута. Не успел — бан пропускается, а пик берётся первым свободным, иначе драфт остановился бы навсегда.',
+            'Таймер пойдёт, когда обе стороны нажмут **На месте** — в ветке матча или на странице драфта. Дальше на каждый ход минута: не успел — бан пропускается, а пик берётся первым свободным.',
           ].join('\n'),
         )
         .catch(() => {
@@ -581,7 +582,9 @@ async function ensureMatchDrafts(deps: PlayDeps, guild: Guild, tournamentId: num
         });
     }
 
-    if (!match.threadId) continue;
+    // Обычно ссылку на драфт несёт карточка «матч готов», которая выкладывается следом. Здесь —
+    // только если карточка уже висит: драфт завёлся позже неё (справочник был недоступен).
+    if (!match.threadId || !match.announcedAt) continue;
     const thread = await guild.channels.fetch(match.threadId).catch(() => null);
     if (!thread?.isTextBased()) continue;
 
@@ -601,7 +604,12 @@ async function ensureMatchDrafts(deps: PlayDeps, guild: Guild, tournamentId: num
  * — по команде организатора и по расписанию, — иначе автоматический турнир однажды
  * окажется без комнат, потому что их создание дописали только в одном месте.
  */
-export async function createTournamentRooms(deps: PlayDeps, guild: Guild, tournamentId: number): Promise<void> {
+export async function createTournamentRooms(
+  deps: PlayDeps,
+  guild: Guild,
+  tournamentId: number,
+  logger: Logger,
+): Promise<void> {
   const tournament = await deps.tournaments.byId(tournamentId);
   const entrants = await deps.tournaments.activeEntrants(tournamentId);
 
@@ -618,7 +626,7 @@ export async function createTournamentRooms(deps: PlayDeps, guild: Guild, tourna
     if (channelId) await deps.tournaments.attachVoice(entrant.id, channelId);
   }
 
-  await advanceTournamentRooms(deps, guild, tournamentId);
+  await advanceTournamentRooms(deps, guild, tournamentId, logger);
 }
 
 /**
@@ -640,9 +648,12 @@ export async function advanceTournamentRooms(
   deps: PlayDeps,
   guild: Guild,
   tournamentId: number,
+  logger: Logger,
 ): Promise<void> {
   await ensureMatchThreads(deps, guild, tournamentId);
   await ensureMatchDrafts(deps, guild, tournamentId);
+  // Карточка — последней: в ней ссылка на драфт, а драфт заводится шагом выше.
+  await postMatchCards(deps, guild, tournamentId, logger);
 }
 
 /**

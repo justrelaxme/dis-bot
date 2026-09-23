@@ -450,6 +450,21 @@ export const tournamentMatches = pgTable(
     disputedAt: timestamp('disputed_at', { withTimezone: true }),
     /** Ветка матча: пускает обе команды пары, иначе соперники не договорятся о лобби. */
     threadId: text('thread_id'),
+    /**
+     * Когда в ветку ушла карточка «матч готов». Отметка ставится CAS-ом, и карточка уходит один
+     * раз, какой бы путь ни сделал матч играбельным.
+     */
+    announcedAt: timestamp('announced_at', { withTimezone: true }),
+    /** Сторона нажала «На месте». Обе — матч начался: стартует таймер драфта, закрываются прогнозы. */
+    presentAAt: timestamp('present_a_at', { withTimezone: true }),
+    presentBAt: timestamp('present_b_at', { withTimezone: true }),
+    liveAt: timestamp('live_at', { withTimezone: true }),
+    /** Когда о неявке позвали организатора — чтобы звать один раз, а не каждую минуту. */
+    escalatedAt: timestamp('escalated_at', { withTimezone: true }),
+    /** Когда сопернику напомнили, что результат скоро примется сам. */
+    confirmRemindedAt: timestamp('confirm_reminded_at', { withTimezone: true }),
+    /** Почему оспорили — со слов оспорившего. Организатору нужно знать это до того, как решать. */
+    disputeReason: text('dispute_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -475,7 +490,7 @@ export const tournamentMatchReports = pgTable('tournament_match_reports', {
   actorId: text('actor_id').notNull(),
   claimedWinnerId: integer('claimed_winner_id'),
   action: text('action')
-    .$type<'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm' | 'verified'>()
+    .$type<'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm' | 'verified' | 'replay'>()
     .notNull(),
   /** true — решение принял организатор, а не участник. */
   byOrganizer: boolean('by_organizer').notNull().default(false),
@@ -656,6 +671,13 @@ export const matchDrafts = pgTable(
     tokenB: text('token_b').notNull(),
     /** Докуда ждём текущий ход. Пустой дедлайн — драфт ещё не начали или уже закончили. */
     deadlineAt: timestamp('deadline_at', { withTimezone: true }),
+    /**
+     * Когда пошёл таймер. Раньше он шёл с момента создания драфта, и капитан, открывший личку
+     * на пять минут позже, находил свои баны пропущенными, а пики — сделанными за него. Теперь
+     * таймер стартует, когда обе стороны нажали «На месте»; до этого ходить можно, но никто не
+     * торопит и ничего не делает за игрока.
+     */
+    armedAt: timestamp('armed_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

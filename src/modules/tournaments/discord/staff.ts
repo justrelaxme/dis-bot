@@ -1,4 +1,4 @@
-import { PermissionFlagsBits, type Guild } from 'discord.js';
+import { PermissionFlagsBits, type ActionRowBuilder, type ButtonBuilder, type Guild } from 'discord.js';
 import type { Logger } from '../../../core/logger.js';
 import type { TournamentRow, TournamentSettingsRow } from '../schema.js';
 import type { TournamentSettingsService } from '../services/settings.js';
@@ -47,6 +47,11 @@ export interface StaffAlert {
   /** Одинаковые сигналы с этим ключом внутри окна уходят один раз. */
   dedupeKey?: string;
   dedupeMs?: number;
+  /**
+   * Кнопки решения — «техпобеда», «переиграть». Только в канале: в личке у кнопки нет сервера,
+   * и решать оттуда нечем, — поэтому там текст с командой.
+   */
+  components?: ActionRowBuilder<ButtonBuilder>[];
 }
 
 export type StaffDelivery = 'sent' | 'deduped' | 'nowhere';
@@ -72,7 +77,7 @@ export async function staffAlert(deps: StaffDeps, guild: Guild, alert: StaffAler
     const channel = await guild.channels.fetch(channelId).catch(() => null);
     if (!channel?.isSendable()) continue;
     const sent = await channel
-      .send({ content, allowedMentions })
+      .send({ content, allowedMentions, ...(alert.components ? { components: alert.components } : {}) })
       .then(() => true)
       .catch((error: unknown) => {
         deps.logger.warn({ err: error, channelId }, 'сигнал в штаб не отправился в канал');

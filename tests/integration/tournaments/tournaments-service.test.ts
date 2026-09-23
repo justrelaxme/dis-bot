@@ -3,7 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { EventBus } from '../../../src/core/events/bus.js';
 import { createLogger } from '../../../src/core/logger.js';
 import type { Config } from '../../../src/core/config.js';
-import { tournaments as tournamentsTable, type TournamentFormat } from '../../../src/modules/tournaments/schema.js';
+import {
+  tournamentMatches as tournamentMatchesTable,
+  tournaments as tournamentsTable,
+  type TournamentFormat,
+} from '../../../src/modules/tournaments/schema.js';
 import { createTournamentsService, type TournamentsService } from '../../../src/modules/tournaments/services/tournaments.js';
 import { withPostgres } from '../../helpers/postgres.js';
 
@@ -1033,5 +1037,111 @@ describe('события матча', () => {
     await service.cancel(tournamentId);
 
     expect(seen.filter((row) => row.event === 'tournament.cancelled')).toHaveLength(1);
+  });
+});
+
+/**
+ * Ход матча: «На месте», неявка, напоминание, переигровка. Всё держится на CAS-отметках —
+ * двойное нажатие и джоба, пришедшая дважды, не должны ни начинать матч дважды, ни звать
+ * организатора каждую минуту.
+ */
+describe('ход матча', () => {
+  async function readyMatch(bus?: EventBus) {
+    const started = await startTournament({ registered: 2, ...(bus ? { bus } : {}) });
+    const [match] = (await started.service.bracket(started.tournamentId)).matches;
+    return { ...started, match: match! };
+  }
+
+  it('обе стороны на месте — матч начался, и событие одно', async () => {
+    const bus = new EventBus(logger);
+    let live = 0;
+    bus.on('match.live', async () => {
+      live += 1;
+    });
+    const { service, match, users } = await readyMatch(bus);
+
+    const first = await service.markPresent(match.id, users[0]!);
+    expect(first).toMatchObject({ side: 'a', started: false, alreadyPresent: false });
+
+    const again = await service.markPresent(match.id, users[0]!);
+    expect(again.alreadyPresent).toBe(true);
+
+    const second = await service.markPresent(match.id, users[1]!);
+    expect(second).toMatchObject({ side: 'b', started: true });
+    expect(second.match.liveAt).not.toBeNull();
+    expect(live).toBe(1);
+  });
+
+  it('чужой отметиться не может', async () => {
+    const { service, match } = await readyMatch();
+
+    await expect(service.markPresent(match.id, '999999999999999999')).rejects.toThrow(/только игрок этого матча/);
+  });
+
+  it('по стороне — то же, что по игроку', async () => {
+    const { service, match } = await readyMatch();
+
+    await service.markSidePresent(match.id, 'b');
+    const result = await service.markSidePresent(match.id, 'a');
+
+    expect(result.started).toBe(true);
+  });
+
+  it('неявка: после срока в выборке, после сигнала — нет, после «подождать» — снова через срок', async () => {
+    const { service, match } = await readyMatch();
+    const announced = new Date(Date.now() - 11 * 60_000);
+    await pg.db.update(tournamentMatchesTable).set({ announcedAt: announced }).where(eq(tournamentMatchesTable.id, match.id));
+    const now = new Date();
+
+    expect((await service.noShowsDue(now, 10 * 60_000)).map((row) => row.id)).toContain(match.id);
+    expect(await service.markEscalated(match.id, now)).toBe(true);
+    expect(await service.markEscalated(match.id, now)).toBe(false);
+    expect((await service.noShowsDue(now, 10 * 60_000)).map((row) => row.id)).not.toContain(match.id);
+
+    await service.snoozeNoShow(match.id, 5 * 60_000, 10 * 60_000, now);
+    expect((await service.noShowsDue(new Date(now.getTime() + 4 * 60_000), 10 * 60_000)).map((row) => row.id)).not.toContain(match.id);
+    expect((await service.noShowsDue(new Date(now.getTime() + 6 * 60_000), 10 * 60_000)).map((row) => row.id)).toContain(match.id);
+  });
+
+  it('начавшийся матч неявкой не считается', async () => {
+    const { service, match } = await readyMatch();
+    await pg.db
+      .update(tournamentMatchesTable)
+      .set({ announcedAt: new Date(Date.now() - 30 * 60_000) })
+      .where(eq(tournamentMatchesTable.id, match.id));
+    await service.startMatch(match.id);
+
+    expect((await service.noShowsDue(new Date(), 10 * 60_000)).map((row) => row.id)).not.toContain(match.id);
+  });
+
+  it('напоминание сопернику — один раз', async () => {
+    const { service, match, users, entrantIds } = await readyMatch();
+    await service.report(match.id, users[0]!, entrantIds[0]!);
+    const later = new Date(Date.now() + 46 * 60_000);
+
+    expect((await service.confirmRemindersDue(later, 45 * 60_000)).map((row) => row.id)).toContain(match.id);
+    expect(await service.markConfirmReminded(match.id)).toBe(true);
+    expect((await service.confirmRemindersDue(later, 45 * 60_000)).map((row) => row.id)).not.toContain(match.id);
+  });
+
+  it('переигровка возвращает оспоренный матч к началу, без заявки и отметок', async () => {
+    const { service, match, users, entrantIds } = await readyMatch();
+    await service.markSidePresent(match.id, 'a');
+    await service.markSidePresent(match.id, 'b');
+    await service.report(match.id, users[0]!, entrantIds[0]!);
+    await service.dispute(match.id, users[1]!, 'сыграли не ту карту');
+    expect((await service.matchById(match.id)).disputeReason).toBe('сыграли не ту карту');
+
+    const replayed = await service.replay(match.id, 'organizer');
+
+    expect(replayed).toMatchObject({
+      state: 'ready',
+      reportedWinnerId: null,
+      presentAAt: null,
+      presentBAt: null,
+      liveAt: null,
+      disputeReason: null,
+    });
+    await expect(service.replay(match.id, 'organizer')).rejects.toThrow(/только оспоренный/);
   });
 });

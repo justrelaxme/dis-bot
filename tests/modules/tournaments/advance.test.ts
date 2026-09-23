@@ -16,6 +16,7 @@ import { advanceTournamentRooms } from '../../../src/modules/tournaments/command
  */
 
 const guild = {} as never;
+const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never;
 
 function depsWith(options: {
   needThread?: number[];
@@ -47,6 +48,10 @@ function depsWith(options: {
     bracket: vi.fn(async () => ({ entrants: [{ id: 1, displayName: 'А' }, { id: 2, displayName: 'Б' }] })),
     membersOf: vi.fn(async () => ['user-1']),
     attachThread: vi.fn(async () => options.attachWins ?? true),
+    // Карточки «матч готов» в этом тесте не проверяются — их шаг проверяет свой тест.
+    matchesNeedingCard: vi.fn(async () => []),
+    matchesWaitingToStart: vi.fn(async () => []),
+    startMatch: vi.fn(async () => true),
   };
 
   return { deps: { tournaments, channels, drafts } as never, channels, drafts, tournaments };
@@ -57,7 +62,7 @@ describe('матч стал играбельным', () => {
   it('заводит и ветку, и драфт', async () => {
     const { deps, channels, drafts } = depsWith({ needThread: [10], needDraft: [10] });
 
-    await advanceTournamentRooms(deps, guild, 7);
+    await advanceTournamentRooms(deps, guild, 7, logger);
 
     expect(channels.createMatchThread).toHaveBeenCalledTimes(1);
     expect(drafts.ensureForMatch).toHaveBeenCalledTimes(1);
@@ -70,7 +75,7 @@ describe('матч стал играбельным', () => {
   it('заводит драфт даже там, где ветка уже есть', async () => {
     const { deps, channels, drafts } = depsWith({ needThread: [], needDraft: [10, 11] });
 
-    await advanceTournamentRooms(deps, guild, 7);
+    await advanceTournamentRooms(deps, guild, 7, logger);
 
     expect(channels.createMatchThread).not.toHaveBeenCalled();
     expect(drafts.ensureForMatch).toHaveBeenCalledTimes(2);
@@ -79,7 +84,7 @@ describe('матч стал играбельным', () => {
   it('без играбельных матчей не делает ничего', async () => {
     const { deps, channels, drafts } = depsWith({ needThread: [], needDraft: [] });
 
-    await advanceTournamentRooms(deps, guild, 7);
+    await advanceTournamentRooms(deps, guild, 7, logger);
 
     expect(channels.createMatchThread).not.toHaveBeenCalled();
     expect(drafts.ensureForMatch).not.toHaveBeenCalled();
@@ -92,7 +97,7 @@ describe('матч стал играбельным', () => {
   it('без канала для веток драфт всё равно заводится', async () => {
     const { deps, channels, drafts } = depsWith({ needThread: [10], needDraft: [10], matchParentId: null });
 
-    await advanceTournamentRooms(deps, guild, 7);
+    await advanceTournamentRooms(deps, guild, 7, logger);
 
     expect(channels.createMatchThread).not.toHaveBeenCalled();
     expect(drafts.ensureForMatch).toHaveBeenCalledTimes(1);
@@ -105,7 +110,7 @@ describe('матч стал играбельным', () => {
   it('ветку, которую опередили, удаляет, а не оставляет второй', async () => {
     const { deps, channels } = depsWith({ needThread: [10], attachWins: false });
 
-    await advanceTournamentRooms(deps, guild, 7);
+    await advanceTournamentRooms(deps, guild, 7, logger);
 
     expect(channels.createMatchThread).toHaveBeenCalledTimes(1);
     expect(channels.deleteThread).toHaveBeenCalledWith(guild, 'thread-1');
@@ -114,7 +119,7 @@ describe('матч стал играбельным', () => {
   it('свою записанную ветку не трогает', async () => {
     const { deps, channels } = depsWith({ needThread: [10], attachWins: true });
 
-    await advanceTournamentRooms(deps, guild, 7);
+    await advanceTournamentRooms(deps, guild, 7, logger);
 
     expect(channels.deleteThread).not.toHaveBeenCalled();
   });

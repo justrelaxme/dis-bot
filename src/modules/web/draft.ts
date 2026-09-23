@@ -9,6 +9,7 @@ import { draftProgress } from '../tournaments/draft/engine.js';
 import type { DraftGroup, DraftOption } from '../tournaments/draft/pools.js';
 import { tournamentEntrants, tournamentMatches, tournaments, type TournamentGame } from '../tournaments/schema.js';
 import { createDraftsService } from '../tournaments/services/drafts.js';
+import { createTournamentsService } from '../tournaments/services/tournaments.js';
 import { page, renderNotFound } from './render.js';
 import { DRAFT_STYLE, draftShell } from './draft-page.js';
 
@@ -58,6 +59,13 @@ interface DraftPayload {
   done: boolean;
   deadlineAt: string | null;
   /**
+   * Идёт ли таймер. Пока обе стороны не нажали «На месте», ходить можно, но никто не
+   * торопит и ничего не делает за игрока.
+   */
+  armed: boolean;
+  /** Кто уже на месте. */
+  present: { a: boolean; b: boolean };
+  /**
    * Потолок стоимости состава в очках — у турниров Genshin. `null` означает «без потолка»:
    * играют чем есть. Берётся у турнира, а не у формата: формат могут поправить назавтра, а
    * матч должен остаться сыгранным по тем правилам, по которым его играли.
@@ -88,6 +96,12 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
   const drafts = createDraftsService({
     db,
     cache: deps.cache,
+    logger: deps.logger,
+    ...(deps.bus ? { bus: deps.bus } : {}),
+  });
+  // Только для «На месте»: отметка присутствия живёт у матча, а не у драфта.
+  const matchService = createTournamentsService({
+    db,
     logger: deps.logger,
     ...(deps.bus ? { bus: deps.bus } : {}),
   });
@@ -133,6 +147,8 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
         : null,
       done: state.view.done,
       deadlineAt: state.view.done ? null : (draft.deadlineAt?.toISOString() ?? null),
+      armed: draft.armedAt !== null,
+      present: { a: match.presentAAt !== null, b: match.presentBAt !== null },
       costCap: tournament?.costCap ?? null,
       ...(options.withPool
         ? {
@@ -243,4 +259,39 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
     const state = await payload(matchId, request.body?.token, { withPool: false });
     return reply.header('cache-control', 'no-store').send(state);
   });
+
+  /**
+   * «На месте» со страницы драфта — то же, что кнопка в ветке матча. Капитан, открывший
+   * драфт по ссылке из лички, не должен идти в Discord ради одной кнопки.
+   */
+  server.post<{ Params: { matchId: string }; Body: { token?: string } }>(
+    '/api/draft/:matchId/ready',
+    async (request, reply) => {
+      const matchId = parseId(request.params.matchId);
+      if (matchId === null) return reply.code(404).send({ error: 'Матч не найден.' });
+
+      const draft = await drafts.byMatch(matchId);
+      if (!draft) return reply.code(404).send({ error: 'Драфт не найден.' });
+
+      const side = drafts.sideOfToken(draft, request.body?.token);
+      if (!side) return reply.code(403).send({ error: 'Эта ссылка не даёт отмечаться — она для просмотра.' });
+
+      try {
+        const result = await matchService.markSidePresent(matchId, side);
+        // Таймер запускает слушатель match.live в модуле турниров. Здесь — на случай, если
+        // слушателя нет: повторный запуск ничего не перезапускает.
+        if (result.started) await drafts.arm(matchId);
+      } catch (error) {
+        const described = describeForUser(error);
+        if (described.incidentId) {
+          deps.logger.error({ err: error, incidentId: described.incidentId }, 'отметка «на месте» не записалась');
+          return reply.code(500).send({ error: described.text });
+        }
+        return reply.code(409).send({ error: described.text });
+      }
+
+      const state = await payload(matchId, request.body?.token, { withPool: false });
+      return reply.header('cache-control', 'no-store').send(state);
+    },
+  );
 }

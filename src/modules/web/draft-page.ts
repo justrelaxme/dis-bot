@@ -222,6 +222,9 @@ function inlineState(state: unknown): string {
 
 export interface DraftShellState {
   matchId: number;
+  /** Идёт ли таймер: до «На месте» обеих сторон его нет. Необязательно для старых записей. */
+  armed?: boolean;
+  present?: { a: boolean; b: boolean };
   /** Турнир матча: страница слушает его живые обновления вместо частого опроса. */
   tournamentId?: number;
   tournamentName: string;
@@ -403,6 +406,7 @@ ${cap === null ? '<span class="cap">без потолка</span>' : `<span class
   </div>
   <div class="clash">
     <span class="turn" id="turn">загрузка…<i class="fuse" id="fuse"></i></span>
+    <button class="skip ready" id="ready" hidden>На месте</button>
     <button class="skip" id="skip" hidden>Пропустить бан</button>
   </div>
   <div class="team tb" id="teamB">
@@ -555,6 +559,13 @@ ${sections}
     if (state.done) {
       turn.className = 'turn';
       turn.innerHTML = 'Драфт закончен' + fuse;
+    } else if (state.armed === false) {
+      // Таймера ещё нет: он пойдёт, когда обе стороны нажмут «На месте». Ходить уже можно.
+      var waiting = [];
+      if (state.present && !state.present.a) waiting.push(esc(teamName('a')));
+      if (state.present && !state.present.b) waiting.push(esc(teamName('b')));
+      turn.className = 'turn' + (myTurn() ? ' mine' : '');
+      turn.innerHTML = (waiting.length > 0 ? 'Ждём «На месте»: ' + waiting.join(', ') : 'Сейчас начнём') + fuse;
     } else if (!state.current) {
       turn.className = 'turn';
       turn.innerHTML = 'Ожидание' + fuse;
@@ -573,6 +584,12 @@ ${sections}
     var canSkip = myTurn() && state.current.kind === 'ban';
     skip.hidden = !canSkip;
     skip.disabled = !canSkip;
+
+    // «На месте» — только своей стороне, пока таймер не пошёл и она ещё не отметилась.
+    var ready = el('ready');
+    var canReady = !!state.you && !state.done && state.armed === false && state.present && !state.present[state.you];
+    ready.hidden = !canReady;
+    ready.disabled = !canReady;
   }
 
   function renderPhases() {
@@ -693,6 +710,22 @@ ${sections}
   });
 
   el('skip').addEventListener('click', function () { choose(null); });
+
+  el('ready').addEventListener('click', async function () {
+    say('');
+    try {
+      var response = await fetch('/api/draft/' + state.matchId + '/ready', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: token }),
+      });
+      var body = await response.json();
+      if (!response.ok) { say(body.error || 'Отметка не принята.'); return; }
+      apply(body);
+    } catch (error) {
+      say('Не дошло до сервера — попробуй ещё раз.');
+    }
+  });
 
   Array.prototype.forEach.call(document.querySelectorAll('[data-filter]'), function (input) {
     input.addEventListener('input', function () {

@@ -60,7 +60,7 @@ async function syncOnce(deps: SyncDeps, guild: Guild, tournamentId: number, logg
   if (tournament.state === 'running') {
     // Голосовые командам, ветки и драфты матчам. Всё идемпотентно: создаётся только то,
     // чего ещё нет, — поэтому этот же прогон и достраивает комнаты, если старт оборвался.
-    await createTournamentRooms(deps, guild, tournamentId);
+    await createTournamentRooms(deps, guild, tournamentId, logger);
     return 'advanced';
   }
 

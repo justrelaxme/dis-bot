@@ -179,7 +179,9 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
    * работает как раньше. Сбой публикации переход не отменяет: он уже случился, а витрина
    * догонит его по следующему событию или по перезагрузке.
    */
-  async function emitMatch<K extends 'match.ready' | 'match.reported' | 'match.disputed' | 'match.confirmed'>(
+  async function emitMatch<
+    K extends 'match.ready' | 'match.reported' | 'match.disputed' | 'match.confirmed' | 'match.live',
+  >(
     event: K,
     tournamentId: number,
     payload: Omit<BotEvents[K], 'guildId' | 'tournamentId'>,
@@ -320,7 +322,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
   async function logAction(
     matchId: number,
     actorId: string,
-    action: 'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm' | 'verified',
+    action: 'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm' | 'verified' | 'replay',
     claimedWinnerId: number | null,
     byOrganizer: boolean,
   ): Promise<void> {
@@ -1198,6 +1200,210 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
       return rows.map((row) => row.threadId).filter((id): id is string => id !== null);
     },
 
+    /**
+     * Матчи, которым пора выложить карточку «матч готов»: играбельны, ветка есть, карточки ещё
+     * не было. Выборка по отсутствию отметки — повторный прогон добирает то, что не вышло.
+     */
+    async matchesNeedingCard(tournamentId: number): Promise<MatchRow[]> {
+      return db
+        .select()
+        .from(tournamentMatches)
+        .where(
+          and(
+            eq(tournamentMatches.tournamentId, tournamentId),
+            eq(tournamentMatches.state, 'ready'),
+            isNull(tournamentMatches.announcedAt),
+            sql`${tournamentMatches.threadId} is not null`,
+          ),
+        )
+        .orderBy(asc(tournamentMatches.round), asc(tournamentMatches.slot));
+    },
+
+    /** Играбельные матчи, которые ещё не начались: у турнира без веток их начинают сразу. */
+    async matchesWaitingToStart(tournamentId: number): Promise<MatchRow[]> {
+      return db
+        .select()
+        .from(tournamentMatches)
+        .where(
+          and(
+            eq(tournamentMatches.tournamentId, tournamentId),
+            eq(tournamentMatches.state, 'ready'),
+            isNull(tournamentMatches.liveAt),
+          ),
+        );
+    },
+
+    /** Занять отметку о карточке. `false` — её уже выложил другой путь. */
+    async markAnnounced(matchId: number): Promise<boolean> {
+      const [row] = await db
+        .update(tournamentMatches)
+        .set({ announcedAt: new Date() })
+        .where(and(eq(tournamentMatches.id, matchId), isNull(tournamentMatches.announcedAt)))
+        .returning({ id: tournamentMatches.id });
+      return row !== undefined;
+    },
+
+    /**
+     * «На месте»: сторона готова играть. Нажимать может любой игрок стороны — команда в сборе,
+     * значит можно начинать, и ждать именно капитана незачем.
+     *
+     * Когда на месте обе стороны, матч начинается: ставится `liveAt` и публикуется
+     * `match.live` — на нём стартует таймер драфта и закрывается приём прогнозов. Отметки
+     * ставятся CAS-ом, и двойное нажатие не начинает матч дважды.
+     */
+    async markPresent(
+      matchId: number,
+      userId: string,
+      now: Date = new Date(),
+    ): Promise<{ match: MatchRow; side: 'a' | 'b'; alreadyPresent: boolean; started: boolean }> {
+      const match = await this.matchById(matchId);
+      if (match.state !== 'ready') throw new UserError('Этот матч уже не ждёт начала.');
+
+      const entrant = await entrantOfUser(match.tournamentId, userId);
+      const side = entrant?.id === match.entrantAId ? 'a' : entrant?.id === match.entrantBId ? 'b' : null;
+      if (!side) throw new UserError('Отметиться может только игрок этого матча.');
+      return this.markSidePresent(matchId, side, now);
+    },
+
+    /**
+     * То же «На месте», но по стороне, а не по человеку: страница драфта знает сторону по
+     * токену ссылки капитана, а кто именно нажал — нет.
+     */
+    async markSidePresent(
+      matchId: number,
+      side: 'a' | 'b',
+      now: Date = new Date(),
+    ): Promise<{ match: MatchRow; side: 'a' | 'b'; alreadyPresent: boolean; started: boolean }> {
+      const match = await this.matchById(matchId);
+      if (match.state !== 'ready') throw new UserError('Этот матч уже не ждёт начала.');
+
+      const column = side === 'a' ? tournamentMatches.presentAAt : tournamentMatches.presentBAt;
+      const [marked] = await db
+        .update(tournamentMatches)
+        .set(side === 'a' ? { presentAAt: now } : { presentBAt: now })
+        .where(and(eq(tournamentMatches.id, matchId), isNull(column)))
+        .returning();
+
+      const current = marked ?? (await this.matchById(matchId));
+      const started =
+        current.presentAAt !== null && current.presentBAt !== null ? await this.startMatch(matchId, now) : false;
+      return { match: await this.matchById(matchId), side, alreadyPresent: !marked, started };
+    },
+
+    /**
+     * Матч начался: обе стороны на месте — или организатор решил не ждать. `true` только у того
+     * вызова, который действительно начал.
+     */
+    async startMatch(matchId: number, now: Date = new Date()): Promise<boolean> {
+      const [row] = await db
+        .update(tournamentMatches)
+        .set({ liveAt: now, updatedAt: now })
+        .where(
+          and(eq(tournamentMatches.id, matchId), eq(tournamentMatches.state, 'ready'), isNull(tournamentMatches.liveAt)),
+        )
+        .returning();
+      if (!row) return false;
+      await emitMatch('match.live', row.tournamentId, { matchId });
+      return true;
+    },
+
+    /**
+     * Матчи, где карточка висит дольше `afterMs`, а на месте не обе стороны, и организатора
+     * ещё не звали. Неявка — единственное, что останавливает вечер без чьей-либо вины в базе:
+     * матч просто висит, и никто не знает, ждать ли.
+     */
+    async noShowsDue(now: Date, afterMs: number): Promise<MatchRow[]> {
+      return db
+        .select()
+        .from(tournamentMatches)
+        .where(
+          and(
+            eq(tournamentMatches.state, 'ready'),
+            isNull(tournamentMatches.liveAt),
+            isNull(tournamentMatches.escalatedAt),
+            lt(tournamentMatches.announcedAt, new Date(now.getTime() - afterMs)),
+          ),
+        )
+        .orderBy(asc(tournamentMatches.announcedAt));
+    },
+
+    async markEscalated(matchId: number, now: Date = new Date()): Promise<boolean> {
+      const [row] = await db
+        .update(tournamentMatches)
+        .set({ escalatedAt: now })
+        .where(and(eq(tournamentMatches.id, matchId), isNull(tournamentMatches.escalatedAt)))
+        .returning({ id: tournamentMatches.id });
+      return row !== undefined;
+    },
+
+    /**
+     * «Подождать ещё»: организатор решил дать время. Отметка о сигнале снимается, а отсчёт
+     * сдвигается так, чтобы до следующего сигнала прошло ровно `waitMs`.
+     */
+    async snoozeNoShow(matchId: number, waitMs: number, afterMs: number, now: Date = new Date()): Promise<void> {
+      await db
+        .update(tournamentMatches)
+        .set({ escalatedAt: null, announcedAt: new Date(now.getTime() + waitMs - afterMs) })
+        .where(and(eq(tournamentMatches.id, matchId), eq(tournamentMatches.state, 'ready')));
+    },
+
+    /** Заявленные давно и ещё без напоминания сопернику. */
+    async confirmRemindersDue(now: Date, afterMs: number): Promise<MatchRow[]> {
+      return db
+        .select()
+        .from(tournamentMatches)
+        .where(
+          and(
+            eq(tournamentMatches.state, 'reported'),
+            isNull(tournamentMatches.confirmRemindedAt),
+            lt(tournamentMatches.reportedAt, new Date(now.getTime() - afterMs)),
+          ),
+        );
+    },
+
+    async markConfirmReminded(matchId: number): Promise<boolean> {
+      const [row] = await db
+        .update(tournamentMatches)
+        .set({ confirmRemindedAt: new Date() })
+        .where(and(eq(tournamentMatches.id, matchId), isNull(tournamentMatches.confirmRemindedAt)))
+        .returning({ id: tournamentMatches.id });
+      return row !== undefined;
+    },
+
+    /**
+     * «Переиграть»: организатор решил, что спор не решить словами. Матч возвращается в
+     * «готов» с чистого листа — без заявки и без отметок присутствия: переигровка начинается
+     * так же, как игра.
+     */
+    async replay(matchId: number, actorId: string): Promise<MatchRow> {
+      const now = new Date();
+      const [row] = await db
+        .update(tournamentMatches)
+        .set({
+          state: 'ready',
+          reportedBy: null,
+          reportedWinnerId: null,
+          reportedScoreA: null,
+          reportedScoreB: null,
+          reportedAt: null,
+          disputedAt: null,
+          disputeReason: null,
+          confirmRemindedAt: null,
+          presentAAt: null,
+          presentBAt: null,
+          liveAt: null,
+          escalatedAt: null,
+          announcedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(tournamentMatches.id, matchId), eq(tournamentMatches.state, 'disputed')))
+        .returning();
+      if (!row) throw new UserError('Переиграть можно только оспоренный матч, а этот уже закрыт или не оспорен.');
+      await logAction(matchId, actorId, 'replay', null, true);
+      await emitMatch('match.ready', row.tournamentId, { matchId });
+      return row;
+    },
+
     /** Ветки закрытых матчей — чтобы архивировать их при уборке. */
     async closedThreads(tournamentId: number): Promise<string[]> {
       const rows = await db
@@ -1335,7 +1541,12 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
       return this.settle(matchId, reportedWinner, actorId, 'confirm', false);
     },
 
-    async dispute(matchId: number, actorId: string): Promise<MatchRow> {
+    async dispute(
+      matchId: number,
+      actorId: string,
+      /** Почему оспаривают — со слов оспорившего; организатор читает это до того, как решать. */
+      reason?: string,
+    ): Promise<MatchRow> {
       const match = await this.matchById(matchId);
       if (match.state !== 'reported') throw new UserError('Этот матч не ждёт подтверждения.');
 
@@ -1347,7 +1558,12 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
       const now = new Date();
       const [row] = await db
         .update(tournamentMatches)
-        .set({ state: 'disputed', disputedAt: now, updatedAt: now })
+        .set({
+          state: 'disputed',
+          disputedAt: now,
+          updatedAt: now,
+          ...(reason?.trim() ? { disputeReason: reason.trim().slice(0, 500) } : {}),
+        })
         .where(and(eq(tournamentMatches.id, matchId), eq(tournamentMatches.state, 'reported')))
         .returning();
       if (!row) throw new UserError('Матч уже закрыт.');

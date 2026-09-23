@@ -568,3 +568,67 @@ describe('какие фазы получает драфт', () => {
     expect(second?.draft.id).toBe(first?.draft.id);
   });
 });
+
+/**
+ * Таймер драфта. Раньше он шёл с момента создания, и капитан, открывший личку позже, находил
+ * свои баны пропущенными. Теперь таймер идёт с «На месте» обеих сторон — и главное, что
+ * проверяется здесь: незапущенный драфт джоба просрочек не трогает вовсе.
+ */
+describe('таймер драфта', () => {
+  it('новый драфт без таймера, и джоба просрочек его не видит', async () => {
+    const { tournament, match } = await makeMatch({ game: 'valorant', solo: false });
+    const { service, cache } = drafts();
+
+    const created = await service.ensureForMatch(tournament, match);
+    const due = await service.overdue(new Date(Date.now() + 10 * 60_000), 100);
+    await cache.close();
+
+    expect(created?.draft.deadlineAt).toBeNull();
+    expect(created?.draft.armedAt).toBeNull();
+    expect(due.map((row) => row.id)).not.toContain(created?.draft.id);
+  });
+
+  it('запуск ставит таймер, повторный запуск его не перезапускает', async () => {
+    const { tournament, match } = await makeMatch({ game: 'valorant', solo: false });
+    const { service, cache } = drafts();
+    await service.ensureForMatch(tournament, match);
+
+    const now = new Date();
+    expect(await service.arm(match.id, now)).toBe(true);
+    expect(await service.arm(match.id, new Date(now.getTime() + 30_000))).toBe(false);
+    const armed = await service.byMatch(match.id);
+    await cache.close();
+
+    expect(armed?.armedAt?.getTime()).toBe(now.getTime());
+    expect(armed?.deadlineAt?.getTime()).toBe(now.getTime() + 60_000);
+  });
+
+  it('запущенный и просроченный — джоба видит', async () => {
+    const { tournament, match } = await makeMatch({ game: 'valorant', solo: false });
+    const { service, cache } = drafts();
+    const created = await service.ensureForMatch(tournament, match);
+    await service.arm(match.id, new Date(Date.now() - 5 * 60_000));
+
+    const due = await service.overdue(new Date(), 100);
+    await cache.close();
+
+    expect(due.map((row) => row.id)).toContain(created?.draft.id);
+  });
+
+  /** До «На месте» ходить можно, но никто не торопит: ход не заводит таймер сам. */
+  it('ход до запуска таймер не заводит', async () => {
+    const { tournament, match } = await makeMatch({ game: 'valorant', solo: false });
+    const { service, cache } = drafts();
+    const created = await service.ensureForMatch(tournament, match);
+    const draft = created!.draft;
+    const state = await service.state(draft);
+    const first = state.view.current!;
+    const option = draft.pool.find((candidate) => candidate.group === (first.group ?? draft.subject))!;
+
+    await service.choose(draft.id, first.side, first.kind === 'ban' ? option.id : option.id, null);
+    const after = await service.byMatch(match.id);
+    await cache.close();
+
+    expect(after?.deadlineAt).toBeNull();
+  });
+});

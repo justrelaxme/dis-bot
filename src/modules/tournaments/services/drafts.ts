@@ -575,7 +575,8 @@ export function createDraftsService(deps: {
           sequence,
           tokenA: randomBytes(16).toString('hex'),
           tokenB: randomBytes(16).toString('hex'),
-          deadlineAt: new Date(Date.now() + STEP_TIMEOUT_MS),
+          // Таймера пока нет: он пойдёт, когда обе стороны нажмут «На месте» (arm).
+          deadlineAt: null,
         })
         .onConflictDoNothing()
         .returning();
@@ -669,7 +670,9 @@ export function createDraftsService(deps: {
       const after = await stateOf(draft);
       await completeIfDone(draft, after.view);
 
-      if (!after.view.done) {
+      // Таймер переводится на следующий ход, только если он вообще идёт: до «На месте» ходить
+      // можно, но никто не торопит.
+      if (!after.view.done && draft.armedAt) {
         await db
           .update(matchDrafts)
           .set({ deadlineAt: new Date(Date.now() + STEP_TIMEOUT_MS) })
@@ -680,7 +683,25 @@ export function createDraftsService(deps: {
       return stateOf((await this.byId(draftId)) ?? draft);
     },
 
-    /** Драфты, где время хода вышло. */
+    /**
+     * Запустить таймер драфта: обе стороны на месте. Идемпотентно — повторный вызов таймер не
+     * перезапускает. `false` — драфта нет, он уже закончен или уже запущен.
+     */
+    async arm(matchId: number, now: Date = new Date()): Promise<boolean> {
+      const [armed] = await db
+        .update(matchDrafts)
+        .set({ armedAt: now, deadlineAt: new Date(now.getTime() + STEP_TIMEOUT_MS) })
+        .where(and(eq(matchDrafts.matchId, matchId), isNull(matchDrafts.armedAt), isNull(matchDrafts.completedAt)))
+        .returning();
+      if (!armed) return false;
+      await announce(armed, false);
+      return true;
+    },
+
+    /**
+     * Драфты, где время хода вышло. Только запущенные: у незапущенного таймера нет вовсе, и
+     * без этого условия каждый новый драфт доигрывался бы за капитанов сразу после создания.
+     */
     async overdue(now: Date, limit: number): Promise<MatchDraftRow[]> {
       return db
         .select()
@@ -688,6 +709,7 @@ export function createDraftsService(deps: {
         .where(
           and(
             isNull(matchDrafts.completedAt),
+            sql`${matchDrafts.armedAt} is not null`,
             or(isNull(matchDrafts.deadlineAt), lt(matchDrafts.deadlineAt, now)),
           ),
         )

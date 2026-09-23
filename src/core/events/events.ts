@@ -64,6 +64,11 @@ export interface BotEvents {
   'match.ready': { guildId: string; tournamentId: number; matchId: number };
   'match.reported': { guildId: string; tournamentId: number; matchId: number; winnerEntrantId: number };
   'match.disputed': { guildId: string; tournamentId: number; matchId: number };
+  /**
+   * Обе стороны нажали «На месте» (или организатор запустил матч сам). С этого момента идёт
+   * таймер драфта и закрыт приём прогнозов: видя пики, угадывать уже нечестно.
+   */
+  'match.live': { guildId: string; tournamentId: number; matchId: number };
   'match.confirmed': {
     guildId: string;
     tournamentId: number;
