@@ -8,6 +8,7 @@ import { rankScore } from '../identity/ranks/compare.js';
 import type { ProviderId, RankScale, RankSource } from '../identity/schema.js';
 import { TOURNAMENT_GAMES } from '../tournaments/games.js';
 import {
+  matchDrafts,
   tournamentEntrants,
   tournamentMatches,
   tournaments,
@@ -170,7 +171,7 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
       const [tournament] = await db.select().from(tournaments).where(eq(tournaments.id, id));
       if (!tournament) return '';
 
-      const [entrants, matches] = await Promise.all([
+      const [entrants, matches, drafts] = await Promise.all([
         db
           .select()
           .from(tournamentEntrants)
@@ -181,13 +182,20 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
           .from(tournamentMatches)
           .where(eq(tournamentMatches.tournamentId, id))
           .orderBy(tournamentMatches.round, tournamentMatches.slot),
+        db.select({ matchId: matchDrafts.matchId }).from(matchDrafts).where(eq(matchDrafts.tournamentId, id)),
       ]);
 
       // Дисциплина турнира задаёт акцент и полосу арта: страница выглядит той игрой, о
       // которой она.
-      return page(tournament.name, renderBracket({ tournament, entrants, matches }), {
-        game: tournament.game,
-      });
+      return page(
+        tournament.name,
+        renderBracket({ tournament, entrants, matches, drafts: new Set(drafts.map((row) => row.matchId)) }),
+        {
+          game: tournament.game,
+          // Слушать имеет смысл, пока турнир не закрыт: у закрытого меняться нечему.
+          ...(tournament.state === 'registration' || tournament.state === 'running' ? { live: tournament.id } : {}),
+        },
+      );
     });
 
     if (html === '') {

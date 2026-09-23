@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import type { Cache } from '../../../core/cache.js';
+import type { EventBus } from '../../../core/events/bus.js';
 import type { Database } from '../../../core/db/client.js';
 import { UserError } from '../../../core/errors.js';
 import type { FetchClient } from '../../../core/http/fetch-client.js';
@@ -30,6 +31,7 @@ import {
   draftChoices,
   matchDrafts,
   tournamentMatches,
+  tournaments,
   type DraftChoiceRow,
   type MatchDraftRow,
   type MatchRow,
@@ -186,8 +188,33 @@ export function createDraftsService(deps: {
     tournamentId: number,
     entrantId: number,
   ) => Promise<{ characters: DeclaredCharacter[]; immune: string[] } | null>;
+  /**
+   * Шина: о каждом ходе и о созданном драфте. Витрина по ней перечитывает полотно сразу, а не
+   * по опросу раз в две секунды. Необязательна — без неё драфт идёт как раньше.
+   */
+  bus?: EventBus;
 }) {
   const { db, cache, logger } = deps;
+
+  /** Сообщить о драфте. Сбой публикации ход не отменяет: он уже в базе. */
+  async function announce(draft: MatchDraftRow, done: boolean): Promise<void> {
+    if (!deps.bus) return;
+    try {
+      const [row] = await db
+        .select({ guildId: tournaments.guildId })
+        .from(tournaments)
+        .where(eq(tournaments.id, draft.tournamentId));
+      if (!row) return;
+      await deps.bus.emit('draft.changed', {
+        guildId: row.guildId,
+        tournamentId: draft.tournamentId,
+        matchId: draft.matchId,
+        done,
+      });
+    } catch (error) {
+      logger.warn({ err: error, draftId: draft.id }, 'событие драфта не опубликовано');
+    }
+  }
 
   /**
    * Справочник в кэше на сутки. Отказ здесь не ошибка, а отсутствие фазы драфта: матч
@@ -552,7 +579,10 @@ export function createDraftsService(deps: {
         })
         .onConflictDoNothing()
         .returning();
-      if (created) return { draft: created, created: true };
+      if (created) {
+        await announce(created, false);
+        return { draft: created, created: true };
+      }
 
       // Вставку занял конкурентный вызов — перечитываем. Признак «создан» при этом ложный:
       // ссылки капитанам разошлёт тот вызов, который действительно вставил строку.
@@ -646,6 +676,7 @@ export function createDraftsService(deps: {
           .where(eq(matchDrafts.id, draftId));
       }
 
+      await announce(draft, after.view.done);
       return stateOf((await this.byId(draftId)) ?? draft);
     },
 

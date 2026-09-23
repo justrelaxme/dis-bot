@@ -23,6 +23,7 @@ import { registerSteamCallback } from './modules/identity/http/steam-callback.js
 import { registerDraftRoutes } from './modules/web/draft.js';
 import { createHoyolabChronicle } from './modules/identity/providers/hoyolab.js';
 import { registerFormatRoutes } from './modules/web/formats.js';
+import { createLiveHub, registerLiveRoutes, wireLive } from './modules/web/live.js';
 import { registerRosterRoutes } from './modules/web/roster.js';
 import { registerWebRoutes } from './modules/web/routes.js';
 import { createProviderRegistry } from './modules/identity/providers/index.js';
@@ -231,7 +232,13 @@ registerWebRoutes(http, { db, cache, logger, guildId: config.DISCORD_GUILD_ID })
 
 // Драфт — единственная страница витрины, где что-то нажимают. Право действовать даёт
 // ссылка с токеном, которую бот присылает капитану в личку: входа на сайт нет и не будет.
-registerDraftRoutes(http, { db, cache, logger });
+registerDraftRoutes(http, { db, cache, logger, bus });
+
+// Живая витрина: сетка и драфт узнают об изменениях сразу, а не по F5. События приходят из
+// сервисов турниров и драфта через шину, хаб раздаёт их открытым страницам.
+const liveHub = createLiveHub();
+registerLiveRoutes(http, { hub: liveHub });
+wireLive({ bus, hub: liveHub, cache, logger });
 
 // Конструктор форматов турнира — вторая и последняя страница, где что-то меняют. Право
 // даёт та же ссылка с токеном: организатор получает её командой `/tournament formats`.
@@ -301,6 +308,9 @@ for (const module of modules) {
 }
 
 shutdown.onSignal(async () => {
+  // Открытые потоки витрины закрываем первыми: http.close ждёт, пока закончатся все ответы, а
+  // живой поток не заканчивается никогда — остановка простояла бы до таймаута.
+  liveHub.closeAll();
   await http.close();
 });
 shutdown.onSignal(async () => {

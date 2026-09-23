@@ -222,6 +222,8 @@ function inlineState(state: unknown): string {
 
 export interface DraftShellState {
   matchId: number;
+  /** Турнир матча: страница слушает его живые обновления вместо частого опроса. */
+  tournamentId?: number;
   tournamentName: string;
   teams: { a: string; b: string };
   you: 'a' | 'b' | null;
@@ -701,10 +703,31 @@ ${sections}
 
   render();
   setInterval(tick, 1000);
-  // Опрос продолжается и после конца драфта, но реже: страница остаётся протоколом, и
-  // зритель, открывший её позже, должен увидеть итог без перезагрузки.
-  setInterval(function () { if (!state.done) refresh(); }, 2000);
-  setInterval(function () { if (state.done) refresh(); }, 30000);
+
+  // Живые сигналы вместо опроса раз в две секунды: ход соперника приходит сразу, а сервер не
+  // отвечает каждому зрителю тридцать раз в минуту. Сигнал говорит только «матч изменился» —
+  // страница перечитывает себя тем же запросом, со своей стороной и своим токеном.
+  //
+  // Частый опрос остаётся запасным путём: пока поток не открыт или оборвался. Редкий — всегда:
+  // он страхует от сигнала, потерянного в момент переподключения.
+  var live = false;
+  if (state.tournamentId && 'EventSource' in window) {
+    var source = new EventSource('/api/live/t/' + state.tournamentId);
+    source.addEventListener('open', function () { if (live === false) refresh(); live = true; });
+    source.addEventListener('error', function () { live = false; });
+    source.addEventListener('change', function (event) {
+      try {
+        var data = JSON.parse(event.data);
+        if (!data.matchIds || data.matchIds.indexOf(state.matchId) !== -1) refresh();
+      } catch (error) {
+        refresh();
+      }
+    });
+  }
+  setInterval(function () { if (!state.done && !live) refresh(); }, 2000);
+  // И после конца драфта, но редко: страница остаётся протоколом, и зритель, открывший её
+  // позже, должен увидеть итог без перезагрузки.
+  setInterval(function () { refresh(); }, 30000);
 })();
 </script>`;
 }

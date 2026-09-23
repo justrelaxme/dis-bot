@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Cache } from '../../core/cache.js';
 import type { Database } from '../../core/db/client.js';
 import { describeForUser } from '../../core/errors.js';
+import type { EventBus } from '../../core/events/bus.js';
 import type { Logger } from '../../core/logger.js';
 import { draftProgress } from '../tournaments/draft/engine.js';
 import type { DraftGroup, DraftOption } from '../tournaments/draft/pools.js';
@@ -25,6 +26,8 @@ export interface DraftRoutesDeps {
   db: Database;
   cache: Cache;
   logger: Logger;
+  /** Шина: ходы из браузера публикуются в ней так же, как ходы по таймеру. */
+  bus?: EventBus;
 }
 
 interface DraftPhaseView {
@@ -42,6 +45,8 @@ interface DraftPhaseView {
 
 interface DraftPayload {
   matchId: number;
+  /** Турнир матча — на него страница подписывается за живыми обновлениями. */
+  tournamentId: number;
   tournamentName: string;
   game: TournamentGame;
   teams: { a: string; b: string };
@@ -78,7 +83,14 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
   const { db } = deps;
   // Сервис здесь только читает и применяет ходы: создаёт драфты бот, когда появляются
   // комнаты матчей, и справочники нужны только там.
-  const drafts = createDraftsService({ db, cache: deps.cache, logger: deps.logger });
+  // Шина обязательна для живой витрины: ход, сделанный в браузере, должен дойти до зрителей
+  // так же, как ход по таймеру, — иначе полотно у них обновлялось бы только опросом.
+  const drafts = createDraftsService({
+    db,
+    cache: deps.cache,
+    logger: deps.logger,
+    ...(deps.bus ? { bus: deps.bus } : {}),
+  });
 
   async function payload(
     matchId: number,
@@ -109,6 +121,7 @@ export function registerDraftRoutes(server: FastifyInstance, deps: DraftRoutesDe
 
     return {
       matchId,
+      tournamentId: draft.tournamentId,
       tournamentName: tournament?.name ?? 'Турнир',
       game: tournament?.game ?? 'valorant',
       teams: { a: nameOf(match.entrantAId), b: nameOf(match.entrantBId) },

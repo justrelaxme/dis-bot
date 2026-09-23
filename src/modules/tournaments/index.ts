@@ -146,6 +146,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
     db: deps.db,
     cache: deps.cache,
     logger: deps.logger,
+    bus: deps.bus,
     // Три справочника — три клиента: у каждого свой предохранитель, и недоступный OpenDota
     // не должен закрывать список агентов Valorant вместе с собой.
     ...(deps.fetchClientFor

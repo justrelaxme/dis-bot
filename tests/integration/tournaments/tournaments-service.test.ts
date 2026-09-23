@@ -950,3 +950,88 @@ describe('одновременный старт', () => {
     expect((await service.bracket(tournament.id)).matches).toHaveLength(3);
   });
 });
+
+/**
+ * События матча. Витрина и всё, что реагирует на ход вечера, слушают их — значит каждое
+ * должно приходить ровно один раз, после того как переход записан, каким бы путём он ни шёл.
+ */
+describe('события матча', () => {
+  function recorder() {
+    const bus = new EventBus(logger);
+    const seen: Array<{ event: string; matchId?: number; via?: string; finished?: boolean }> = [];
+    for (const event of ['match.ready', 'match.reported', 'match.disputed', 'match.confirmed', 'tournament.cancelled'] as const) {
+      bus.on(event, async (payload) => {
+        seen.push({
+          event,
+          ...('matchId' in payload ? { matchId: payload.matchId } : {}),
+          ...('via' in payload ? { via: payload.via, finished: payload.finished } : {}),
+        });
+      });
+    }
+    return { bus, seen };
+  }
+
+  it('на старте — «готов» для каждого матча первого круга', async () => {
+    const { bus, seen } = recorder();
+    const { service, tournamentId } = await startTournament({ registered: 4, bus });
+
+    const firstRound = (await service.bracket(tournamentId)).matches.filter((row) => row.round === 1);
+    expect(seen.filter((row) => row.event === 'match.ready').map((row) => row.matchId).sort()).toEqual(
+      firstRound.map((row) => row.id).sort(),
+    );
+  });
+
+  it('пропуск в сетке — «закрыт» с пометкой, что без игры', async () => {
+    const { bus, seen } = recorder();
+    await startTournament({ registered: 3, bus });
+
+    expect(seen.filter((row) => row.via === 'bye')).toHaveLength(1);
+  });
+
+  it('заявка, подтверждение и продвижение — по одному событию, повтор не дублирует', async () => {
+    const { bus, seen } = recorder();
+    const { service, tournamentId, users, entrantIds } = await startTournament({ registered: 2, bus });
+    const [final] = (await service.bracket(tournamentId)).matches;
+    seen.length = 0;
+
+    await service.report(final!.id, users[0]!, entrantIds[0]!);
+    await expect(service.report(final!.id, users[0]!, entrantIds[0]!)).rejects.toThrow();
+    await service.confirm(final!.id, users[1]!);
+    await service.settle(final!.id, entrantIds[0]!, 'system', 'resolve', true);
+
+    expect(seen.map((row) => row.event)).toEqual(['match.reported', 'match.confirmed']);
+    expect(seen[1]).toMatchObject({ via: 'confirm', finished: true });
+  });
+
+  it('следующий матч объявляет себя готовым, когда в нём оба соперника', async () => {
+    const { bus, seen } = recorder();
+    const { service, tournamentId } = await startTournament({ registered: 4, bus });
+    seen.length = 0;
+
+    await playToEnd(service, tournamentId);
+
+    const final = (await service.bracket(tournamentId)).matches.find((row) => row.round === 2);
+    expect(seen.filter((row) => row.event === 'match.ready').map((row) => row.matchId)).toEqual([final!.id]);
+  });
+
+  it('спор — одно событие', async () => {
+    const { bus, seen } = recorder();
+    const { service, tournamentId, users, entrantIds } = await startTournament({ registered: 2, bus });
+    const [final] = (await service.bracket(tournamentId)).matches;
+    await service.report(final!.id, users[0]!, entrantIds[0]!);
+
+    await service.dispute(final!.id, users[1]!);
+
+    expect(seen.filter((row) => row.event === 'match.disputed')).toHaveLength(1);
+  });
+
+  it('отмена — одно событие, повторная отмена молчит', async () => {
+    const { bus, seen } = recorder();
+    const { service, tournamentId } = await startTournament({ registered: 4, bus });
+
+    await service.cancel(tournamentId);
+    await service.cancel(tournamentId);
+
+    expect(seen.filter((row) => row.event === 'tournament.cancelled')).toHaveLength(1);
+  });
+});

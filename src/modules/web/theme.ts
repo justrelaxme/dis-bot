@@ -31,7 +31,8 @@ import { FONT_FACE } from './font.js';
 
 /** Геометрия сетки. Считается на сервере, поэтому размеры нужны и коду, и стилям. */
 export const MATCH_H = 58;
-export const V_GAP = 12;
+/** Зазор между карточками — под номер матча над каждой. */
+export const V_GAP = 20;
 export const PITCH = MATCH_H + V_GAP;
 export const COL_W = 208;
 export const LINK_W = 44;
@@ -252,6 +253,16 @@ h3 { font-family:var(--display); margin:0 0 .3rem; font-size:1.25rem; letter-spa
 .m .s.won .sd { color:var(--accent); }
 .m .s.tbd { color:var(--dim); }
 .m .seed { color:var(--dim); font-size:.68rem; margin-right:.4rem; }
+/* Номер матча над карточкой: его вписывают в /match resolve, по нему ищут матч из Discord. */
+.col > .mno { position:absolute; left:.1rem; font-family:var(--mono); font-size:.62rem; line-height:1;
+  letter-spacing:.08em; color:var(--dim); white-space:nowrap; }
+.col > .mno a { color:var(--accent); text-decoration:none; }
+.col > .mno a:hover { text-decoration:underline; }
+/* Подменённая по живому сигналу страница не проигрывает появление заново: иначе каждое
+   закрытие матча вызывало бы вспышку всей сетки. */
+main.swapped .m, main.swapped .card, main.swapped h1, main.swapped h2, main.swapped .lede,
+main.swapped .eyebrow, main.swapped .pl { animation:none; opacity:1; transform:none; }
+main.swapped .links path { animation:none; stroke-dashoffset:0; }
 
 /* ── Таблицы: лидерборд и летопись ──────────────────────────────────────────────────── */
 .scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }

@@ -3,6 +3,7 @@ import type { Database } from '../../../core/db/client.js';
 import { auditLog } from '../../../core/db/schema/core.js';
 import { UserError } from '../../../core/errors.js';
 import type { EventBus } from '../../../core/events/bus.js';
+import type { BotEvents } from '../../../core/events/events.js';
 import type { Logger } from '../../../core/logger.js';
 import {
   arrivalPlan,
@@ -154,6 +155,52 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
       participantUserIds: [...new Set(rows.map((row) => row.userId))],
       captainUserIds: handPicked ? [...new Set(rows.map((row) => row.captainUserId))] : [],
     });
+  }
+
+  /**
+   * Сервер турнира — для событий: слушателю он нужен, а у матча его нет. Запоминается на
+   * время жизни сервиса: сервер у турнира не меняется никогда.
+   */
+  const guilds = new Map<number, string>();
+  async function guildOf(tournamentId: number): Promise<string> {
+    const known = guilds.get(tournamentId);
+    if (known) return known;
+    const [row] = await db
+      .select({ guildId: tournaments.guildId })
+      .from(tournaments)
+      .where(eq(tournaments.id, tournamentId));
+    if (!row) throw new Error(`турнир ${tournamentId} не найден`);
+    guilds.set(tournamentId, row.guildId);
+    return row.guildId;
+  }
+
+  /**
+   * Событие матча — после того, как переход уже в базе. Шина необязательна: без неё сервис
+   * работает как раньше. Сбой публикации переход не отменяет: он уже случился, а витрина
+   * догонит его по следующему событию или по перезагрузке.
+   */
+  async function emitMatch<K extends 'match.ready' | 'match.reported' | 'match.disputed' | 'match.confirmed'>(
+    event: K,
+    tournamentId: number,
+    payload: Omit<BotEvents[K], 'guildId' | 'tournamentId'>,
+  ): Promise<void> {
+    if (!deps.bus) return;
+    try {
+      const guildId = await guildOf(tournamentId);
+      await deps.bus.emit(event, { guildId, tournamentId, ...payload } as BotEvents[K]);
+    } catch (error) {
+      deps.logger?.warn({ err: error, event, tournamentId }, 'событие матча не опубликовано');
+    }
+  }
+
+  /** Список участников изменился — для витрины, которая показывает его во время регистрации. */
+  async function emitEntrants(tournamentId: number): Promise<void> {
+    if (!deps.bus) return;
+    try {
+      await deps.bus.emit('tournament.entrants', { guildId: await guildOf(tournamentId), tournamentId });
+    } catch (error) {
+      deps.logger?.warn({ err: error, tournamentId }, 'событие о составе участников не опубликовано');
+    }
   }
 
   async function byId(tournamentId: number): Promise<TournamentRow> {
@@ -374,10 +421,12 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
     }
 
     if (placed.entrantAId !== null && placed.entrantBId !== null) {
-      await db
+      const [ready] = await db
         .update(tournamentMatches)
         .set({ state: 'ready', updatedAt: new Date() })
-        .where(and(eq(tournamentMatches.id, placed.id), eq(tournamentMatches.state, 'pending')));
+        .where(and(eq(tournamentMatches.id, placed.id), eq(tournamentMatches.state, 'pending')))
+        .returning({ id: tournamentMatches.id });
+      if (ready) await emitMatch('match.ready', placed.tournamentId, { matchId: ready.id });
     }
   }
 
@@ -397,7 +446,8 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
 
     shape.byPosition.set(positionKey(row), row);
     await logAction(row.id, 'system', 'walkover', winnerEntrantId, false);
-    await advanceIn(shape, row, winnerEntrantId);
+    const { finished } = await advanceIn(shape, row, winnerEntrantId);
+    await emitMatch('match.confirmed', row.tournamentId, { matchId: row.id, winnerEntrantId, via: 'bye', finished });
   }
 
   /**
@@ -673,10 +723,17 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
      */
     async cancel(tournamentId: number): Promise<void> {
       const now = new Date();
-      await db
+      // CAS по состоянию: отменить можно только незакрытый, и событие — ровно одно.
+      const [row] = await db
         .update(tournaments)
         .set({ state: 'cancelled', finishedAt: now, closedOutAt: now, updatedAt: now })
-        .where(eq(tournaments.id, tournamentId));
+        .where(and(eq(tournaments.id, tournamentId), inArray(tournaments.state, ['draft', 'registration', 'running'])))
+        .returning();
+      if (row && deps.bus) {
+        await deps.bus
+          .emit('tournament.cancelled', { guildId: row.guildId, tournamentId })
+          .catch((error: unknown) => deps.logger?.warn({ err: error, tournamentId }, 'событие отмены не опубликовано'));
+      }
     },
 
     /**
@@ -780,6 +837,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
         role: 'captain',
       });
 
+      await emitEntrants(tournamentId);
       return created;
     },
 
@@ -811,6 +869,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
       }
 
       await db.insert(tournamentEntrantMembers).values({ entrantId, tournamentId: entrant.tournamentId, userId });
+      await emitEntrants(entrant.tournamentId);
       return entrant;
     },
 
@@ -834,12 +893,14 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
           .set({ withdrawnAt: new Date() })
           .where(eq(tournamentEntrants.id, entrant.id));
         await db.delete(tournamentEntrantMembers).where(eq(tournamentEntrantMembers.entrantId, entrant.id));
+        await emitEntrants(tournamentId);
         return;
       }
 
       await db
         .delete(tournamentEntrantMembers)
         .where(and(eq(tournamentEntrantMembers.entrantId, entrant.id), eq(tournamentEntrantMembers.userId, userId)));
+      await emitEntrants(tournamentId);
     },
 
     /**
@@ -956,6 +1017,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
         .set({ checkedInAt: new Date() })
         .where(eq(tournamentEntrants.id, entrant.id))
         .returning();
+      await emitEntrants(tournamentId);
       return required(row, 'tournament_entrants');
     },
 
@@ -1011,6 +1073,9 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
         .map((match) => (match.entrantAId === null ? 0 : 1) + (match.entrantBId === null ? 0 : 1));
       const arrivals = arrivalPlan(occupancy, format);
 
+      // Матчи, которые можно играть сразу. Те, что станут играбельными по ходу пропусков,
+      // объявят себя сами — из deliver.
+      let readyAtStart: number[] = [];
       await db.transaction(async (tx) => {
         for (const entrant of seeded) {
           await tx
@@ -1019,7 +1084,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
             .where(eq(tournamentEntrants.id, entrant.entrantId));
         }
 
-        await tx.insert(tournamentMatches).values(
+        const inserted = await tx.insert(tournamentMatches).values(
           planned.map((match) => {
             const expected = arrivals.get(positionKey(match)) ?? 0;
             const known = (match.entrantAId === null ? 0 : 1) + (match.entrantBId === null ? 0 : 1);
@@ -1036,7 +1101,8 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
                 expected === 0 ? ('void' as const) : known === 2 ? ('ready' as const) : ('pending' as const),
             };
           }),
-        );
+        ).returning({ id: tournamentMatches.id, state: tournamentMatches.state });
+        readyAtStart = inserted.filter((row) => row.state === 'ready').map((row) => row.id);
 
         // CAS по состоянию: ручной старт и автостарт по времени могут прийти в одну минуту, и
         // второй должен откатиться целиком, а не построить вторую сетку поверх первой.
@@ -1062,6 +1128,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
       }
 
       await publishStarted(tournament, seeded.map((entrant) => entrant.entrantId));
+      for (const matchId of readyAtStart) await emitMatch('match.ready', tournamentId, { matchId });
       return this.bracket(tournamentId);
     },
 
@@ -1240,6 +1307,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
 
       if (!row) throw new UserError('Результат этого матча уже заявлен или матч уже закрыт.');
       await logAction(matchId, actorId, 'report', winnerEntrantId, false);
+      await emitMatch('match.reported', row.tournamentId, { matchId, winnerEntrantId });
       return row;
     },
 
@@ -1285,6 +1353,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
       if (!row) throw new UserError('Матч уже закрыт.');
 
       await logAction(matchId, actorId, 'dispute', match.reportedWinnerId, false);
+      await emitMatch('match.disputed', row.tournamentId, { matchId });
       return row;
     },
 
@@ -1348,6 +1417,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
 
       await logAction(matchId, actorId, action, winnerEntrantId, byOrganizer);
       const { finished } = await promote(row, winnerEntrantId);
+      await emitMatch('match.confirmed', row.tournamentId, { matchId, winnerEntrantId, via: action, finished });
       return { match: row, finished };
     },
 

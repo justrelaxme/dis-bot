@@ -55,5 +55,28 @@ export interface BotEvents {
     winnerEntrantId: number;
     winnerUserIds: string[];
   };
-  'match.confirmed': { guildId: string; tournamentId: number; matchId: number; winnerEntrantId: number };
+  /**
+   * События матча. Публикует их только сервис турниров и только после успешного перехода в
+   * базе (CAS): повторное нажатие, повторная доставка и гонка джобы с кнопкой дают одно
+   * событие, а не два. Слушатели — живая витрина и всё, что должно реагировать на ход
+   * вечера, не зная, каким путём матч до этого дошёл.
+   */
+  'match.ready': { guildId: string; tournamentId: number; matchId: number };
+  'match.reported': { guildId: string; tournamentId: number; matchId: number; winnerEntrantId: number };
+  'match.disputed': { guildId: string; tournamentId: number; matchId: number };
+  'match.confirmed': {
+    guildId: string;
+    tournamentId: number;
+    matchId: number;
+    winnerEntrantId: number;
+    /** Каким путём закрыт: кнопкой соперника, молчанием, проверкой Dota, организатором, пропуском в сетке. */
+    via: 'confirm' | 'auto-confirm' | 'verified' | 'resolve' | 'walkover' | 'bye';
+    /** Этот матч закрыл турнир. */
+    finished: boolean;
+  };
+  'tournament.cancelled': { guildId: string; tournamentId: number };
+  /** Кто-то записался, вышел или отметился: во время регистрации витрина показывает список. */
+  'tournament.entrants': { guildId: string; tournamentId: number };
+  /** Ход драфта или его создание: витрина перечитывает полотно. */
+  'draft.changed': { guildId: string; tournamentId: number; matchId: number; done: boolean };
 }

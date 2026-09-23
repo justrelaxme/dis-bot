@@ -106,7 +106,48 @@ export interface PageChrome {
   head?: string;
   /** Какая ссылка в навигации сейчас открыта. */
   current?: string;
+  /**
+   * Турнир, изменения которого страница слушает вживую. Задан — страница подписывается на
+   * `/api/live/t/:id` и перечитывает себя по сигналу, без F5.
+   */
+  live?: number;
 }
+
+/**
+ * Живое обновление страницы турнира. По сигналу страница перечитывает себя тем же адресом и
+ * подменяет `<main>`: разметку собирает сервер тем же кодом, что и при открытии, и второй
+ * отрисовки на клиенте, которая однажды разошлась бы с первой, нет.
+ *
+ * При переподключении страница перечитывается тоже: пока связи не было, изменения могли
+ * случиться, а сигнал о них уже не придёт. Без JavaScript и без EventSource страница просто
+ * остаётся обычной — обновляется по F5, как раньше.
+ */
+const LIVE_SCRIPT = `<script>
+(function () {
+  var id = document.body.getAttribute('data-live');
+  if (!id || !('EventSource' in window) || !('DOMParser' in window)) return;
+  var busy = false, again = false, opened = false;
+  function refresh() {
+    if (busy) { again = true; return; }
+    busy = true;
+    fetch(location.href, { cache: 'no-store', headers: { 'x-live': '1' } })
+      .then(function (r) { return r.ok ? r.text() : null; })
+      .then(function (html) {
+        if (!html) return;
+        var next = new DOMParser().parseFromString(html, 'text/html').querySelector('main');
+        var current = document.querySelector('main');
+        if (!next || !current) return;
+        next.classList.add('swapped');
+        current.replaceWith(next);
+      })
+      .catch(function () {})
+      .then(function () { busy = false; if (again) { again = false; refresh(); } });
+  }
+  var source = new EventSource('/api/live/t/' + id);
+  source.addEventListener('change', refresh);
+  source.addEventListener('open', function () { if (opened) refresh(); opened = true; });
+})();
+</script>`;
 
 /** Полоса игрового арта. Только для глаз — в дерево доступности не попадает. */
 function band(images: readonly string[]): string {
@@ -168,7 +209,7 @@ ${image ? `<meta property="og:image" content="${escape(image)}">` : ''}
 <style>${STYLE}</style>
 ${chrome.head ?? ''}
 </head>
-<body${identity ? ` style="--accent:${identity.accent}"` : ''}>
+<body${identity ? ` style="--accent:${identity.accent}"` : ''}${chrome.live ? ` data-live="${chrome.live}"` : ''}>
 <a class="skiplink" href="#main">К содержимому</a>
 ${band(identity?.band ?? SERVER_BAND)}
 <div class="wrap">
@@ -184,6 +225,7 @@ ${body}
     <p class="credit">${escape(identity?.credit ?? SERVER_CREDIT)}</p>
   </footer>
 </div>
+${chrome.live ? LIVE_SCRIPT : ''}
 </body>
 </html>`;
 }
@@ -291,6 +333,8 @@ export function renderBracket(view: {
   tournament: TournamentRow;
   entrants: EntrantRow[];
   matches: MatchRow[];
+  /** Матчи, у которых есть драфт: над их карточкой — ссылка на полотно. */
+  drafts?: ReadonlySet<number>;
 }): string {
   const names = new Map<number, { name: string; seed: number | null }>();
   for (const entrant of view.entrants) names.set(entrant.id, { name: entrant.displayName, seed: entrant.seed });
@@ -355,7 +399,12 @@ ${list || '<div class="empty"><p>Ещё никто не записался. Ко
     const classes = ['m', attention ? 'live-m' : '', match.state === 'void' ? 'dead-m' : '']
       .filter(Boolean)
       .join(' ');
-    return `<div class="${classes}" style="top:${top}px;--delay:${delay}"${title}>${side(match.entrantAId)}${side(match.entrantBId)}</div>`;
+    // Номер матча над карточкой. Без него организатору нечего вписать в `/match resolve`, а
+    // зрителю — не найти матч, о котором пишут в Discord. Рядом — ссылка на драфт, если он есть.
+    const draft = view.drafts?.has(match.id) ? ` · <a href="/draft/${match.id}">драфт</a>` : '';
+    const label =
+      match.state === 'void' ? '' : `<span class="mno" style="top:${top - 16}px">№${match.id}${draft}</span>`;
+    return `${label}<div class="${classes}" style="top:${top}px;--delay:${delay}" data-match="${match.id}"${title}>${side(match.entrantAId)}${side(match.entrantBId)}</div>`;
   };
 
   /**
