@@ -49,14 +49,14 @@ describe('модуль identity', () => {
     expect(moduleWith().module.name).toBe('identity');
   });
 
-  it('объявляет все пять команд', () => {
+  it('объявляет все шесть команд', () => {
     const names = moduleWith().module.commands?.map((c) => c.builder.name).sort();
-    expect(names).toEqual(['link', 'profile', 'ranksync', 'rolemap', 'unlink']);
+    expect(names).toEqual(['card', 'link', 'profile', 'ranksync', 'rolemap', 'unlink']);
   });
 
   it('регистрируется в реестре ядра без конфликтов имён', () => {
     const registry = buildRegistry([moduleWith().module]);
-    expect(registry.commands.size).toBe(5);
+    expect(registry.commands.size).toBe(6);
   });
 
   it('объявляет джобу синхронизации на каждые 30 минут', () => {

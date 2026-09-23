@@ -4,6 +4,9 @@ import type { Cache } from '../../core/cache.js';
 import type { Database } from '../../core/db/client.js';
 import type { Logger } from '../../core/logger.js';
 import { verificationPossible } from '../identity/providers/provider.js';
+import { playerPages } from '../identity/schema.js';
+import { ACHIEVEMENTS } from '../progression/rules.js';
+import { achievements } from '../progression/schema.js';
 import { rankScore } from '../identity/ranks/compare.js';
 import type { ProviderId, RankScale, RankSource } from '../identity/schema.js';
 import { TOURNAMENT_GAMES } from '../tournaments/games.js';
@@ -16,16 +19,18 @@ import {
 } from '../tournaments/schema.js';
 import { TITLE_BONUS } from '../tournaments/placements.js';
 import { createCircuitService } from '../tournaments/services/circuit.js';
-import { finishedTournaments, titlesByTeam } from '../tournaments/services/records.js';
+import { finishedTournaments, playerRecord, titlesByTeam } from '../tournaments/services/records.js';
 import {
   page,
   renderBracket,
   renderHall,
   renderLeaderboard,
   renderNotFound,
+  renderPlayer,
   renderSeason,
   renderTournamentList,
   type LeaderboardEntry,
+  type PlayerView,
 } from './render.js';
 import { RULES_STYLE, renderRules } from './rules.js';
 
@@ -48,6 +53,18 @@ const GAME_TO_PROVIDER: Record<TournamentGame, ProviderId> = {
  * фоне» здесь ровно то, что нужно.
  */
 const PAGE_TTL_MS = 60 * 1_000;
+
+/** Название игры для строки ранга на карточке игрока. */
+const PROVIDER_GAMES: Record<ProviderId, string> = {
+  steam: 'Dota 2',
+  'riot-lol': 'League of Legends',
+  'riot-tft': 'Teamfight Tactics',
+  'riot-valorant': 'Valorant',
+  enka: 'Genshin Impact',
+};
+
+/** Провайдеры, у которых привязку подтвердить нечем: их ранг показывается с пометкой. */
+const UNVERIFIABLE = (Object.keys(PROVIDER_GAMES) as ProviderId[]).filter((provider) => !verificationPossible(provider));
 const PAGE_STALE_MS = 10 * 60 * 1_000;
 
 /**
@@ -298,20 +315,99 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
     return reply.type('text/html; charset=utf-8').send(html);
   });
 
-  // Заглушка вместо страницы профиля: связка «этот Discord — этот игровой аккаунт»
-  // приватна, и публиковать её без согласия игрока нельзя, даже если ранг и так виден
-  // в игре. Страница появится, когда будет согласие — отдельным флагом и командой.
-  server.get('/p/:userId', async (_request, reply) => {
-    return reply
-      .code(404)
-      .type('text/html; charset=utf-8')
-      .send(
-        page(
-          'Профиль скрыт',
-          renderNotFound(
-            'Страницы игроков закрыты: связка Discord-аккаунта с игровым — личные данные, и публиковать их без согласия нельзя. Свой профиль можно посмотреть в Discord командой /profile.',
+  /**
+   * Карточка игрока. Связка «этот Discord — этот человек в турнирах и в игре» — личные данные,
+   * поэтому страница есть только у того, кто открыл её сам (`/card on`).
+   *
+   * Согласие проверяется на каждый запрос, мимо кэша: `/card off` должен закрывать страницу
+   * сразу, а не когда истечёт кэш. В ключ кэша входит время последней правки настроек — так
+   * смена «показывать аккаунты» не отдаёт старую версию страницы даже из фона `swr`.
+   */
+  server.get<{ Params: { userId: string } }>('/p/:userId', async (request, reply) => {
+    const userId = request.params.userId;
+    const hidden = () =>
+      reply
+        .code(404)
+        .type('text/html; charset=utf-8')
+        .send(
+          page(
+            'Профиль скрыт',
+            renderNotFound(
+              'Этот игрок свою страницу не открывал. Связка Discord-аккаунта с игровым — личные данные, поэтому страница появляется, только когда игрок сам включит её командой /card on.',
+            ),
           ),
-        ),
+        );
+    if (!/^\d{17,20}$/.test(userId)) return hidden();
+
+    const [consent] = await db
+      .select()
+      .from(playerPages)
+      .where(and(eq(playerPages.guildId, deps.guildId), eq(playerPages.userId, userId)));
+    if (!consent) return hidden();
+
+    const html = await cached(`web:player:${userId}:${consent.updatedAt.getTime()}`, async () => {
+      const [record, season, earned, ranks] = await Promise.all([
+        playerRecord(db, deps.guildId, userId),
+        circuit.open(deps.guildId),
+        db
+          .select({ code: achievements.code, earnedAt: achievements.earnedAt })
+          .from(achievements)
+          .where(and(eq(achievements.guildId, deps.guildId), eq(achievements.userId, userId)))
+          .orderBy(desc(achievements.earnedAt)),
+        consent.showRanks ? playerRanks(userId) : Promise.resolve(null),
+      ]);
+      const table = season ? await circuit.standings(season.id, 1_000) : [];
+      const place = table.findIndex((row) => row.userId === userId);
+
+      return page(
+        consent.displayName,
+        renderPlayer({
+          name: consent.displayName,
+          record,
+          season: season && place >= 0 ? { name: season.name, place: place + 1, points: table[place]?.points ?? 0 } : null,
+          achievements: earned.flatMap((row) => {
+            const def = ACHIEVEMENTS.find((item) => item.code === row.code);
+            return def ? [{ title: def.title, description: def.description, earnedAt: row.earnedAt }] : [];
+          }),
+          ranks,
+          showAccounts: consent.showAccounts,
+        }),
+        {
+          description: `Карточка игрока ${consent.displayName}: турниры, титулы, сезон.`,
+          // Страницу открыл игрок, но искать его по имени через поисковик — не то, на что он соглашался.
+          head: '<meta name="robots" content="noindex">',
+        },
       );
+    });
+    return reply.type('text/html; charset=utf-8').send(html);
   });
+
+  /** Последний ранг по каждому аккаунту и режиму — по тем же правилам, что в лидерборде. */
+  async function playerRanks(userId: string): Promise<PlayerView['ranks']> {
+    const result = await db.execute<LeaderboardRow & { provider: ProviderId }>(sql`
+      select distinct on (a.id, s.mode)
+        a.provider, a.display_name, s.mode, s.scale, s.tier, s.division, s.points, s.source
+      from game_accounts a
+      join rank_snapshots s on s.account_id = a.id
+      where a.user_id = ${userId}
+        and (a.verified_at is not null or a.provider in (${sql.join(
+          UNVERIFIABLE.map((provider) => sql`${provider}`),
+          sql`, `,
+        )}))
+      order by a.id, s.mode, s.captured_at desc
+    `);
+    return result.rows
+      .filter((row) => row.tier !== null)
+      .map((row) => ({
+        game: PROVIDER_GAMES[row.provider] ?? row.provider,
+        displayName: row.display_name,
+        mode: row.mode,
+        scale: row.scale,
+        tier: row.tier,
+        division: row.division,
+        points: row.points,
+        claimed: row.source === 'manual',
+        score: 0,
+      }));
+  }
 }

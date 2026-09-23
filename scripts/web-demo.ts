@@ -14,8 +14,10 @@ import { createDatabase } from '../src/core/db/client.js';
 import { guilds, users } from '../src/core/db/schema/core.js';
 import { createFetchClient } from '../src/core/http/fetch-client.js';
 import { createLogger } from '../src/core/logger.js';
-import { gameAccounts, rankSnapshots } from '../src/modules/identity/schema.js';
-import { tournaments } from '../src/modules/tournaments/schema.js';
+import { gameAccounts, playerPages, rankSnapshots } from '../src/modules/identity/schema.js';
+import { achievements } from '../src/modules/progression/schema.js';
+import { createCircuitService } from '../src/modules/tournaments/services/circuit.js';
+import { circuitSeasons, tournaments } from '../src/modules/tournaments/schema.js';
 import { createTournamentsService } from '../src/modules/tournaments/services/tournaments.js';
 import { registerDraftRoutes } from '../src/modules/web/draft.js';
 import { registerWebRoutes } from '../src/modules/web/routes.js';
@@ -133,9 +135,14 @@ async function seed(
 ): Promise<{ tournamentId: number; vetoId: number; heroesId: number; duelId: number }> {
   await db.insert(guilds).values({ id: GUILD }).onConflictDoNothing();
 
+  // Сезон серии открыт до турниров: доигранные ниже начисляют очки, и у таблицы `/season`
+  // и карточки игрока есть что показать.
+  const circuit = createCircuitService({ db });
+  if (!(await circuit.open(GUILD))) await circuit.start(GUILD, 'Осень 2026');
+
   // Два доигранных турнира — чтобы зал славы был не пустой страницей с объяснением,
   // а тем, чем он станет через месяц работы.
-  await runTournament(db, {
+  const pastValorant = await runTournament(db, {
     name: 'Ежедневный турнир по Valorant',
     game: 'valorant',
     format: 'single-elim',
@@ -143,7 +150,7 @@ async function seed(
     matchesToPlay: null,
     captainOffset: 100,
   });
-  await runTournament(db, {
+  const pastDota = await runTournament(db, {
     name: 'Кубок выходного дня по Dota 2',
     game: 'dota2',
     format: 'double-elim',
@@ -151,6 +158,45 @@ async function seed(
     matchesToPlay: null,
     captainOffset: 200,
   });
+  await circuit.award(pastValorant);
+  await circuit.award(pastDota);
+
+  // Карточка игрока: чемпион кубка выходного дня открыл свою страницу и разрешил показать ранг.
+  const champion = '910000000000000200';
+  await db
+    .insert(playerPages)
+    .values({ guildId: GUILD, userId: champion, displayName: 'Медведь', showAccounts: true, showRanks: true })
+    .onConflictDoNothing();
+  await db
+    .insert(achievements)
+    .values(
+      ['first-tournament', 'champion'].map((code) => ({ guildId: GUILD, userId: champion, code, seasonId: 1 })),
+    )
+    .onConflictDoNothing();
+  const [championAccount] = await db
+    .insert(gameAccounts)
+    .values({
+      userId: champion,
+      provider: 'steam',
+      externalId: '76561198000009999',
+      displayName: 'medved_mid',
+      verifiedAt: new Date(),
+      verificationMethod: 'steam-openid',
+    })
+    .onConflictDoNothing()
+    .returning();
+  if (championAccount) {
+    await db.insert(rankSnapshots).values({
+      accountId: championAccount.id,
+      mode: 'ranked',
+      scale: 'dota-mmr',
+      tier: 'DIVINE',
+      division: '2',
+      points: null,
+      source: 'api',
+      raw: {},
+    });
+  }
 
   const tournamentId = await runTournament(db, {
     name: 'Ежедневный турнир по Dota 2',
@@ -319,6 +365,8 @@ async function main(): Promise<void> {
       правила: `http://localhost:${PORT}/rules`,
       сетка: `http://localhost:${PORT}/t/${tournamentId}`,
       зал_славы: `http://localhost:${PORT}/hall`,
+      сезон: `http://localhost:${PORT}/season`,
+      игрок: `http://localhost:${PORT}/p/910000000000000200`,
       лидерборд: `http://localhost:${PORT}/leaderboard/dota2`,
       ...links,
       ...cast,
@@ -331,6 +379,9 @@ async function main(): Promise<void> {
     // Убираем все турниры демонстрационного сервера, а не только последний: их теперь
     // несколько, и оставленные засоряли бы базу разработки при каждом запуске.
     await db.delete(tournaments).where(eq(tournaments.guildId, GUILD));
+    await db.delete(circuitSeasons).where(eq(circuitSeasons.guildId, GUILD));
+    await db.delete(playerPages).where(eq(playerPages.guildId, GUILD));
+    await db.delete(achievements).where(eq(achievements.guildId, GUILD));
     await server.close();
     await cache.close();
     await close();

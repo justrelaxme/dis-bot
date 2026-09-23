@@ -1,4 +1,4 @@
-import { bigint, bigserial, index, integer, jsonb, pgTable, text, timestamp, unique } from 'drizzle-orm/pg-core';
+import { bigint, bigserial, boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique } from 'drizzle-orm/pg-core';
 import { guilds, users } from '../../core/db/schema/core.js';
 
 /**
@@ -100,3 +100,28 @@ export const roleMappings = pgTable(
   },
   (table) => [unique('role_mappings_uq').on(table.guildId, table.provider, table.mode, table.tier)],
 );
+
+/**
+ * Согласие на публичную страницу игрока. Связка «этот Discord — этот игровой аккаунт» —
+ * личные данные, и страница `/p/:id` отдавала 404, пока согласия спросить было негде. Теперь
+ * его даёт сам игрок командой `/card`, и так же его отзывает: выключенная страница снова 404.
+ *
+ * Показывать ли аккаунты и ранги — отдельные решения: турнирный след публичен и так (сетки на
+ * сайте открыты), а какой у человека аккаунт и ранг — его выбор.
+ */
+export const playerPages = pgTable(
+  'player_pages',
+  {
+    guildId: text('guild_id').notNull(),
+    userId: text('user_id').notNull(),
+    /** Имя на странице — отображаемое имя на сервере в момент включения. */
+    displayName: text('display_name').notNull(),
+    showAccounts: boolean('show_accounts').notNull().default(false),
+    showRanks: boolean('show_ranks').notNull().default(true),
+    enabledAt: timestamp('enabled_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.guildId, table.userId] })],
+);
+
+export type PlayerPageRow = typeof playerPages.$inferSelect;

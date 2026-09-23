@@ -232,6 +232,13 @@
       "when": 1790161327655,
       "tag": "0032_equal_electro",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1790161651668,
+      "tag": "0033_sloppy_mongoose",
+      "breakpoints": true
     }
   ]
 }

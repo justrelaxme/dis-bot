@@ -312,6 +312,11 @@ td.champ { color:var(--accent); font-weight:600; }
   letter-spacing:-.04em; text-transform:uppercase; }
 .pl .pn { font-family:var(--mono); font-size:.66rem; letter-spacing:.18em; text-transform:uppercase;
   color:var(--dim); }
+/* Плитки цифр на карточке игрока: число здесь и есть содержание, гасить его, как места
+   ниже первого на пьедестале, нельзя. */
+.pl.stat .mk { color:var(--bone); }
+.pl.stat.first .mk { color:var(--accent); }
+.pl.stat .pn { grid-row:1 / span 2; align-self:center; }
 
 .empty { border:1px dashed var(--rule); padding:2rem 1.25rem; text-align:center; }
 .empty p { margin:.35rem 0; color:var(--dim); }

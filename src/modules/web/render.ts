@@ -750,3 +750,108 @@ ${
     : '<div class="empty"><p>В этом сезоне ещё ни один турнир не доигран.</p></div>'
 }`;
 }
+
+export interface PlayerView {
+  name: string;
+  record: {
+    tournaments: number;
+    titles: number;
+    matchesPlayed: number;
+    matchesWon: number;
+    recent: { tournamentName: string; teamName: string; game: TournamentGame; finishedAt: Date | null; champion: boolean; matchesWon: number }[];
+  };
+  season: { name: string; place: number; points: number } | null;
+  achievements: { title: string; description: string; earnedAt: Date }[];
+  /** `null` — игрок ранги не показывает. */
+  ranks: (LeaderboardEntry & { game: string })[] | null;
+  /** Показывать ли ник аккаунта рядом с рангом: это отдельное согласие. */
+  showAccounts: boolean;
+}
+
+/**
+ * Карточка игрока — только для тех, кто открыл её сам (`/card on`). Турнирный след, место в
+ * сезоне, достижения; ранги и игровые ники — если игрок на это согласился отдельно.
+ */
+export function renderPlayer(view: PlayerView): string {
+  const r = view.record;
+  const tiles = [
+    { mark: String(r.titles), label: plural(r.titles, 'титул', 'титула', 'титулов'), top: r.titles > 0 },
+    { mark: String(r.tournaments), label: plural(r.tournaments, 'турнир', 'турнира', 'турниров'), top: false },
+    { mark: `${r.matchesWon}–${r.matchesPlayed - r.matchesWon}`, label: 'матчи: победы – поражения', top: false },
+    ...(view.season
+      ? [{ mark: `#${view.season.place}`, label: `сезон «${view.season.name}» · ${view.season.points} ${plural(view.season.points, 'очко', 'очка', 'очков')}`, top: false }]
+      : []),
+  ];
+  const strip = `<div class="podium">
+${tiles
+  .map(
+    (tile, index) => `<div class="pl stat${tile.top ? ' first' : ''}" style="--delay:${index * 90}ms">
+<span class="mk">${escape(tile.mark)}</span>
+<span class="pn">${escape(tile.label)}</span>
+</div>`,
+  )
+  .join('\n')}
+</div>`;
+
+  const recent =
+    r.recent.length === 0
+      ? '<div class="empty"><p>Ни одного доигранного турнира пока нет — карточка заполнится после первого.</p></div>'
+      : `<div class="scroll"><table>
+<thead><tr><th>Турнир</th><th>Дисциплина</th><th>Команда</th><th class="num">Побед</th></tr></thead>
+<tbody>${r.recent
+          .map(
+            (row, index) => `<tr style="--delay:${index * 18}ms">
+<td class="acct">${escape(row.tournamentName)}</td>
+<td>${escape(TOURNAMENT_GAME_LABELS[row.game] ?? row.game)}</td>
+<td${row.champion ? ' class="champ"' : ''}>${escape(row.teamName)}${row.champion ? ' · чемпион' : ''}</td>
+<td class="num">${row.matchesWon}</td>
+</tr>`,
+          )
+          .join('\n')}</tbody>
+</table></div>`;
+
+  const achievements =
+    view.achievements.length === 0
+      ? ''
+      : `<h2>Достижения</h2>
+<div class="scroll"><table>
+<thead><tr><th>Достижение</th><th>За что</th><th class="num">Когда</th></tr></thead>
+<tbody>${view.achievements
+          .map(
+            (row, index) => `<tr style="--delay:${index * 18}ms">
+<td class="acct">${escape(row.title)}</td>
+<td class="dim">${escape(row.description)}</td>
+<td class="num">${escape(row.earnedAt.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short', year: 'numeric' }))}</td>
+</tr>`,
+          )
+          .join('\n')}</tbody>
+</table></div>`;
+
+  const ranks =
+    view.ranks === null || view.ranks.length === 0
+      ? ''
+      : `<h2>Ранги</h2>
+<div class="scroll"><table>
+<thead><tr><th>Игра</th>${view.showAccounts ? '<th>Аккаунт</th>' : ''}<th>Ранг</th></tr></thead>
+<tbody>${view.ranks
+          .map((entry, index) => {
+            const claimed = entry.claimed
+              ? ' <span class="claimed" title="ранг указал сам игрок: подтвердить его в этой игре нечем">заявлено</span>'
+              : '';
+            return `<tr style="--delay:${index * 18}ms">
+<td>${escape(entry.game)}</td>${view.showAccounts ? `<td class="acct">${escape(entry.displayName)}</td>` : ''}
+<td><span class="medal" style="--tc:${medalColor(entry)}">${escape(formatEntryRank(entry))}</span>${claimed}</td>
+</tr>`;
+          })
+          .join('\n')}</tbody>
+</table></div>`;
+
+  return `<p class="eyebrow">Карточка игрока</p>
+<h1>${escape(view.name)}</h1>
+<p class="lede">Турнирный след на этом сервере. Страницу открыл сам игрок и может закрыть её в любой момент.</p>
+${strip}
+<h2>Последние турниры</h2>
+${recent}
+${achievements}
+${ranks}`;
+}

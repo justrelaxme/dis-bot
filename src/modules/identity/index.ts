@@ -8,6 +8,7 @@ import type { FetchClient } from '../../core/http/fetch-client.js';
 import type { Logger } from '../../core/logger.js';
 import type { BotModule } from '../../core/module.js';
 import type { RateLimiter } from '../../core/rate-limit.js';
+import { createCardCommand } from './commands/card.js';
 import { createLinkCommand, type IdentityDeps } from './commands/link.js';
 import { createProfileCommand } from './commands/profile.js';
 import { createRankSyncCommand } from './commands/ranksync.js';
@@ -145,6 +146,7 @@ export function createIdentityModule(deps: IdentityModuleDeps): BotModule {
       createProfileCommand(identityDeps),
       createRankSyncCommand({ ...identityDeps, cooldown: deps.cooldown }),
       createRoleMapCommand({ roles }),
+      createCardCommand({ db: deps.db, publicBaseUrl: deps.config.PUBLIC_BASE_URL }),
     ],
 
     jobs: [
