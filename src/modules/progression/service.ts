@@ -455,9 +455,16 @@ export function createProgressionService(deps: { db: Database }) {
     },
 
     /**
-     * Покупка. Списание идёт условным UPDATE «монет хватает» — если между чтением баланса и
-     * списанием человек купил что-то ещё, условие не выполнится и покупка не пройдёт.
-     * Проверка перед списанием дала бы уход в минус на двух одновременных покупках.
+     * Оплата покупки: списание и запись о ней. Роль к этому моменту уже выдана — порядок
+     * задаёт purchaseRole (shop.ts), чтобы не брать монеты за то, что Discord не выдал.
+     *
+     * Списание — один условный UPDATE, и вычитание идёт в самом SQL: `coins = coins - price
+     * where coins >= price`. Проверка баланса отдельным чтением дала бы уход в минус на двух
+     * одновременных покупках, а разность, посчитанная из прочитанного, затёрла бы монеты,
+     * начисленные между чтением и списанием.
+     *
+     * Запись о покупке — в той же транзакции: списанные монеты без записи не снимутся по
+     * сроку и не найдутся при разборе.
      */
     async buy(guildId: string, userId: string, itemId: number) {
       const [item] = await db
@@ -467,27 +474,34 @@ export function createProgressionService(deps: { db: Database }) {
       if (!item) throw new UserError('Такого товара нет.');
 
       const profile = await this.profile(guildId, userId);
-      const [charged] = await db
-        .update(profiles)
-        .set({ coins: profile.coins - item.price, updatedAt: new Date() })
-        .where(and(eq(profiles.id, profile.id), sql`${profiles.coins} >= ${item.price}`))
-        .returning();
-
-      if (!charged) {
-        throw new UserError(`Не хватает монет: нужно ${item.price}, у тебя ${profile.coins}.`);
-      }
-
       const expiresAt = item.durationHours
         ? new Date(Date.now() + item.durationHours * 60 * 60 * 1_000)
         : null;
 
-      await db.insert(purchases).values({
-        guildId,
-        userId,
-        itemId: item.id,
-        paid: item.price,
-        ...(expiresAt ? { expiresAt } : {}),
+      const charged = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(profiles)
+          .set({ coins: sql`${profiles.coins} - ${item.price}`, updatedAt: new Date() })
+          .where(and(eq(profiles.id, profile.id), sql`${profiles.coins} >= ${item.price}`))
+          .returning();
+        if (!row) return null;
+
+        await tx.insert(purchases).values({
+          guildId,
+          userId,
+          itemId: item.id,
+          paid: item.price,
+          ...(expiresAt ? { expiresAt } : {}),
+        });
+        return row;
       });
+
+      if (!charged) {
+        // Баланс перечитываем: прочитанный до списания мог уже устареть — а человеку
+        // нужна цифра, которая есть сейчас.
+        const now = await this.profile(guildId, userId);
+        throw new UserError(`Не хватает монет: нужно ${item.price}, у тебя ${now.coins}.`);
+      }
 
       return { item, profile: charged, expiresAt };
     },

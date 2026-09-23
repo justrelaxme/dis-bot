@@ -23,6 +23,7 @@ import {
   progressToNext,
 } from './rules.js';
 import { createProgressionService, type ProgressionService } from './service.js';
+import { purchaseRole } from './shop.js';
 import { applyVoiceTransition } from './voice.js';
 
 /** Снятие просроченных покупок — раз в 10 минут: точность до минуты здесь не нужна. */
@@ -323,7 +324,7 @@ function shopCommand(progression: ProgressionService): CommandDefinition {
       .setDescription('Магазин: на что потратить монеты')
       .addIntegerOption((option) => option.setName('buy').setDescription('Номер товара для покупки').setMinValue(1)),
 
-    async execute(interaction): Promise<void> {
+    async execute(interaction, ctx): Promise<void> {
       if (!interaction.inGuild()) throw new UserError('Эта команда работает только на сервере.');
       const items = await progression.listShop(interaction.guildId);
       const buy = interaction.options.getInteger('buy');
@@ -355,12 +356,17 @@ function shopCommand(progression: ProgressionService): CommandDefinition {
       const item = items[buy - 1];
       if (!item) throw new UserError(`Нет товара с номером ${buy}.`);
 
-      const result = await progression.buy(interaction.guildId, interaction.user.id, item.id);
+      const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+      if (!member) throw new UserError('Не удалось прочитать твои роли на сервере.');
 
-      const member = interaction.member;
-      if (member !== null && 'roles' in member && typeof member.roles !== 'string') {
-        await (member as GuildMember).roles.add(item.payload, 'Покупка в магазине').catch(() => null);
-      }
+      const result = await purchaseRole({
+        progression,
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        member,
+        item,
+        logger: ctx.logger,
+      });
 
       await interaction.editReply({
         content: `Куплено: **${result.item.title}**. Осталось монет: ${result.profile.coins}.${
