@@ -13,7 +13,7 @@ const config = loadConfig();
 const logger = createLogger(config);
 
 const result = await runBackup({
-  databaseUrl: config.DATABASE_URL,
+  databaseUrl: config.BACKUP_DATABASE_URL ?? config.DATABASE_URL,
   directory: config.BACKUP_DIR,
   keepDays: config.BACKUP_KEEP_DAYS,
   logger,

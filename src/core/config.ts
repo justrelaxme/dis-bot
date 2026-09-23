@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { z } from 'zod';
 
 /**
@@ -122,7 +124,27 @@ const envSchema = z.object({
     .enum(['true', 'false'], { error: 'допустимо: true или false' })
     .default('true')
     .transform((value) => value === 'true'),
-  BACKUP_DIR: z.string().min(1).default('./backups'),
+  /**
+   * Куда складывать дампы перед отправкой. По умолчанию во временный каталог системы: в
+   * образе рабочий каталог принадлежит root, а бот работает как `node`, и `./backups` там
+   * просто не создаётся — бэкап падал бы каждую ночь с EACCES. Каталог контейнера всё равно
+   * не переживает обновление, поэтому настоящее хранилище — канал `BACKUP_CHANNEL_ID`.
+   */
+  BACKUP_DIR: emptyToUndefined(z.string().min(1).default(join(tmpdir(), 'disbot-backups'))),
+  /**
+   * Закрытый канал Discord, куда уходит каждый дамп файлом. Единственное место, которое
+   * переживает и обновление контейнера, и отказ базы: 25 августа 2026 база отказала по квоте,
+   * дамп снять было уже нельзя, и вся летопись пропала. Канал обязан быть закрытым от
+   * @everyone — в открытый бот дамп не отправит и скажет почему.
+   */
+  BACKUP_CHANNEL_ID: emptyToUndefined(snowflake.optional()),
+  /**
+   * Строка подключения для `pg_dump`, если основная для него не годится. Нужна на Supabase,
+   * когда бот ходит через transaction pooler (порт 6543): `pg_dump` через него не работает, и
+   * ему нужен session pooler (5432) или прямое подключение. Без переменной берётся
+   * `DATABASE_URL`.
+   */
+  BACKUP_DATABASE_URL: emptyToUndefined(databaseUrl.optional()),
   BACKUP_KEEP_DAYS: z.coerce
     .number({ error: 'ожидается число дней' })
     .int('ожидается целое число дней')
