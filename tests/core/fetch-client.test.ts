@@ -74,6 +74,96 @@ describe('createFetchClient', () => {
     expect(delays[0]).toBeGreaterThanOrEqual(2_000);
   });
 
+  /**
+   * Сервис вправе попросить час, но заснуть на час посреди нажатия кнопки нельзя: человек
+   * останется без ответа, а джоба — висеть. Долгая просьба подождать — это отказ сейчас и
+   * закрытая дорога до названного срока.
+   */
+  it('долгий Retry-After не усыпляет, а отказывает и держит предохранитель до срока', async () => {
+    let clock = 0;
+    const delays: number[] = [];
+    const fetchMock = vi.fn(
+      async () => new Response('', { status: 429, headers: { 'retry-after': '3600' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createFetchClient({
+      provider: 'test',
+      logger,
+      now: () => clock,
+      sleep: async (ms) => {
+        delays.push(ms);
+      },
+    });
+
+    await expect(client.json('https://api.test/x')).rejects.toThrow(/подождать 3600/);
+    expect(delays).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Пока срок не вышел, наружу не звоним вовсе.
+    clock += 60_000;
+    await expect(client.json('https://api.test/x')).rejects.toThrow(/недоступен/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Предохранитель держит не дольше пятнадцати минут, даже если просили час.
+    clock += 15 * 60_000;
+    await client.json('https://api.test/x').catch(() => {});
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('Retry-After в виде HTTP-даты тоже понимается', async () => {
+    const delays: number[] = [];
+    const soon = new Date(Date.now() + 3_000).toUTCString();
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response('', { status: 503, headers: { 'retry-after': soon } }))
+        .mockResolvedValueOnce(jsonResponse({ ok: true })),
+    );
+    const client = createFetchClient({
+      provider: 'test',
+      logger,
+      now: () => 0,
+      sleep: async (ms) => {
+        delays.push(ms);
+      },
+    });
+
+    await expect(client.json('https://api.test/x')).resolves.toEqual({ ok: true });
+    expect(delays[0]).toBeGreaterThan(0);
+    expect(delays[0]).toBeLessThanOrEqual(3_000);
+  });
+
+  /**
+   * Заголовки приходят сразу, тело — как получится. Пока таймер снимался на заголовках,
+   * медленное тело держало запрос без всякого предела.
+   */
+  it('тело ответа читается под тем же таймером, что и запрос', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+        const stream = new ReadableStream({
+          start(controller) {
+            init?.signal?.addEventListener('abort', () => controller.error(new Error('прервано по таймеру')));
+          },
+        });
+        return new Response(stream, { status: 200 });
+      });
+      const client = clientWith(fetchMock as unknown as typeof fetch);
+
+      const outcome = client.json('https://api.test/x').then(
+        () => 'resolved',
+        (error: unknown) => (error instanceof ProviderError ? 'provider-error' : 'other'),
+      );
+      for (let i = 0; i < 3; i += 1) await vi.advanceTimersByTimeAsync(5_000);
+
+      await expect(outcome).resolves.toBe('provider-error');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('открывает breaker после пяти подряд сбоев и перестаёт звонить наружу', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({}, 500));
     const client = clientWith(fetchMock as unknown as typeof fetch);

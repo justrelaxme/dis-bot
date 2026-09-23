@@ -156,6 +156,19 @@ const bus = new EventBus(logger);
 const metrics = createMetrics();
 const client = createDiscordClient();
 
+// У EventEmitter событие `error` без слушателя бросается исключением. Здесь это значило бы
+// uncaughtException и выход процесса из-за разового сбоя сокета, который discord.js и так
+// переживает сам: переподключение шарда — его работа, а наша — не мешать и записать.
+client.on(Events.Error, (error) => {
+  logger.error({ err: error }, 'ошибка клиента Discord');
+});
+client.on(Events.Warn, (message) => {
+  logger.warn({ message }, 'предупреждение клиента Discord');
+});
+client.on(Events.ShardError, (error, shardId) => {
+  logger.error({ err: error, shardId }, 'ошибка соединения шарда — discord.js переподключится сам');
+});
+
 const cooldown = createCooldown({ redisUrl: config.REDIS_URL, logger });
 const rateLimiter = createRateLimiter({ redisUrl: config.REDIS_URL, logger });
 
