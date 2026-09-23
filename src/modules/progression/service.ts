@@ -113,6 +113,11 @@ export function createProgressionService(deps: { db: Database }) {
      *
      * Возвращает перешагнутые уровни, а не только новый: за один турнир можно перескочить
      * два уровня сразу, и роли надо выдать за оба.
+     *
+     * Всё считается от строки под блокировкой, а не от прочитанного заранее: сообщение,
+     * голос и турнир начисляют одновременно, и запись абсолютных значений, посчитанных из
+     * одного и того же чтения, оставляла бы только последнее начисление — а заодно стирала
+     * монеты, пришедшие между чтением и записью.
      */
     async award(
       guildId: string,
@@ -121,47 +126,53 @@ export function createProgressionService(deps: { db: Database }) {
       reason: XpReason,
       details: Record<string, unknown> = {},
     ): Promise<AwardResult> {
-      const before = await this.profile(guildId, userId);
-      if (amount === 0) return { profile: before, levelsGained: [] };
+      const profile = await this.profile(guildId, userId);
+      if (amount === 0) return { profile, levelsGained: [] };
 
-      const season = await currentSeason(guildId);
-      const xpAfter = Math.max(before.xp + amount, 0);
-      const levelBefore = before.level;
-      const levelAfter = levelFromXp(xpAfter);
+      return db.transaction(async (tx) => {
+        await tx.insert(xpEvents).values({ guildId, userId, amount, reason, seasonId: profile.seasonId, details });
 
-      const levelsGained: number[] = [];
-      for (let level = levelBefore + 1; level <= levelAfter; level += 1) levelsGained.push(level);
+        // Прибавка в самом SQL. Этот UPDATE запирает строку до конца транзакции: второе
+        // начисление встанет в очередь и прибавит к уже записанному.
+        const [bumped] = await tx
+          .update(profiles)
+          .set({ xp: sql`greatest(${profiles.xp} + ${amount}, 0)`, updatedAt: new Date() })
+          .where(eq(profiles.id, profile.id))
+          .returning();
+        if (!bumped) throw new Error('профиль прогрессии не обновился');
 
-      // Монеты за уровень начисляются здесь же: отдельным проходом их легко потерять при
-      // откате, а вместе с уровнем они всегда согласованы.
-      const coinsGained = levelsGained.length * COINS_PER_LEVEL;
+        // Уровень «до» — из той же строки: столбец level этим UPDATE не тронут, а строка
+        // заперта, значит он соответствует опыту до нашей прибавки. Считать его из
+        // `xp - amount` нельзя: опыт упирается в ноль, и разность соврала бы.
+        const levelBefore = bumped.level;
+        const levelAfter = levelFromXp(bumped.xp);
+        if (levelAfter === levelBefore) return { profile: bumped, levelsGained: [] };
 
-      const updated = await db.transaction(async (tx) => {
-        await tx.insert(xpEvents).values({ guildId, userId, amount, reason, seasonId: season.id, details });
+        const levelsGained: number[] = [];
+        for (let level = levelBefore + 1; level <= levelAfter; level += 1) levelsGained.push(level);
 
-        const [row] = await tx
+        // Монеты за уровень — в той же транзакции и тоже прибавкой: отдельным проходом их
+        // легко потерять при откате, а абсолютным значением — затереть чужое начисление.
+        const [leveled] = await tx
           .update(profiles)
           .set({
-            xp: xpAfter,
             level: levelAfter,
-            coins: before.coins + coinsGained,
-            updatedAt: new Date(),
+            coins: sql`${profiles.coins} + ${levelsGained.length * COINS_PER_LEVEL}`,
           })
-          .where(eq(profiles.id, before.id))
+          .where(eq(profiles.id, profile.id))
           .returning();
-        if (!row) throw new Error('профиль прогрессии не обновился');
-        return row;
+        if (!leveled) throw new Error('профиль прогрессии не обновился');
+        return { profile: leveled, levelsGained };
       });
-
-      return { profile: updated, levelsGained };
     },
 
     /** Счётчик сообщений — отдельно от опыта: он нужен для достижений и статистики. */
     async countMessage(guildId: string, userId: string): Promise<void> {
       const profile = await this.profile(guildId, userId);
+      // Прибавкой, как и опыт: сообщения идут пачками, и чтение-плюс-запись теряло бы их.
       await db
         .update(profiles)
-        .set({ messages: profile.messages + 1, updatedAt: new Date() })
+        .set({ messages: sql`${profiles.messages} + 1`, updatedAt: new Date() })
         .where(eq(profiles.id, profile.id));
     },
 
@@ -169,7 +180,7 @@ export function createProgressionService(deps: { db: Database }) {
       const profile = await this.profile(guildId, userId);
       await db
         .update(profiles)
-        .set({ voiceMinutes: profile.voiceMinutes + minutes, updatedAt: new Date() })
+        .set({ voiceMinutes: sql`${profiles.voiceMinutes} + ${minutes}`, updatedAt: new Date() })
         .where(eq(profiles.id, profile.id));
     },
 
