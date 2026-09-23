@@ -23,6 +23,7 @@ import {
   progressToNext,
 } from './rules.js';
 import { createProgressionService, type ProgressionService } from './service.js';
+import { applyVoiceTransition } from './voice.js';
 
 /** Снятие просроченных покупок — раз в 10 минут: точность до минуты здесь не нужна. */
 const EXPIRY_CRON = '*/10 * * * *';
@@ -121,14 +122,16 @@ export function createProgressionModule(deps: ProgressionModuleDeps): BotModule 
         const guildId = after.guild.id;
         const userId = after.id;
 
-        // Зашёл или переключил канал — сессия открывается заново.
-        if (after.channelId && after.channelId !== before.channelId) {
-          await progression.openVoiceSession(guildId, userId, after.channelId);
-        }
-
-        if (!before.channelId || before.channelId === after.channelId) return;
-
-        const minutes = await progression.closeVoiceSession(guildId, userId, new Date());
+        // При переключении канала старая сессия закрывается раньше, чем откроется новая, —
+        // почему именно так, объяснено в voiceTransition.
+        const minutes = await applyVoiceTransition(
+          progression,
+          guildId,
+          userId,
+          before.channelId,
+          after.channelId,
+          new Date(),
+        );
         if (minutes <= 0) return;
 
         // Платим за общение, а не за подключённый микрофон: если в канале никого больше не

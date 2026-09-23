@@ -518,13 +518,18 @@ export function createProgressionService(deps: { db: Database }) {
       await db.update(purchases).set({ revokedAt: new Date() }).where(eq(purchases.id, purchaseId));
     },
 
-    async openVoiceSession(guildId: string, userId: string, channelId: string): Promise<void> {
+    /**
+     * Открывает сессию — или перезапускает её с `now`, если она уже была. Сессия одна на
+     * человека, поэтому переход между каналами обязан сначала закрыть старую
+     * (`voiceTransition` в voice.ts), иначе её минуты перезапишутся здесь.
+     */
+    async openVoiceSession(guildId: string, userId: string, channelId: string, now = new Date()): Promise<void> {
       await db
         .insert(voiceSessions)
-        .values({ guildId, userId, channelId })
+        .values({ guildId, userId, channelId, joinedAt: now })
         .onConflictDoUpdate({
           target: [voiceSessions.guildId, voiceSessions.userId],
-          set: { channelId, joinedAt: new Date() },
+          set: { channelId, joinedAt: now },
         });
     },
 
