@@ -197,6 +197,13 @@
       "when": 1790155384928,
       "tag": "0027_square_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1790156993888,
+      "tag": "0028_young_newton_destine",
+      "breakpoints": true
     }
   ]
 }

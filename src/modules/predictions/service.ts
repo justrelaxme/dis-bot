@@ -1,8 +1,15 @@
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { Database } from '../../core/db/client.js';
 import { UserError } from '../../core/errors.js';
 import { tournamentEntrantMembers, tournamentEntrants, tournamentMatches } from '../tournaments/schema.js';
-import { matchPredictions, type PredictionRow } from './schema.js';
+import {
+  matchPredictions,
+  predictionBoards,
+  predictionCards,
+  type PredictionBoardRow,
+  type PredictionCardRow,
+  type PredictionRow,
+} from './schema.js';
 import { predictionPayout } from './payout.js';
 
 /**
@@ -19,6 +26,11 @@ export interface PredictionsDeps {
   db: Database;
   /** Начисление монет. Кошелёк живёт в прогрессии, и лезть в её таблицы напрямую нельзя. */
   grantCoins(guildId: string, userId: string, coins: number, reason: string): Promise<void>;
+  /**
+   * Поправка в обе стороны — для пересчёта после исправленного результата. Необязательна:
+   * без неё исправление просто не трогает уже выплаченное.
+   */
+  adjustCoins?(guildId: string, userId: string, delta: number, reason: string): Promise<void>;
 }
 
 export interface PredictionStanding {
@@ -52,6 +64,11 @@ export function createPredictionsService(deps: PredictionsDeps) {
             ? 'Матч ещё не начался.'
             : 'По этому матчу результат уже заявлен — прогноз поздно.',
         );
+      }
+      // Матч начался — обе стороны на месте, идёт драфт. Видя пики, угадывать уже нечестно:
+      // раньше приём закрывался только на заявке результата.
+      if (match.liveAt !== null) {
+        throw new UserError('Матч уже начался — приём прогнозов закрыт.');
       }
       if (entrantId !== match.entrantAId && entrantId !== match.entrantBId) {
         throw new UserError('Выбирать надо одного из соперников этого матча.');
@@ -108,6 +125,7 @@ export function createPredictionsService(deps: PredictionsDeps) {
         .where(
           and(
             isNull(matchPredictions.settledAt),
+            isNull(matchPredictions.voidedAt),
             sql`${tournamentMatches.winnerEntrantId} is not null`,
           ),
         )
@@ -154,6 +172,111 @@ export function createPredictionsService(deps: PredictionsDeps) {
       return { matches: due.length, paid };
     },
 
+    /**
+     * Турнир отменён — нерасчитанные прогнозы по нему аннулируются. Без этого они висели бы
+     * навсегда: у матча отменённого турнира победителя нет, и джоба их не трогала.
+     */
+    async voidTournament(tournamentId: number): Promise<number> {
+      const matches = db
+        .select({ id: tournamentMatches.id })
+        .from(tournamentMatches)
+        .where(eq(tournamentMatches.tournamentId, tournamentId));
+      const rows = await db
+        .update(matchPredictions)
+        .set({ voidedAt: new Date() })
+        .where(
+          and(
+            inArray(matchPredictions.matchId, matches),
+            isNull(matchPredictions.settledAt),
+            isNull(matchPredictions.voidedAt),
+          ),
+        )
+        .returning({ id: matchPredictions.id });
+      return rows.length;
+    },
+
+    /**
+     * Пересчёт после исправленного результата: угадавшие прежнего победителя возвращают
+     * выплату, угадавшие нового — получают. Считается разница, а не заново: уже выплаченное
+     * остаётся выплаченным, и двойного начисления не бывает.
+     */
+    async resettle(matchId: number, winnerEntrantId: number): Promise<number> {
+      const rows = await db
+        .select()
+        .from(matchPredictions)
+        .where(
+          and(
+            eq(matchPredictions.matchId, matchId),
+            sql`${matchPredictions.settledAt} is not null`,
+            isNull(matchPredictions.voidedAt),
+          ),
+        );
+      if (rows.length === 0) return 0;
+
+      const votes = await this.tally(matchId);
+      const total = votes.reduce((sum, row) => sum + row.votes, 0);
+      const forWinner = votes.find((row) => row.entrantId === winnerEntrantId)?.votes ?? 0;
+
+      let changed = 0;
+      for (const row of rows) {
+        const coins = predictionPayout({
+          correct: row.entrantId === winnerEntrantId,
+          votesForPick: forWinner,
+          votesTotal: total,
+        });
+        const delta = coins - row.coinsAwarded;
+        if (delta === 0) continue;
+        const [updated] = await db
+          .update(matchPredictions)
+          .set({ coinsAwarded: coins })
+          .where(and(eq(matchPredictions.id, row.id), eq(matchPredictions.coinsAwarded, row.coinsAwarded)))
+          .returning();
+        if (!updated) continue;
+        await deps.adjustCoins?.(row.guildId, row.userId, delta, `пересчёт прогноза на матч №${matchId}`);
+        changed += 1;
+      }
+      return changed;
+    },
+
+    async boardOf(tournamentId: number): Promise<PredictionBoardRow | null> {
+      const [row] = await db.select().from(predictionBoards).where(eq(predictionBoards.tournamentId, tournamentId));
+      return row ?? null;
+    },
+
+    /** Ветка прогнозов турнира. `false` — её уже завёл другой путь, и только что созданную надо удалить. */
+    async saveBoard(tournamentId: number, threadId: string): Promise<boolean> {
+      const [row] = await db
+        .insert(predictionBoards)
+        .values({ tournamentId, threadId })
+        .onConflictDoNothing()
+        .returning();
+      return row !== undefined;
+    },
+
+    async cardOf(matchId: number): Promise<PredictionCardRow | null> {
+      const [row] = await db.select().from(predictionCards).where(eq(predictionCards.matchId, matchId));
+      return row ?? null;
+    },
+
+    async saveCard(matchId: number, channelId: string, messageId: string): Promise<boolean> {
+      const [row] = await db
+        .insert(predictionCards)
+        .values({ matchId, channelId, messageId })
+        .onConflictDoNothing()
+        .returning();
+      return row !== undefined;
+    },
+
+    /** Закрыть приём на карточке. `true` только у первого вызова. */
+    async lockCard(matchId: number): Promise<boolean> {
+      const [row] = await db
+        .update(predictionCards)
+        .set({ lockedAt: new Date() })
+        .where(and(eq(predictionCards.matchId, matchId), isNull(predictionCards.lockedAt)))
+        .returning();
+      return row !== undefined;
+    },
+
     /** Кто угадывает лучше всех. Только закрытые прогнозы: незакрытые ещё ничего не значат. */
     async standings(guildId: string, limit: number): Promise<PredictionStanding[]> {
       const rows = await db
@@ -164,7 +287,13 @@ export function createPredictionsService(deps: PredictionsDeps) {
           coins: sql<number>`coalesce(sum(${matchPredictions.coinsAwarded}), 0)::int`,
         })
         .from(matchPredictions)
-        .where(and(eq(matchPredictions.guildId, guildId), sql`${matchPredictions.settledAt} is not null`))
+        .where(
+          and(
+            eq(matchPredictions.guildId, guildId),
+            sql`${matchPredictions.settledAt} is not null`,
+            isNull(matchPredictions.voidedAt),
+          ),
+        )
         .groupBy(matchPredictions.userId)
         .orderBy(sql`coalesce(sum(${matchPredictions.coinsAwarded}), 0) desc`)
         .limit(limit);

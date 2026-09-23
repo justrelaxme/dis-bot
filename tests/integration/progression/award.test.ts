@@ -99,3 +99,27 @@ describe('начисление опыта', () => {
     expect(profile.voiceMinutes).toBe(30);
   });
 });
+
+/** Поправка баланса в минус не уводит его ниже нуля: монеты могли быть уже потрачены. */
+describe('поправка баланса', () => {
+  it('вычет больше баланса оставляет ноль, а не долг', async () => {
+    const progression = createProgressionService({ db: pg.db });
+    const guildId = '790000000000000001';
+    const userId = '790000000000000002';
+    await progression.grantCoins(guildId, userId, 30, 'тест');
+
+    await progression.adjustCoins(guildId, userId, -50, 'пересчёт');
+
+    expect((await progression.profile(guildId, userId)).coins).toBe(0);
+  });
+
+  it('прибавка работает как начисление', async () => {
+    const progression = createProgressionService({ db: pg.db });
+    const guildId = '790000000000000003';
+    const userId = '790000000000000004';
+
+    await progression.adjustCoins(guildId, userId, 25, 'пересчёт');
+
+    expect((await progression.profile(guildId, userId)).coins).toBe(25);
+  });
+});

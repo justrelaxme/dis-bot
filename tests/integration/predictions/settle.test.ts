@@ -166,3 +166,79 @@ describe('кто может дать прогноз', () => {
     );
   });
 });
+
+/**
+ * Прогнозы кнопками: приём закрывается на старте матча, отмена турнира аннулирует, исправление
+ * результата пересчитывает выплату разницей.
+ */
+describe('прогноз после начала матча', () => {
+  it('матч начался — приём закрыт', async () => {
+    const { service, guildId, match, ids } = await readyMatch();
+    const predictions = createPredictionsService({ db: pg.db, grantCoins: ledger().grantCoins });
+    await service.startMatch(match.id);
+
+    await expect(predictions.predict(match.id, guildId, 'зритель-1', ids[0] as number)).rejects.toThrow(/приём прогнозов закрыт/);
+  });
+});
+
+describe('отмена турнира', () => {
+  it('нерасчитанные прогнозы аннулируются и не выплачиваются', async () => {
+    const { service, guildId, tournamentId, match, ids } = await readyMatch();
+    const book = ledger();
+    const predictions = createPredictionsService({ db: pg.db, grantCoins: book.grantCoins });
+    await predictions.predict(match.id, guildId, 'зритель-1', ids[0] as number);
+
+    expect(await predictions.voidTournament(tournamentId)).toBe(1);
+    await service.settle(match.id, ids[0] as number, 'organizer', 'resolve', true);
+    await predictions.settleDue(10);
+
+    expect(book.paid).toEqual([]);
+    expect(await predictions.standings(guildId, 10)).toEqual([]);
+  });
+});
+
+describe('пересчёт после исправления', () => {
+  it('угадавший прежнего победителя возвращает, угадавший нового — получает', async () => {
+    const { service, guildId, match, ids } = await readyMatch();
+    const deltas: { userId: string; delta: number }[] = [];
+    const predictions = createPredictionsService({
+      db: pg.db,
+      grantCoins: ledger().grantCoins,
+      adjustCoins: async (_guild, userId, delta) => {
+        deltas.push({ userId, delta });
+      },
+    });
+    await predictions.predict(match.id, guildId, 'зритель-1', ids[0] as number);
+    await predictions.predict(match.id, guildId, 'зритель-2', ids[1] as number);
+    await service.settle(match.id, ids[0] as number, 'organizer', 'resolve', true);
+    await predictions.settleDue(10);
+
+    await predictions.resettle(match.id, ids[1] as number);
+
+    const first = deltas.find((row) => row.userId === 'зритель-1');
+    const second = deltas.find((row) => row.userId === 'зритель-2');
+    expect(first?.delta).toBeLessThan(0);
+    expect(second?.delta).toBeGreaterThan(0);
+    expect((first?.delta ?? 0) + (second?.delta ?? 0)).toBe(0);
+  });
+
+  it('повторный пересчёт ничего не меняет', async () => {
+    const { service, guildId, match, ids } = await readyMatch();
+    const deltas: number[] = [];
+    const predictions = createPredictionsService({
+      db: pg.db,
+      grantCoins: ledger().grantCoins,
+      adjustCoins: async (_guild, _user, delta) => {
+        deltas.push(delta);
+      },
+    });
+    await predictions.predict(match.id, guildId, 'зритель-1', ids[0] as number);
+    await service.settle(match.id, ids[0] as number, 'organizer', 'resolve', true);
+    await predictions.settleDue(10);
+
+    await predictions.resettle(match.id, ids[1] as number);
+    await predictions.resettle(match.id, ids[1] as number);
+
+    expect(deltas).toHaveLength(1);
+  });
+});

@@ -238,6 +238,27 @@ export function createProgressionService(deps: { db: Database }) {
       return row?.count ?? 0;
     },
 
+    /**
+     * Поправка баланса в обе стороны — например, пересчёт прогноза после исправленного
+     * результата. Баланс не уходит ниже нуля: монеты могли быть уже потрачены, и долг перед
+     * магазином был бы хуже недосписанной поправки.
+     */
+    async adjustCoins(guildId: string, userId: string, delta: number, reason: string): Promise<void> {
+      if (delta === 0) return;
+      const profile = await this.profile(guildId, userId);
+      await db
+        .update(profiles)
+        .set({ coins: sql`greatest(${profiles.coins} + ${delta}, 0)`, updatedAt: new Date() })
+        .where(eq(profiles.id, profile.id));
+      await db.insert(auditLog).values({
+        guildId,
+        actorId: 'system',
+        action: 'progression.coins',
+        targetId: userId,
+        details: { coins: delta, reason },
+      });
+    },
+
     async grantAchievement(guildId: string, userId: string, code: string): Promise<AchievementRow | null> {
       const definition = achievementByCode(code);
       if (!definition) throw new Error(`неизвестное достижение: ${code}`);

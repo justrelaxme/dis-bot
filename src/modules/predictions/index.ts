@@ -5,6 +5,7 @@ import type { Logger } from '../../core/logger.js';
 import type { BotModule } from '../../core/module.js';
 import { createProgressionService } from '../progression/service.js';
 import { createTournamentsService } from '../tournaments/services/tournaments.js';
+import { createPredictionsBoard } from './board.js';
 import { accuracy, BASE_REWARD, MAX_MULTIPLIER } from './payout.js';
 import { createPredictionsService } from './service.js';
 
@@ -39,10 +40,21 @@ export function createPredictionsModule(deps: PredictionsModuleDeps): BotModule 
     db: deps.db,
     grantCoins: (guildId, userId, coins, reason) =>
       progression.grantCoins(guildId, userId, coins, reason),
+    adjustCoins: (guildId, userId, delta, reason) => progression.adjustCoins(guildId, userId, delta, reason),
   });
+  const board = createPredictionsBoard({ predictions, tournaments, logger: deps.logger });
 
   return {
     name: 'predictions',
+
+    // Кнопки «За A» / «За B» в ветке прогнозов турнира.
+    events: [board.buttons()],
+
+    async setup(ctx): Promise<void> {
+      // Карточки прогнозов живут ходом турнира: матч стал играбельным — карточка, начался —
+      // приём закрыт, закрыт — итог, исправлен — пересчёт, турнир отменён — аннулирование.
+      board.listen(ctx.bus, ctx.client);
+    },
 
     commands: [
       {

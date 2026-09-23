@@ -1,5 +1,5 @@
 import { index, integer, pgTable, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
-import { tournamentMatches } from '../tournaments/schema.js';
+import { tournamentMatches, tournaments } from '../tournaments/schema.js';
 
 /**
  * Прогнозы на матчи: участник сервера называет победителя и получает монеты, если угадал.
@@ -31,6 +31,12 @@ export const matchPredictions = pgTable(
     settledAt: timestamp('settled_at', { withTimezone: true }),
     /** Сколько монет получено. 0 — прогноз не угадал, и это законный итог. */
     coinsAwarded: integer('coins_awarded').notNull().default(0),
+    /**
+     * Турнир отменён — прогноз аннулирован. Раньше такие прогнозы висели нерасчитанными
+     * навсегда: матч без победителя джоба не трогала, а в таблице прогнозистов они не
+     * считались ни угаданными, ни нет.
+     */
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -42,3 +48,33 @@ export const matchPredictions = pgTable(
 );
 
 export type PredictionRow = typeof matchPredictions.$inferSelect;
+
+/**
+ * Публичная ветка «Прогнозы» турнира. Ветки матчей закрытые — зрители их не видят, — поэтому у
+ * прогнозов своё место под каналом объявлений, одно на турнир.
+ */
+export const predictionBoards = pgTable('prediction_boards', {
+  tournamentId: integer('tournament_id')
+    .primaryKey()
+    .references(() => tournaments.id, { onDelete: 'cascade' }),
+  threadId: text('thread_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Карточка матча в ветке прогнозов: кнопки «За A» / «За B» и живой расклад голосов. Строка
+ * одна на матч — карточку перерисовывают на месте, а не шлют новую на каждый голос.
+ */
+export const predictionCards = pgTable('prediction_cards', {
+  matchId: integer('match_id')
+    .primaryKey()
+    .references(() => tournamentMatches.id, { onDelete: 'cascade' }),
+  channelId: text('channel_id').notNull(),
+  messageId: text('message_id').notNull(),
+  /** Когда закрыт приём: матч начался. */
+  lockedAt: timestamp('locked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type PredictionBoardRow = typeof predictionBoards.$inferSelect;
+export type PredictionCardRow = typeof predictionCards.$inferSelect;
