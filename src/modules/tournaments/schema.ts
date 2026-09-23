@@ -10,7 +10,9 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import type { BracketFormat, MatchBracket } from './bracket.js';
 // Только тип: на выполнении импорт стирается, поэтому взаимная ссылка с pools.ts кольца
 // в модулях не образует.
@@ -737,3 +739,64 @@ export type PollRow = typeof tournamentPolls.$inferSelect;
 export type CycleRow = typeof tournamentCycles.$inferSelect;
 export type ScheduleRow = typeof tournamentSchedules.$inferSelect;
 export type TournamentSettingsRow = typeof tournamentSettings.$inferSelect;
+
+/**
+ * Сезонная серия: еженедельные турниры складываются в одну таблицу. Отдельно от сезонов
+ * прогрессии — там опыт за общение и активность, здесь спорт: кто сколько прошёл в сетках.
+ * Смешай их — и корону сезона выигрывал бы тот, кто больше пишет в чат.
+ *
+ * Открытый сезон на сервере один — это держит частичный уникальный индекс, как и у прогрессии.
+ */
+export const circuitSeasons = pgTable(
+  'circuit_seasons',
+  {
+    id: serial('id').primaryKey(),
+    guildId: text('guild_id').notNull(),
+    name: text('name').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    /** Чемпион сезона — лидер таблицы в момент закрытия. */
+    championUserId: text('champion_user_id'),
+    championName: text('champion_name'),
+  },
+  (table) => [uniqueIndex('circuit_seasons_open_uq').on(table.guildId).where(sql`${table.closedAt} is null`)],
+);
+
+/**
+ * Очки серии: строка на человека за турнир. Строка, а не сумма в профиле, — чтобы таблицу
+ * можно было пересчитать и проверить: за что именно у человека столько очков.
+ */
+export const circuitPoints = pgTable(
+  'circuit_points',
+  {
+    id: serial('id').primaryKey(),
+    seasonId: integer('season_id')
+      .notNull()
+      .references(() => circuitSeasons.id, { onDelete: 'cascade' }),
+    tournamentId: integer('tournament_id')
+      .notNull()
+      .references(() => tournaments.id, { onDelete: 'cascade' }),
+    guildId: text('guild_id').notNull(),
+    userId: text('user_id').notNull(),
+    /**
+     * Имя для таблицы на сайте. У одиночек — имя участника из сетки (оно и так публично на
+     * странице турнира), у игроков команд — отображаемое имя на сервере, которое бот
+     * подтягивает после начисления.
+     */
+    displayName: text('display_name'),
+    game: text('game').$type<TournamentGame>().notNull(),
+    place: integer('place').notNull(),
+    placeTo: integer('place_to').notNull(),
+    fieldSize: integer('field_size').notNull(),
+    points: integer('points').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Турнир начисляет очки один раз, сколько бы раз ни пришло событие о его конце.
+    unique('circuit_points_uq').on(table.seasonId, table.tournamentId, table.userId),
+    index('circuit_points_season_idx').on(table.seasonId, table.userId),
+  ],
+);
+
+export type CircuitSeasonRow = typeof circuitSeasons.$inferSelect;
+export type CircuitPointRow = typeof circuitPoints.$inferSelect;

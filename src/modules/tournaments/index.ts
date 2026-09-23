@@ -25,12 +25,14 @@ import { createTournamentEventsGateway } from './discord/events.js';
 import { createTournamentPollCommand } from './commands/poll.js';
 import { createCastCommand } from './commands/cast.js';
 import { createRosterCommand } from './commands/roster.js';
+import { createSeasonCommand } from './commands/season.js';
 import { createStatsCommand } from './commands/stats.js';
 import { createChannelsGateway } from './discord/channels.js';
 import { createDiscordPollGateway } from './discord/poll-gateway.js';
 import { createCycleService } from './services/cycle.js';
 import { createFormatsService } from './services/formats.js';
 import { createRostersService } from './services/rosters.js';
+import { createCircuitService } from './services/circuit.js';
 import { createTournamentSettingsService } from './services/settings.js';
 import { createMessagesService } from './services/messages.js';
 import { createDotaVerifier } from './services/dota-verify.js';
@@ -192,6 +194,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
   const events = createTournamentEventsGateway(deps.logger);
 
   const settings = createTournamentSettingsService({ db: deps.db });
+  const circuit = createCircuitService({ db: deps.db });
   const staff = { settings, cache: deps.cache, logger: deps.logger };
 
   const play = {
@@ -219,6 +222,7 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
       createMatchCommand(play),
       createCheckinCommand(play),
       createStatsCommand({ db: deps.db, publicBaseUrl: deps.publicBaseUrl }),
+      createSeasonCommand({ circuit, staff, publicBaseUrl: deps.publicBaseUrl }),
       // Заявку собирает участник, а у `/tournament` стоит право «Управление сервером» — поэтому
       // своя команда, доступная всем.
       ...(deps.grants
@@ -237,6 +241,25 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
     ],
 
     async setup(ctx): Promise<void> {
+      // Турнир доигран — очки сезонной серии всем, кто играл. Без открытого сезона начисление
+      // ничего не делает. Имена игроков команд подтягиваются из Discord в фоне: для таблицы
+      // на сайте, где упоминания не работают.
+      ctx.bus.on('tournament.finished', async ({ tournamentId, guildId }) => {
+        const result = await circuit.award(tournamentId).catch((error: unknown) => {
+          ctx.logger.error({ err: error, tournamentId }, 'очки сезонной серии не начислены');
+          return null;
+        });
+        if (!result || result.unnamed.length === 0) return;
+        const guild = ctx.client.guilds.cache.get(guildId);
+        if (!guild) return;
+        void (async () => {
+          for (const userId of result.unnamed) {
+            const member = await guild.members.fetch(userId).catch(() => null);
+            if (member) await circuit.nameUnnamed(tournamentId, userId, member.displayName);
+          }
+        })().catch((error: unknown) => ctx.logger.warn({ err: error, tournamentId }, 'имена для таблицы серии не подтянулись'));
+      });
+
       // Матч начался — пошёл таймер драфта. Слушатель, а не вызов: начать матч может кнопка в
       // ветке, кнопка на странице драфта и организатор, и таймер обязан пойти в любом случае.
       ctx.bus.on('match.live', async (payload) => {

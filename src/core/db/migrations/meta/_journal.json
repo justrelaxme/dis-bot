@@ -218,6 +218,13 @@
       "when": 1790159205031,
       "tag": "0030_amazing_gunslinger",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790160686737,
+      "tag": "0031_wise_the_professor",
+      "breakpoints": true
     }
   ]
 }

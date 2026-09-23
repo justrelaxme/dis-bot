@@ -79,6 +79,7 @@ function medalColor(entry: LeaderboardEntry): string {
 
 const NAV = [
   { href: '/rules', label: 'Правила' },
+  { href: '/season', label: 'Сезон' },
   { href: '/hall', label: 'Зал славы' },
   { href: '/leaderboard/dota2', label: 'Dota 2' },
   { href: '/leaderboard/valorant', label: 'Valorant' },
@@ -628,7 +629,26 @@ export function renderHall(
     finalScore?: string | null;
   }[],
   titles: { name: string; titles: number }[],
+  /** Чемпионы закрытых сезонов серии — выше турниров: это звание целого сезона. */
+  seasons: { name: string; champion: string | null; closedAt: Date | null }[] = [],
 ): string {
+  const seasonBlock =
+    seasons.length === 0
+      ? ''
+      : `<h2>Чемпионы сезонов</h2>
+<div class="scroll"><table>
+<thead><tr><th>Сезон</th><th>Чемпион</th><th class="num">Закрыт</th></tr></thead>
+<tbody>${seasons
+          .map(
+            (row, index) => `<tr style="--delay:${index * 18}ms">
+<td class="acct">${escape(row.name)}</td>
+<td class="champ">${row.champion ? escape(row.champion) : '<span class="dim">не определён</span>'}</td>
+<td class="num">${row.closedAt ? escape(row.closedAt.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short', year: 'numeric' })) : '—'}</td>
+</tr>`,
+          )
+          .join('\n')}</tbody>
+</table></div>`;
+
   if (finished.length === 0) {
     return `<h1>Зал славы</h1>
 <p class="lede">Здесь остаётся то, что уже сыграно: чемпионы, даты, число участников.</p>
@@ -669,6 +689,8 @@ export function renderHall(
 
   return `<h1>Зал славы</h1>
 <p class="lede">Что уже сыграно. Личные цифры — команда <code>/stats</code> в Discord.</p>
+${seasonBlock}
+${seasonBlock ? '<h2>Турниры</h2>' : ''}
 <div class="scroll"><table>
 <thead><tr><th>Турнир</th><th>Игра</th><th>Чемпион</th><th class="num">Финал</th><th class="num">Уч.</th><th class="num">Матчей</th><th class="num">Когда</th></tr></thead>
 <tbody>${rows}</tbody>
@@ -688,4 +710,43 @@ ${
 export function renderNotFound(what: string): string {
   return `<h1>Не найдено</h1>
 <div class="empty"><p>${escape(what)}</p></div>`;
+}
+
+/**
+ * Таблица сезонной серии. Очки видны вместе с тем, из чего они сложились, — числом турниров и
+ * титулов: таблица, которую нельзя пересчитать глазами, вызывает споры вместо интереса.
+ */
+export function renderSeason(input: {
+  season: { name: string; startedAt: Date } | null;
+  table: { name: string | null; points: number; tournaments: number; titles: number; best: number }[];
+  bonus: number;
+}): string {
+  if (!input.season) {
+    return `<h1>Сезон</h1>
+<p class="lede">Сейчас сезон не идёт. Когда организатор начнёт его командой <code>/season start</code>, каждый доигранный турнир будет приносить очки всем, кто в нём играл.</p>`;
+  }
+  const since = input.season.startedAt.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+  const rows = input.table
+    .map(
+      (row, index) => `<tr style="--delay:${index * 18}ms">
+<td class="pos">${index + 1}</td>
+<td class="acct">${row.name ? escape(row.name) : '<span class="dim">игрок</span>'}</td>
+<td class="num">${row.points}</td>
+<td class="num">${row.tournaments}</td>
+<td class="num">${row.titles > 0 ? row.titles : '<span class="dim">—</span>'}</td>
+<td class="num">${row.best}</td>
+</tr>`,
+    )
+    .join('\n');
+  return `<p class="eyebrow">Сезонная серия · с ${escape(since)}</p>
+<h1>${escape(input.season.name)}</h1>
+<p class="lede">Каждый доигранный турнир приносит очки всем, кто играл: по одному за каждого, кого оставил позади, одно за участие и ${input.bonus} сверху за титул. В конце сезона лидер таблицы становится чемпионом сезона.</p>
+${
+  rows
+    ? `<div class="scroll"><table>
+<thead><tr><th class="pos">#</th><th>Игрок</th><th class="num">Очки</th><th class="num">Турниров</th><th class="num">Титулов</th><th class="num">Лучшее место</th></tr></thead>
+<tbody>${rows}</tbody>
+</table></div>`
+    : '<div class="empty"><p>В этом сезоне ещё ни один турнир не доигран.</p></div>'
+}`;
 }

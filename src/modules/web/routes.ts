@@ -14,6 +14,8 @@ import {
   tournaments,
   type TournamentGame,
 } from '../tournaments/schema.js';
+import { TITLE_BONUS } from '../tournaments/placements.js';
+import { createCircuitService } from '../tournaments/services/circuit.js';
 import { finishedTournaments, titlesByTeam } from '../tournaments/services/records.js';
 import {
   page,
@@ -21,6 +23,7 @@ import {
   renderHall,
   renderLeaderboard,
   renderNotFound,
+  renderSeason,
   renderTournamentList,
   type LeaderboardEntry,
 } from './render.js';
@@ -96,6 +99,7 @@ function isGame(value: string): value is TournamentGame {
 
 export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps): void {
   const { db, cache } = deps;
+  const circuit = createCircuitService({ db });
 
   /** Отдаёт готовый HTML из кэша, а если его нет — строит и кладёт. */
   async function cached(
@@ -151,13 +155,39 @@ export function registerWebRoutes(server: FastifyInstance, deps: WebRoutesDeps):
 
   server.get('/hall', async (_request, reply) => {
     const html = await cached('web:hall', async () => {
-      const [finished, titles] = await Promise.all([
+      const [finished, titles, seasons] = await Promise.all([
         finishedTournaments(db, deps.guildId, HALL_LIMIT),
         titlesByTeam(db, deps.guildId, TITLES_LIMIT),
+        circuit.champions(deps.guildId),
       ]);
-      return page('Зал славы', renderHall(finished, titles), { current: '/hall' });
+      return page(
+        'Зал славы',
+        renderHall(
+          finished,
+          titles,
+          seasons.map((row) => ({ name: row.name, champion: row.championName, closedAt: row.closedAt })),
+        ),
+        { current: '/hall' },
+      );
     });
 
+    return reply.type('text/html; charset=utf-8').send(html);
+  });
+
+  /**
+   * Таблица сезонной серии. Та же короткая свежесть, что у страницы события: очки меняются в
+   * момент финала турнира, и таблица, отстающая на минуту, выглядит сломанной.
+   */
+  server.get('/season', async (_request, reply) => {
+    const html = await cachedLive('web:season', async () => {
+      const season = await circuit.open(deps.guildId);
+      const table = season ? await circuit.standings(season.id, 50) : [];
+      return page(
+        season ? `Сезон «${season.name}»` : 'Сезон',
+        renderSeason({ season, table, bonus: TITLE_BONUS }),
+        { current: '/season', description: 'Сезонная серия турниров сервера: таблица очков.' },
+      );
+    });
     return reply.type('text/html; charset=utf-8').send(html);
   });
 
