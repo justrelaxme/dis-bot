@@ -1282,3 +1282,47 @@ describe('ход матча после отмены и сбоев', () => {
     expect(order).toEqual([`reset:${final.id}`, `ready:${final.id}`]);
   });
 });
+
+/** Счёт личных встреч — по всем закрытым матчам сервера, без проходов по пропуску. */
+describe('личные встречи', () => {
+  it('считает встречи двух людей в разных турнирах', async () => {
+    const guildId = '850000000000000001';
+    const service = createTournamentsService({ db: pg.db });
+    const duel = async (winnerIndex: 0 | 1): Promise<number> => {
+      const tournament = await service.create({
+        guildId,
+        name: 'Дуэль',
+        game: 'dota2',
+        format: 'single-elim',
+        entryMode: 'solo',
+        teamSize: 1,
+        maxEntrants: 4,
+        seeding: 'rank',
+        bestOf: 1,
+        requireVerified: false,
+        createdBy: 'organizer',
+      });
+      await service.openRegistration(tournament.id, new Date(Date.now() + 3_600_000));
+      const ids: number[] = [];
+      for (const user of ['851000000000000001', '851000000000000002']) {
+        ids.push((await service.createEntrant(tournament.id, user, user)).id);
+        await service.checkIn(tournament.id, user);
+      }
+      const view = await service.start(tournament.id, new Map(ids.map((id, index) => [id, 10 - index])));
+      const [final] = view.matches;
+      await service.resolve(final!.id, 'organizer', ids[winnerIndex]!);
+      return final!.id;
+    };
+
+    await duel(0);
+    await duel(0);
+    const last = await duel(1);
+
+    expect(await service.headToHead(guildId, '851000000000000001', '851000000000000002')).toEqual({ games: 3, winsA: 2, winsB: 1 });
+    expect(await service.headToHead(guildId, '851000000000000002', '851000000000000001')).toEqual({ games: 3, winsA: 1, winsB: 2 });
+    // Идущий матч в счёт не входит: он ещё не сыгран.
+    expect((await service.headToHead(guildId, '851000000000000001', '851000000000000002', last)).games).toBe(2);
+    // Чужой сервер — чужая история.
+    expect((await service.headToHead('859999999999999999', '851000000000000001', '851000000000000002')).games).toBe(0);
+  });
+});

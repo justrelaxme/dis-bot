@@ -33,6 +33,13 @@ export interface MatchCard {
   b: Side;
   draftUrl: string | null;
   live: boolean;
+  /** Прошлые встречи этих соперников на сервере. `null` — не встречались. */
+  history: { games: number; winsA: number; winsB: number; byCaptains: boolean } | null;
+}
+
+/** Соперничество — от трёх встреч, где счёт почти равный: такие пары и ждут. */
+export function isRivalry(history: { games: number; winsA: number; winsB: number }): boolean {
+  return history.games >= 3 && Math.abs(history.winsA - history.winsB) <= 1;
 }
 
 export function matchCardText(card: MatchCard): string {
@@ -49,6 +56,11 @@ export function matchCardText(card: MatchCard): string {
     '',
     ...(voices.length > 0 ? [`Голосовые: ${voices.map((id) => `<#${id}>`).join(' · ')}`] : []),
     ...(card.draftUrl ? [`Драфт: ${card.draftUrl} — ссылки на ходы ушли капитанам в личку.`] : []),
+    ...(card.history
+      ? [
+          `${isRivalry(card.history) ? '🔥 Соперничество · ' : ''}Личные встречи${card.history.byCaptains ? ' капитанов' : ''}: ${card.a.name} **${card.history.winsA}** — **${card.history.winsB}** ${card.b.name}`,
+        ]
+      : []),
     '',
     `${mark(card.a)} ${card.a.name} · ${mark(card.b)} ${card.b.name}`,
     card.live
@@ -80,12 +92,20 @@ export async function buildMatchCard(deps: PlayDeps, match: MatchRow): Promise<M
   };
   const draft = deps.drafts ? await deps.drafts.byMatch(match.id) : null;
 
+  const captainA = view.entrants.find((row) => row.id === match.entrantAId)?.captainUserId;
+  const captainB = view.entrants.find((row) => row.id === match.entrantBId)?.captainUserId;
+  const past =
+    captainA && captainB
+      ? await deps.tournaments.headToHead(view.tournament.guildId, captainA, captainB, match.id).catch(() => null)
+      : null;
+
   return {
     matchId: match.id,
     a: await sideOf(match.entrantAId, match.presentAAt !== null),
     b: await sideOf(match.entrantBId, match.presentBAt !== null),
     draftUrl: draft ? `${deps.publicBaseUrl}/draft/${match.id}` : null,
     live: match.liveAt !== null,
+    history: past && past.games > 0 ? { ...past, byCaptains: view.tournament.entryMode === 'team' } : null,
   };
 }
 

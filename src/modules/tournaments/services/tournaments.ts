@@ -1585,6 +1585,39 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
         .orderBy(asc(tournamentMatches.id));
     },
 
+    /**
+     * Счёт личных встреч двух людей на этом сервере — по всем закрытым матчам всех турниров.
+     *
+     * Бот знает исход каждого матча, но до сих пор не умел сказать «вы играли семь раз, счёт
+     * 4:3», а именно это помнят и о чём спорят перед игрой. Сторона матча — участник, а
+     * человек за ним — капитан: у одиночек это сам игрок, у команд — тот, кто её собрал.
+     * Проход без игры по пропуску в сетке встречей не считается: соперника там не было.
+     */
+    async headToHead(
+      guildId: string,
+      userA: string,
+      userB: string,
+      excludeMatchId?: number,
+    ): Promise<{ games: number; winsA: number; winsB: number }> {
+      const result = await db.execute<{ winner_captain: string }>(sql`
+        select case when w.id = ea.id then ea.captain_user_id else eb.captain_user_id end as winner_captain
+        from ${tournamentMatches} m
+        join ${tournaments} t on t.id = m.tournament_id
+        join ${tournamentEntrants} ea on ea.id = m.entrant_a_id
+        join ${tournamentEntrants} eb on eb.id = m.entrant_b_id
+        join ${tournamentEntrants} w on w.id = m.winner_entrant_id
+        where t.guild_id = ${guildId}
+          and m.state in ('confirmed', 'walkover')
+          and m.id <> ${excludeMatchId ?? 0}
+          and (
+            (ea.captain_user_id = ${userA} and eb.captain_user_id = ${userB})
+            or (ea.captain_user_id = ${userB} and eb.captain_user_id = ${userA})
+          )
+      `);
+      const winsA = result.rows.filter((row) => row.winner_captain === userA).length;
+      return { games: result.rows.length, winsA, winsB: result.rows.length - winsA };
+    },
+
     /** Ветки закрытых матчей — чтобы архивировать их при уборке. */
     async closedThreads(tournamentId: number): Promise<string[]> {
       const rows = await db

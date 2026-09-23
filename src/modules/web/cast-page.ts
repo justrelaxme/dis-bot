@@ -109,6 +109,7 @@ body.clear #stage .fill { background:rgba(16,19,25,.86); }
 /* Табло матча */
 .vs { height:100%; display:grid; grid-template-rows:auto 1fr auto; }
 .vs .round { font-family:var(--mono); font-size:30px; letter-spacing:.24em; text-transform:uppercase; color:var(--dim); text-align:center; }
+.vs .past { margin-top:14px; font-size:34px; letter-spacing:.12em; color:var(--accent); }
 .vs .face { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:60px; }
 .vs .team { font-family:var(--display); font-size:92px; font-weight:800; letter-spacing:-.03em; line-height:1.05; overflow-wrap:anywhere; }
 .vs .team.a { color:var(--side-a); text-align:right; }
@@ -246,7 +247,9 @@ const CAST_SCRIPT = `
         '<div class="legend"><span>' + pa + '% за ' + esc(f.a.name) + '</span><span>' + total + ' прогнозов</span><span>' + (100 - pa) + '% за ' + esc(f.b.name) + '</span></div></div>'
       : '<div class="poll"><div class="legend"><span></span><span>Прогнозы — кнопками в ветке «Прогнозы» в Discord</span><span></span></div></div>';
     function seed(s) { return s != null ? '<span class="seed">сид ' + s + '</span>' : ''; }
-    return '<div class="scene vs"><div class="round">' + esc(f.label) + ' · матч ' + f.id + '</div>' +
+    var h = f.history;
+    var past = h ? '<div class="past">' + (h.games >= 3 && Math.abs(h.winsA - h.winsB) <= 1 ? 'Соперничество · ' : '') + 'личные встречи ' + h.winsA + ' — ' + h.winsB + '</div>' : '';
+    return '<div class="scene vs"><div class="round">' + esc(f.label) + ' · матч ' + f.id + past + '</div>' +
       '<div class="face"><div class="team a">' + seed(f.a.seed) + esc(f.a.name) + '</div><div class="score">' + esc(score) + '</div><div class="team b">' + seed(f.b.seed) + esc(f.b.name) + '</div></div>' + poll + '</div>';
   }
 

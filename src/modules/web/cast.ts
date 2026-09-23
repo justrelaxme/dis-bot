@@ -13,6 +13,7 @@ import {
   type MatchRow,
 } from '../tournaments/schema.js';
 import { createDraftsService } from '../tournaments/services/drafts.js';
+import { createTournamentsService, type TournamentsService } from '../tournaments/services/tournaments.js';
 import { standingsOf } from '../tournaments/standings.js';
 import { GAME_IDENTITY } from './art.js';
 import {
@@ -68,6 +69,8 @@ export interface CastPayload {
     state: string;
     live: boolean;
     votes: { a: number; b: number };
+    /** Личные встречи — строка на табло перед матчем. */
+    history: { games: number; winsA: number; winsB: number } | null;
   } | null;
   draft: {
     bans: { a: CastPick[]; b: CastPick[] };
@@ -118,7 +121,12 @@ export function createCastStateService(db: Database) {
 }
 
 export async function buildCastPayload(
-  deps: { db: Database; drafts: ReturnType<typeof createDraftsService>; predictions: ReturnType<typeof createPredictionsService> },
+  deps: {
+    db: Database;
+    drafts: ReturnType<typeof createDraftsService>;
+    predictions: ReturnType<typeof createPredictionsService>;
+    headToHead: TournamentsService['headToHead'];
+  },
   tournamentId: number,
   state: CastStateRow | null,
   /**
@@ -184,6 +192,9 @@ export async function buildCastPayload(
   if (featuredMatch && featuredMatch.entrantAId !== null && featuredMatch.entrantBId !== null) {
     const votes = await deps.predictions.tally(featuredMatch.id);
     const votesOf = (id: number): number => votes.find((row) => row.entrantId === id)?.votes ?? 0;
+    const captainA = entrant(featuredMatch.entrantAId)?.captainUserId;
+    const captainB = entrant(featuredMatch.entrantBId)?.captainUserId;
+    const past = captainA && captainB ? await deps.headToHead(tournament.guildId, captainA, captainB, featuredMatch.id) : null;
     featured = {
       id: featuredMatch.id,
       label: roundLabel(featuredMatch, upperRounds, lowerRounds),
@@ -192,6 +203,7 @@ export async function buildCastPayload(
       state: featuredMatch.state,
       live: featuredMatch.liveAt !== null,
       votes: { a: votesOf(featuredMatch.entrantAId), b: votesOf(featuredMatch.entrantBId) },
+      history: past && past.games > 0 ? past : null,
     };
   }
 
@@ -254,6 +266,8 @@ export function registerCastRoutes(server: FastifyInstance, deps: CastRoutesDeps
   // Только расклад голосов: начислений отсюда не бывает.
   const predictions = createPredictionsService({ db: deps.db, grantCoins: async () => {} });
   const states = createCastStateService(deps.db);
+  // Только чтение: личные встречи для табло.
+  const matches = createTournamentsService({ db: deps.db });
   const grants = createGrantsService({ db: deps.db });
 
   const tournamentOf = async (id: number) => {
@@ -277,7 +291,7 @@ export function registerCastRoutes(server: FastifyInstance, deps: CastRoutesDeps
     if (!tournament) return reply.code(404).send({ error: 'Такого турнира нет.' });
     const pinned = isCastSceneRequest(request.query.scene) ? request.query.scene : undefined;
     const payload = await buildCastPayload(
-      { db: deps.db, drafts, predictions },
+      { db: deps.db, drafts, predictions, headToHead: matches.headToHead },
       id,
       await states.get(tournament.guildId),
       pinned,
@@ -346,7 +360,7 @@ export function registerCastRoutes(server: FastifyInstance, deps: CastRoutesDeps
     // Сцена открыта в чужом браузере — сообщаем ей тем же живым потоком, что и о матчах.
     await deps.bus?.emit('cast.changed', { guildId: grant.guildId, tournamentId: tournament.id }).catch(() => undefined);
 
-    const payload = await buildCastPayload({ db: deps.db, drafts, predictions }, tournament.id, await states.get(grant.guildId));
+    const payload = await buildCastPayload({ db: deps.db, drafts, predictions, headToHead: matches.headToHead }, tournament.id, await states.get(grant.guildId));
     return reply.header('cache-control', 'no-store').send(payload);
   });
 }

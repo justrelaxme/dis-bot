@@ -14,6 +14,7 @@ const card = (over: Partial<MatchCard> = {}): MatchCard => ({
   b: { name: 'Браво', members: ['u3'], voiceChannelId: 'v-b', present: true },
   draftUrl: 'https://bot.example/draft/12',
   live: false,
+  history: null,
   ...over,
 });
 
@@ -45,6 +46,24 @@ describe('карточка матча', () => {
 
     expect(matchCardButtons(live)).toEqual([]);
     expect(matchCardText(live)).toContain('/match report');
+  });
+
+  /** Счёт личных встреч — то, что помнят и о чём спорят перед игрой. */
+  it('показывает личные встречи, а равный счёт от трёх игр — соперничество', () => {
+    const rivals = matchCardText(card({ history: { games: 5, winsA: 3, winsB: 2, byCaptains: false } }));
+    const oneSided = matchCardText(card({ history: { games: 4, winsA: 4, winsB: 0, byCaptains: false } }));
+
+    expect(rivals).toContain('🔥 Соперничество · Личные встречи: Альфа **3** — **2** Браво');
+    expect(oneSided).toContain('Личные встречи: Альфа **4** — **0** Браво');
+    expect(oneSided).not.toContain('Соперничество');
+  });
+
+  it('у команд встречи — по капитанам, и так и сказано', () => {
+    expect(matchCardText(card({ history: { games: 1, winsA: 1, winsB: 0, byCaptains: true } }))).toContain('Личные встречи капитанов');
+  });
+
+  it('не встречались — строки нет', () => {
+    expect(matchCardText(card())).not.toContain('Личные встречи');
   });
 
   it('без драфта о таймере драфта не говорит', () => {
