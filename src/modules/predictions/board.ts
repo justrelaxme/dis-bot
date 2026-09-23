@@ -96,6 +96,12 @@ export interface BoardDeps {
 export function createPredictionsBoard(deps: BoardDeps) {
   const { predictions, tournaments, logger } = deps;
   const timers = new Map<number, NodeJS.Timeout>();
+  /**
+   * Создание ветки — по одному на турнир. На старте событие «матч готов» приходит на каждый
+   * матч первого круга разом, и каждое завело бы свою ветку: лишние удалились бы, но сообщения
+   * «начата ветка» остались бы в канале объявлений.
+   */
+  const boards = new Map<number, Promise<string | null>>();
 
   /** Работа в фон: слушатель шины возвращается сразу, отказ — в лог. */
   const background = (what: string, work: () => Promise<unknown>): void => {
@@ -114,13 +120,23 @@ export function createPredictionsBoard(deps: BoardDeps) {
       matchId,
       a: { id: match.entrantAId, name: nameOf(match.entrantAId), votes: votesOf(match.entrantAId) },
       b: { id: match.entrantBId, name: nameOf(match.entrantBId), votes: votesOf(match.entrantBId) },
-      locked: card?.lockedAt !== null && card?.lockedAt !== undefined,
+      // Закрыта и тогда, когда матч начался раньше, чем карточка успела выйти: иначе она вышла
+      // бы с кнопками, на которые уже нельзя ответить.
+      locked: (card?.lockedAt !== null && card?.lockedAt !== undefined) || match.liveAt !== null,
       winnerId: match.winnerEntrantId,
     };
   }
 
   /** Ветка прогнозов турнира — существующая или новая. `null` — завести негде. */
-  async function ensureBoard(guild: Guild, tournamentId: number): Promise<string | null> {
+  function ensureBoard(guild: Guild, tournamentId: number): Promise<string | null> {
+    const running = boards.get(tournamentId);
+    if (running) return running;
+    const work = createBoard(guild, tournamentId).finally(() => boards.delete(tournamentId));
+    boards.set(tournamentId, work);
+    return work;
+  }
+
+  async function createBoard(guild: Guild, tournamentId: number): Promise<string | null> {
     const existing = await predictions.boardOf(tournamentId);
     if (existing) return existing.threadId;
 
@@ -220,6 +236,22 @@ export function createPredictionsBoard(deps: BoardDeps) {
         background('итог на карточке прогноза не показан', async () => {
           await predictions.lockCard(matchId);
           await refreshNow(client, matchId);
+        });
+      });
+      // Матч пересобирается с другой парой: прогнозы и карточку прежней пары — сбросить сразу,
+      // не в фоне. Следом придёт «матч готов», и новая карточка выйдет, только если старой в
+      // базе уже нет. Сообщение прежней карточки удаляется в фоне — это только Discord.
+      bus.on('match.reset', async ({ matchId }) => {
+        const stale = await predictions.resetMatch(matchId).catch((error: unknown) => {
+          logger.warn({ err: error, matchId }, 'прогнозы пересобираемого матча не сброшены');
+          return null;
+        });
+        if (!stale) return;
+        background('старая карточка прогноза не удалилась', async () => {
+          const channel = await client.channels.fetch(stale.channelId).catch(() => null);
+          if (!channel?.isTextBased()) return;
+          const message = await channel.messages.fetch(stale.messageId).catch(() => null);
+          await message?.delete();
         });
       });
       bus.on('match.corrected', async ({ matchId, winnerEntrantId }) => {

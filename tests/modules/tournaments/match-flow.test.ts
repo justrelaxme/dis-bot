@@ -113,3 +113,37 @@ describe('джоба хода матча', () => {
     expect(sent).toEqual([]);
   });
 });
+
+/**
+ * Кнопки сигнала о неявке живут дольше самой неявки: опоздавшие пришли и сыграли, а старая
+ * «Техпобеда» закрыла бы сыгранный матч как неявку.
+ */
+describe('кнопки организатора при неявке', () => {
+  it('у начавшегося матча решение не принимается, кнопки убираются', async () => {
+    const { createMatchFlowHandler } = await import('../../../src/modules/tournaments/discord/match-flow.js');
+    const walkover = vi.fn();
+    const update = vi.fn(async () => {});
+    const handler = createMatchFlowHandler({
+      tournaments: {
+        matchById: vi.fn(async () => ({ id: 12, tournamentId: 7, state: 'ready', liveAt: new Date() })),
+        walkover,
+      },
+      staff: { settings: { get: vi.fn(async () => null) }, logger: { warn: vi.fn(), error: vi.fn() } },
+    } as never);
+    const interaction = {
+      isButton: () => true,
+      isModalSubmit: () => false,
+      customId: 'nw:12:1',
+      guild: { id: 'g' },
+      member: { permissions: { has: () => true }, roles: [] },
+      user: { id: 'org' },
+      message: { content: 'Неявка' },
+      update,
+    };
+
+    await handler.handle({ logger: { error: vi.fn() } } as never, interaction as never);
+
+    expect(walkover).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ components: [] }));
+  });
+});

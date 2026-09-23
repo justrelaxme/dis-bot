@@ -14,6 +14,7 @@ import {
   createTeamCommand,
   closeTournamentRooms,
 } from './commands/play.js';
+import { refreshMatchCard } from './discord/match-card.js';
 import { createMatchFlowHandler, runMatchFlow } from './discord/match-flow.js';
 import { closeDueRegistrations } from './discord/registration.js';
 import { startTournament } from './discord/start.js';
@@ -238,6 +239,14 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
         await drafts.arm(payload.matchId).catch((error: unknown) => {
           ctx.logger.error({ err: error, matchId: payload.matchId }, 'матч начался, но таймер драфта не запустился');
         });
+        // Карточка в ветке — в фон: событие публикуется посреди нажатия, а правка сообщения
+        // Discord не должна съедать окно ответа.
+        const guild = ctx.client.guilds.cache.get(payload.guildId);
+        if (guild) {
+          void refreshMatchCard(play, guild, payload.matchId).catch((error: unknown) => {
+            ctx.logger.warn({ err: error, matchId: payload.matchId }, 'карточка начавшегося матча не перерисовалась');
+          });
+        }
       });
     },
 

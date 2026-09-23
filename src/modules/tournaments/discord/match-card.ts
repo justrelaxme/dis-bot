@@ -2,6 +2,7 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle, type Guild } from 'discor
 import type { Logger } from '../../../core/logger.js';
 import type { PlayDeps } from '../commands/play.js';
 import type { MatchRow } from '../schema.js';
+import { staffAlert } from './staff.js';
 
 /**
  * Карточка «матч готов» в ветке матча.
@@ -106,25 +107,54 @@ export async function postMatchCards(deps: PlayDeps, guild: Guild, tournamentId:
     return;
   }
 
+  // Канал для веток задан, а ветку создать не вышло (нет права, канал удалён): карточку
+  // выложить некуда, и без неё матч ждал бы «На месте» вечно, никому ничего не сказав.
+  // Начинаем такие матчи сразу, а организатора зовём один раз за турнир — чинить права.
+  const threadless = (await deps.tournaments.matchesWaitingToStart(tournamentId)).filter((match) => match.threadId === null);
+  for (const match of threadless) await deps.tournaments.startMatch(match.id);
+  if (threadless.length > 0 && deps.staff) {
+    await staffAlert(deps.staff, guild, {
+      tournament,
+      text: `⚠️ Турнир «${tournament.name}»: ветки матчей не создаются в <#${tournament.matchParentId}> — у бота нет права «Создавать приватные ветки» или канал недоступен. Матчи начинаются без карточки «На месте».`,
+      dedupeKey: `threads:${tournamentId}`,
+      dedupeMs: 6 * 60 * 60 * 1_000,
+    }).catch((error: unknown) => logger.warn({ err: error, tournamentId }, 'сигнал о ветках не отправился'));
+  }
+
   for (const match of await deps.tournaments.matchesNeedingCard(tournamentId)) {
     if (!(await deps.tournaments.markAnnounced(match.id))) continue;
     const card = await buildMatchCard(deps, match);
 
     const thread = match.threadId ? await guild.channels.fetch(match.threadId).catch(() => null) : null;
-    const sent =
-      thread?.isSendable() &&
-      (await thread
-        .send({
-          content: matchCardText(card),
-          components: matchCardButtons(card),
-          allowedMentions: { users: [...card.a.members, ...card.b.members] },
-        })
-        .then(() => true)
-        .catch((error: unknown) => {
-          logger.warn({ err: error, matchId: match.id }, 'карточка матча не отправилась');
-          return false;
-        }));
+    const sent = thread?.isSendable()
+      ? await thread
+          .send({
+            content: matchCardText(card),
+            components: matchCardButtons(card),
+            allowedMentions: { users: [...card.a.members, ...card.b.members] },
+          })
+          .catch((error: unknown) => {
+            logger.warn({ err: error, matchId: match.id }, 'карточка матча не отправилась');
+            return null;
+          })
+      : null;
 
-    if (!sent) await deps.tournaments.startMatch(match.id);
+    if (sent) await deps.tournaments.attachCard(match.id, sent.id);
+    else await deps.tournaments.startMatch(match.id);
   }
+}
+
+/**
+ * Перерисовать карточку по состоянию матча — когда он начался не из неё: со страницы драфта
+ * или решением организатора. Иначе в ветке висело бы «жмите На месте» у идущего матча.
+ */
+export async function refreshMatchCard(deps: PlayDeps, guild: Guild, matchId: number): Promise<void> {
+  const match = await deps.tournaments.matchById(matchId);
+  if (!match.threadId || !match.cardMessageId) return;
+  const thread = await guild.channels.fetch(match.threadId).catch(() => null);
+  if (!thread?.isTextBased()) return;
+  const message = await thread.messages.fetch(match.cardMessageId).catch(() => null);
+  if (!message) return;
+  const card = await buildMatchCard(deps, match);
+  await message.edit({ content: matchCardText(card), components: matchCardButtons(card), allowedMentions: { parse: [] } });
 }

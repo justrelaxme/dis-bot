@@ -1,0 +1,1 @@
+ALTER TABLE "tournament_matches" ADD COLUMN "card_message_id" text;

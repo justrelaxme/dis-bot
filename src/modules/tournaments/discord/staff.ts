@@ -52,6 +52,11 @@ export interface StaffAlert {
    * и решать оттуда нечем, — поэтому там текст с командой.
    */
   components?: ActionRowBuilder<ButtonBuilder>[];
+  /**
+   * Что делать без кнопок — для лички, куда кнопки не идут. Без подсказки владелец получил бы
+   * сигнал, на который нечем ответить.
+   */
+  hint?: string;
 }
 
 export type StaffDelivery = 'sent' | 'deduped' | 'nowhere';
@@ -90,7 +95,9 @@ export async function staffAlert(deps: StaffDeps, guild: Guild, alert: StaffAler
   // задать канал штаба, и выдать боту права.
   const owner = await guild.fetchOwner().catch(() => null);
   const delivered = await owner
-    ?.send(`${alert.text}\n\n_Канал штаба не задан или недоступен — поэтому в личку. Задать: \`/tournament settings\`._`)
+    ?.send(
+      `${alert.text}${alert.hint ? `\n${alert.hint}` : ''}\n\n_Канал штаба не задан или недоступен — поэтому в личку. Задать: \`/tournament settings\`._`,
+    )
     .then(() => true)
     .catch(() => false);
   if (delivered) return 'sent';

@@ -189,7 +189,8 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
       | 'match.disputed'
       | 'match.confirmed'
       | 'match.live'
-      | 'match.corrected',
+      | 'match.corrected'
+      | 'match.reset',
   >(
     event: K,
     tournamentId: number,
@@ -1242,6 +1243,11 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
         );
     },
 
+    /** Запомнить сообщение карточки, чтобы перерисовать её, когда матч начнётся не из неё. */
+    async attachCard(matchId: number, messageId: string): Promise<void> {
+      await db.update(tournamentMatches).set({ cardMessageId: messageId }).where(eq(tournamentMatches.id, matchId));
+    },
+
     /** Занять отметку о карточке. `false` — её уже выложил другой путь. */
     async markAnnounced(matchId: number): Promise<boolean> {
       const [row] = await db
@@ -1331,6 +1337,9 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
             isNull(tournamentMatches.liveAt),
             isNull(tournamentMatches.escalatedAt),
             lt(tournamentMatches.announcedAt, new Date(now.getTime() - afterMs)),
+            // Только идущие турниры: отмена оставляет матчи в «готов», и без этого условия
+            // организатора звали бы к матчу турнира, которого уже нет.
+            sql`exists (select 1 from ${tournaments} where ${tournaments.id} = ${tournamentMatches.tournamentId} and ${tournaments.state} = 'running')`,
           ),
         )
         .orderBy(asc(tournamentMatches.announcedAt));
@@ -1366,6 +1375,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
             eq(tournamentMatches.state, 'reported'),
             isNull(tournamentMatches.confirmRemindedAt),
             lt(tournamentMatches.reportedAt, new Date(now.getTime() - afterMs)),
+            sql`exists (select 1 from ${tournaments} where ${tournaments.id} = ${tournamentMatches.tournamentId} and ${tournaments.state} = 'running')`,
           ),
         );
     },
@@ -1430,6 +1440,20 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
       const tournament = await byId(match.tournamentId);
       const shape = await loadShape(match.tournamentId);
       const position: MatchPosition = { bracket: match.bracket, round: match.round, slot: match.slot };
+
+      // Прошлая попытка могла записать нового победителя и упасть до того, как провела его
+      // дальше: тогда его слот в следующем матче пуст. Повтор той же команды это чинит — ведёт
+      // победителя дальше, — а не отвечает «он и так победитель», оставляя сетку дырявой.
+      if (tournament.state === 'running' && match.winnerEntrantId === newWinnerId) {
+        const next = winnerTarget(shape.size, shape.format, position);
+        const nextRow = next ? shape.byPosition.get(positionKey(next)) : undefined;
+        const holder = next && nextRow ? (next.side === 'a' ? nextRow.entrantAId : nextRow.entrantBId) : undefined;
+        if (nextRow && holder === null) {
+          await advanceIn(shape, match, newWinnerId);
+          return { match: await this.matchById(matchId), staleThreads: [] };
+        }
+      }
+
       const oldWinner = match.winnerEntrantId;
       const oldLoser = oldWinner === match.entrantAId ? match.entrantBId : match.entrantAId;
 
@@ -1522,6 +1546,13 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
           .insert(tournamentMatchReports)
           .values({ matchId, actorId, action: 'correct', claimedWinnerId: newWinnerId, byOrganizer: true });
       });
+
+      // Следующие матчи пересобираются с другим соперником: всё, что к ним было привязано по
+      // прежней паре (прогнозы, карточки), должно быть сброшено раньше, чем они снова станут
+      // играбельными, — поэтому событие до продвижения, а не после.
+      for (const target of targets) {
+        await emitMatch('match.reset', match.tournamentId, { matchId: target.match.id });
+      }
 
       const fresh = await this.matchById(matchId);
       await advanceIn(await loadShape(match.tournamentId), fresh, newWinnerId);

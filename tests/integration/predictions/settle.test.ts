@@ -242,3 +242,29 @@ describe('пересчёт после исправления', () => {
     expect(deltas).toHaveLength(1);
   });
 });
+
+describe('карточка и сброс', () => {
+  /** После переигровки отметка «начался» сброшена, но спорный результат все уже видели. */
+  it('закрытая карточка закрывает приём, даже если матч снова «не начался»', async () => {
+    const { guildId, match, ids } = await readyMatch();
+    const predictions = createPredictionsService({ db: pg.db, grantCoins: ledger().grantCoins });
+    await predictions.saveCard(match.id, 'channel', 'message');
+    await predictions.lockCard(match.id);
+
+    await expect(predictions.predict(match.id, guildId, 'зритель-1', ids[0] as number)).rejects.toThrow(/закрыт/);
+  });
+
+  it('сброс матча убирает прогнозы на прежнюю пару и забывает карточку — голосовать можно заново', async () => {
+    const { guildId, match, ids } = await readyMatch();
+    const predictions = createPredictionsService({ db: pg.db, grantCoins: ledger().grantCoins });
+    await predictions.predict(match.id, guildId, 'зритель-1', ids[0] as number);
+    await predictions.saveCard(match.id, 'channel', 'message');
+
+    const stale = await predictions.resetMatch(match.id);
+
+    expect(stale).toMatchObject({ channelId: 'channel', messageId: 'message' });
+    expect(await predictions.cardOf(match.id)).toBeNull();
+    expect(await predictions.tally(match.id)).toEqual([]);
+    await expect(predictions.predict(match.id, guildId, 'зритель-1', ids[1] as number)).resolves.toBeTruthy();
+  });
+});

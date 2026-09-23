@@ -1211,3 +1211,74 @@ describe('исправление результата', () => {
     await expect(service.correct(final!.id, 'organizer', final!.entrantBId!)).rejects.toThrow(/завершён/);
   });
 });
+
+/** Исправления по ревью этапа 3: неявка и напоминания — только у идущих турниров, починка сбоя. */
+describe('ход матча после отмены и сбоев', () => {
+  it('матч отменённого турнира неявкой не считается', async () => {
+    const { service, tournamentId } = await startTournament({ registered: 2 });
+    const [match] = (await service.bracket(tournamentId)).matches;
+    await pg.db
+      .update(tournamentMatchesTable)
+      .set({ announcedAt: new Date(Date.now() - 30 * 60_000) })
+      .where(eq(tournamentMatchesTable.id, match!.id));
+
+    await service.cancel(tournamentId);
+
+    expect((await service.noShowsDue(new Date(), 10 * 60_000)).map((row) => row.id)).not.toContain(match!.id);
+  });
+
+  it('напоминание о подтверждении — только у идущего турнира', async () => {
+    const { service, tournamentId, users, entrantIds } = await startTournament({ registered: 2 });
+    const [match] = (await service.bracket(tournamentId)).matches;
+    await service.report(match!.id, users[0]!, entrantIds[0]!);
+    await service.cancel(tournamentId);
+
+    expect((await service.confirmRemindersDue(new Date(Date.now() + 60 * 60_000), 45 * 60_000)).map((row) => row.id)).not.toContain(
+      match!.id,
+    );
+  });
+
+  /**
+   * Прошлая попытка исправления записала победителя и упала до продвижения: слот в следующем
+   * матче пуст. Повтор той же команды ведёт победителя дальше, а не отвечает «он и так победитель».
+   */
+  it('повтор исправления чинит недоведённого победителя', async () => {
+    const { service, tournamentId } = await startTournament({ registered: 4 });
+    const [semi] = (await service.bracket(tournamentId)).matches.filter((row) => row.round === 1);
+    await service.resolve(semi!.id, 'organizer', semi!.entrantAId!);
+    const final = (await service.bracket(tournamentId)).matches.find((row) => row.round === 2)!;
+    const column = final.entrantAId === semi!.entrantAId ? 'entrantAId' : 'entrantBId';
+    // Сбой имитируем руками: победитель уже другой, а в финал он не доведён.
+    await pg.db
+      .update(tournamentMatchesTable)
+      .set({ winnerEntrantId: semi!.entrantBId, [column]: null })
+      .where(eq(tournamentMatchesTable.id, semi!.id));
+    await pg.db.update(tournamentMatchesTable).set({ [column]: null }).where(eq(tournamentMatchesTable.id, final.id));
+
+    await service.correct(semi!.id, 'organizer', semi!.entrantBId!);
+
+    const repaired = (await service.bracket(tournamentId)).matches.find((row) => row.id === final.id)!;
+    expect([repaired.entrantAId, repaired.entrantBId]).toContain(semi!.entrantBId);
+  });
+
+  /** Прогнозы на прежнюю пару должны сброситься раньше, чем матч снова станет играбельным. */
+  it('исправление объявляет сброс следующего матча до того, как он снова готов', async () => {
+    const bus = new EventBus(logger);
+    const order: string[] = [];
+    bus.on('match.reset', async ({ matchId }) => {
+      order.push(`reset:${matchId}`);
+    });
+    bus.on('match.ready', async ({ matchId }) => {
+      order.push(`ready:${matchId}`);
+    });
+    const { service, tournamentId } = await startTournament({ registered: 4, bus });
+    const semis = (await service.bracket(tournamentId)).matches.filter((row) => row.round === 1);
+    for (const semi of semis) await service.resolve(semi.id, 'organizer', semi.entrantAId!);
+    const final = (await service.bracket(tournamentId)).matches.find((row) => row.round === 2)!;
+    order.length = 0;
+
+    await service.correct(semis[0]!.id, 'organizer', semis[0]!.entrantBId!);
+
+    expect(order).toEqual([`reset:${final.id}`, `ready:${final.id}`]);
+  });
+});

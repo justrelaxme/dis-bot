@@ -70,6 +70,10 @@ export function createPredictionsService(deps: PredictionsDeps) {
       if (match.liveAt !== null) {
         throw new UserError('Матч уже начался — приём прогнозов закрыт.');
       }
+      // Закрытая карточка — тоже конец приёма: после переигровки оспоренного матча отметка
+      // «начался» сбрасывается, а спорный результат уже все видели.
+      const [card] = await db.select().from(predictionCards).where(eq(predictionCards.matchId, matchId));
+      if (card?.lockedAt) throw new UserError('Приём прогнозов на этот матч закрыт.');
       if (entrantId !== match.entrantAId && entrantId !== match.entrantBId) {
         throw new UserError('Выбирать надо одного из соперников этого матча.');
       }
@@ -155,10 +159,19 @@ export function createPredictionsService(deps: PredictionsDeps) {
 
           // Отметка ставится под условием её отсутствия: если тик наложился на предыдущий,
           // обновление не вернёт строку, и монеты не уйдут повторно.
+          // Победитель проверяется ещё раз в том же обновлении: если между чтением и записью
+          // организатор исправил результат, строка не обновится и уйдёт в следующий тик — уже
+          // по новому победителю. Иначе выплата ушла бы по старому, а пересчёт её не увидел бы.
           const [marked] = await db
             .update(matchPredictions)
             .set({ settledAt: new Date(), coinsAwarded: coins })
-            .where(and(eq(matchPredictions.id, row.id), isNull(matchPredictions.settledAt)))
+            .where(
+              and(
+                eq(matchPredictions.id, row.id),
+                isNull(matchPredictions.settledAt),
+                sql`exists (select 1 from ${tournamentMatches} where ${tournamentMatches.id} = ${matchPredictions.matchId} and ${tournamentMatches.winnerEntrantId} = ${winner})`,
+              ),
+            )
             .returning();
           if (!marked) continue;
 
@@ -236,6 +249,23 @@ export function createPredictionsService(deps: PredictionsDeps) {
         changed += 1;
       }
       return changed;
+    },
+
+    /**
+     * Матч пересобирается с другой парой: прогнозы на прежнюю пару удаляются, карточка
+     * забывается (её сообщение удаляет вызывающий). Когда матч снова станет играбельным, на
+     * него выйдет новая карточка — с верными именами.
+     *
+     * Удаляются, а не аннулируются: пары, на которую ставили, больше нет, и такой прогноз не
+     * должен ни считаться в раскладе, ни мешать зрителю проголосовать заново — прогноз на матч у
+     * человека один. Выплат по ним не было: матч не был сыгран.
+     */
+    async resetMatch(matchId: number): Promise<PredictionCardRow | null> {
+      await db
+        .delete(matchPredictions)
+        .where(and(eq(matchPredictions.matchId, matchId), isNull(matchPredictions.settledAt)));
+      const [card] = await db.delete(predictionCards).where(eq(predictionCards.matchId, matchId)).returning();
+      return card ?? null;
     },
 
     async boardOf(tournamentId: number): Promise<PredictionBoardRow | null> {

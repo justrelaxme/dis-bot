@@ -90,6 +90,12 @@ export interface BotEvents {
     winnerEntrantId: number;
     previousWinnerId: number;
   };
+  /**
+   * Матч пересобирается с другой парой (исправили результат предыдущего): всё, что было
+   * привязано к прежней паре — прогнозы, карточки, — сбрасывается. Слушатели обязаны успеть
+   * до того, как матч снова станет играбельным: событие публикуется раньше.
+   */
+  'match.reset': { guildId: string; tournamentId: number; matchId: number };
   'tournament.cancelled': { guildId: string; tournamentId: number };
   /** Кто-то записался, вышел или отметился: во время регистрации витрина показывает список. */
   'tournament.entrants': { guildId: string; tournamentId: number };

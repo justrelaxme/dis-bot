@@ -581,6 +581,9 @@ async function ensureMatchDrafts(deps: PlayDeps, guild: Guild, tournamentId: num
   for (const match of pending) {
     const result = await drafts.ensureForMatch(tournament, match);
     if (!result || !result.created) continue;
+    // Драфт завёлся, когда матч уже идёт (справочник был недоступен, пока стороны отмечались):
+    // событие о начале матча уже прошло, и таймер пустить больше некому, кроме этого места.
+    if (match.liveAt !== null) await drafts.arm(match.id);
 
     const base = `${deps.publicBaseUrl}/draft/${match.id}`;
     const subject = result.draft.subject === 'maps' ? 'карты' : 'героев';

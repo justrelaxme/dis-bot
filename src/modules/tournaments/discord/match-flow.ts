@@ -131,6 +131,18 @@ async function organizerDecision(
   const by = `<@${interaction.user.id}>`;
   let decision: string;
 
+  // Сигнал о неявке мог повисеть: опоздавшие пришли, сыграли и заявили результат. Старая
+  // кнопка «Техпобеда» закрыла бы сыгранный матч как неявку — поэтому решение только пока
+  // матч ещё не начался, а иначе кнопки просто убираются.
+  if (match.state !== 'ready' || match.liveAt !== null) {
+    await interaction.update({
+      content: `${interaction.message.content}\n\n**Уже не нужно: матч начался или закрыт.**`,
+      components: [],
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
   if (prefix === BTN_NO_SHOW_WALKOVER) {
     if (!Number.isInteger(entrantId)) return;
     await deps.tournaments.walkover(matchId, interaction.user.id, entrantId);
@@ -140,8 +152,8 @@ async function organizerDecision(
     await deps.tournaments.snoozeNoShow(matchId, NO_SHOW_WAIT_MS, NO_SHOW_AFTER_MS);
     decision = `Ждём ещё ${NO_SHOW_WAIT_MS / 60_000} минут — решил ${by}. Не придут — позову снова.`;
   } else {
-    await deps.tournaments.startMatch(matchId);
-    decision = `Матч начат без отметки — решил ${by}.`;
+    const started = await deps.tournaments.startMatch(matchId);
+    decision = started ? `Матч начат без отметки — решил ${by}.` : 'Матч уже начался сам.';
   }
 
   await interaction.update({
@@ -194,15 +206,34 @@ async function disputeSubmitted(
   const reason = interaction.fields.getTextInputValue(FIELD_REASON).trim();
   const match = await deps.tournaments.dispute(matchId, interaction.user.id, reason);
 
-  // Кнопки под заявкой больше не нужны: подтверждать нечего, решает организатор.
-  if (interaction.isFromMessage()) await interaction.update({ components: [] });
+  // Сначала подтверждаем взаимодействие (на это три секунды), потом зовём штаб, и только потом
+  // пишем в ветку. Если сообщение с заявкой успели удалить, ответ в ветку упадёт — но
+  // организатор к этому моменту уже позван: спор без организатора застрял бы навсегда.
+  if (interaction.isFromMessage()) await interaction.deferUpdate();
+  else await interaction.deferReply();
+  await alertDispute(deps, guild, match, interaction.user.id, reason, logger);
+
   const text = [
     `**Матч №${match.id} оспорен** <@${interaction.user.id}>: ${reason}`,
     'Приложите скриншот итога сюда, в ветку. Организатора уже позвал — он решит.',
   ].join('\n');
-  if (interaction.deferred || interaction.replied) await interaction.followUp({ content: text, allowedMentions: { parse: [] } });
-  else await interaction.reply({ content: text, allowedMentions: { parse: [] } });
+  if (interaction.isFromMessage()) {
+    // Кнопки под заявкой больше не нужны: подтверждать нечего, решает организатор.
+    await interaction.editReply({ components: [] }).catch(() => undefined);
+    await interaction.followUp({ content: text, allowedMentions: { parse: [] } });
+  } else {
+    await interaction.editReply({ content: text, allowedMentions: { parse: [] } });
+  }
+}
 
+async function alertDispute(
+  deps: PlayDeps,
+  guild: Guild,
+  match: MatchRow,
+  userId: string,
+  reason: string,
+  logger: Logger,
+): Promise<void> {
   if (!deps.staff) return;
   const tournament = await deps.tournaments.byId(match.tournamentId);
   const view = await deps.tournaments.bracket(match.tournamentId);
@@ -213,9 +244,12 @@ async function disputeSubmitted(
     tournament,
     text: [
       `⚖️ **Спор в матче №${match.id}** «${tournament.name}»: ${nameOf(match.entrantAId)} — ${nameOf(match.entrantBId)}.`,
-      `Заявлена победа **${nameOf(match.reportedWinnerId)}**, оспорил <@${interaction.user.id}>: «${reason}».${match.threadId ? ` Ветка: <#${match.threadId}>.` : ''}`,
+      `Заявлена победа **${nameOf(match.reportedWinnerId)}**, оспорил <@${userId}>: «${reason}».${match.threadId ? ` Ветка: <#${match.threadId}>.` : ''}`,
     ].join('\n'),
-    dedupeKey: `dispute:${match.id}`,
+    // Ключ — матч и момент спора: после переигровки тот же матч может быть оспорен снова, и
+    // этот спор — новый, а не повтор прежнего.
+    dedupeKey: `dispute:${match.id}:${match.disputedAt?.getTime() ?? 0}`,
+    hint: `Решить: \`/match resolve match:${match.id} winner:<название>\`.`,
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
@@ -229,7 +263,7 @@ async function disputeSubmitted(
         new ButtonBuilder().setCustomId(`${BTN_DISPUTE_REPLAY}:${match.id}`).setLabel('Переиграть').setStyle(ButtonStyle.Secondary),
       ),
     ],
-  }).catch((error: unknown) => logger.error({ err: error, matchId }, 'спор не дошёл до штаба'));
+  }).catch((error: unknown) => logger.error({ err: error, matchId: match.id }, 'спор не дошёл до штаба'));
 }
 
 /**
@@ -277,7 +311,7 @@ async function disputeDecision(
     const thread = await guild.channels.fetch(match.threadId).catch(() => null);
     if (thread?.isSendable()) {
       const replayed = prefix === BTN_DISPUTE_REPLAY ? await buildMatchCard(deps, await deps.tournaments.matchById(matchId)) : null;
-      await thread
+      const sent = await thread
         .send({
           content: replayed
             ? `**Спор решён: переигровка** (${by}).\n\n${matchCardText(replayed)}`
@@ -285,7 +319,12 @@ async function disputeDecision(
           ...(replayed ? { components: matchCardButtons(replayed) } : {}),
           allowedMentions: replayed ? { users: [...replayed.a.members, ...replayed.b.members] } : { parse: [] },
         })
-        .catch((error: unknown) => logger.warn({ err: error, matchId }, 'решение по спору не ушло в ветку'));
+        .catch((error: unknown) => {
+          logger.warn({ err: error, matchId }, 'решение по спору не ушло в ветку');
+          return null;
+        });
+      // Новая карточка переигровки — её и перерисовывать, когда матч начнётся.
+      if (sent && replayed) await deps.tournaments.attachCard(matchId, sent.id);
     }
   }
 
@@ -344,6 +383,7 @@ export async function runMatchFlow(deps: PlayDeps, client: Client, logger: Logge
             `${nameOf(match.entrantAId)} — ${mark(match.presentAAt)} · ${nameOf(match.entrantBId)} — ${mark(match.presentBAt)}${match.threadId ? ` · ветка <#${match.threadId}>` : ''}`,
           ].join('\n'),
           components: noShowButtons(match, { a: nameOf(match.entrantAId), b: nameOf(match.entrantBId) }),
+          hint: `Присудить победу явившимся: \`/match walkover match:${match.id} winner:<название>\`.`,
         });
       } catch (error) {
         logger.error({ err: error, matchId: match.id }, 'сигнал о неявке не отправлен');

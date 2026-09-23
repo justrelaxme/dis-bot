@@ -455,6 +455,12 @@ export const tournamentMatches = pgTable(
      * раз, какой бы путь ни сделал матч играбельным.
      */
     announcedAt: timestamp('announced_at', { withTimezone: true }),
+    /**
+     * Сообщение карточки в ветке. Нужно, чтобы перерисовать её, когда матч начался не кнопкой в
+     * самой карточке — со страницы драфта или решением организатора, — иначе в ветке висело бы
+     * «жмите На месте» у уже идущего матча.
+     */
+    cardMessageId: text('card_message_id'),
     /** Сторона нажала «На месте». Обе — матч начался: стартует таймер драфта, закрываются прогнозы. */
     presentAAt: timestamp('present_a_at', { withTimezone: true }),
     presentBAt: timestamp('present_b_at', { withTimezone: true }),
