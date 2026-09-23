@@ -1,7 +1,7 @@
 import { Redis } from 'ioredis';
 import type { Config } from './config.js';
 import type { Logger } from './logger.js';
-import { logRedisErrors } from './redis.js';
+import { incrementInWindow, logRedisErrors } from './redis.js';
 
 export interface CachedValue<T> {
   value: T;
@@ -56,16 +56,14 @@ export class Cache {
    *
    * `INCR` атомарен, поэтому два одновременных сообщения не потеряют друг друга — а именно
    * это и происходит при флуде, ради распознавания которого счётчик и нужен. Срок ставится
-   * только на первом инкременте: иначе каждое новое событие продлевало бы окно, и оно
-   * никогда бы не закрылось.
+   * тем же скриптом, что и прибавка, и только если его ещё нет: иначе каждое новое событие
+   * продлевало бы окно, и оно никогда бы не закрылось (подробности — в redis.ts).
    *
    * Счётчик в Redis, а не в памяти процесса, по той же причине, что и пауза начисления
    * опыта: после перезапуска нарушителю не должно доставаться чистое окно.
    */
   async incrementInWindow(key: string, windowMs: number): Promise<number> {
-    const count = await this.redis.incr(`window:${key}`);
-    if (count === 1) await this.redis.pexpire(`window:${key}`, windowMs);
-    return count;
+    return incrementInWindow(this.redis, `window:${key}`, windowMs);
   }
 
   async swr<T>(key: string, options: SwrOptions<T>): Promise<CachedValue<T>> {

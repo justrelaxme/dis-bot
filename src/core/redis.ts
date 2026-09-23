@@ -74,3 +74,27 @@ export function logRedisErrors(
     suppressed = 0;
   });
 }
+
+/**
+ * Прибавка к счётчику окна одной атомарной операцией: `INCR` и срок в одном скрипте.
+ *
+ * Раньше это были два вызова — `INCR`, а при первом значении отдельный `PEXPIRE`. Упади
+ * процесс между ними или оборвись связь — и счётчик оставался без срока навсегда: лимит
+ * запросов к API или окно антиспама переставали открываться, пока ключ не удалят руками.
+ *
+ * Срок ставится не только на первом значении, но и всякий раз, когда его нет: так скрипт
+ * заодно лечит ключи, застрявшие без срока при прежнем порядке. Существующий срок не
+ * трогается — иначе каждое событие продлевало бы окно, и оно не закрывалось бы никогда.
+ */
+const INCREMENT_IN_WINDOW = `
+local count = redis.call('INCR', KEYS[1])
+if redis.call('PTTL', KEYS[1]) < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return count
+`;
+
+export async function incrementInWindow(redis: Redis, key: string, windowMs: number): Promise<number> {
+  const count = await redis.eval(INCREMENT_IN_WINDOW, 1, key, String(windowMs));
+  return Number(count);
+}

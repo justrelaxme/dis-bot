@@ -1,6 +1,6 @@
 import { Redis } from 'ioredis';
 import type { Logger } from './logger.js';
-import { logRedisErrors } from './redis.js';
+import { incrementInWindow, logRedisErrors } from './redis.js';
 
 export interface Limit {
   tokens: number;
@@ -26,10 +26,9 @@ export function createRateLimiter(deps: { redisUrl: string; logger: Logger }): R
 
   async function tryTake(key: string, limit: Limit): Promise<boolean> {
     const bucketKey = `ratelimit:${key}:${limit.windowMs}`;
-    const count = await redis.incr(bucketKey);
-    if (count === 1) {
-      await redis.pexpire(bucketKey, limit.windowMs);
-    }
+    // Прибавка и срок одним скриптом: оборванный между ними INCR оставлял окно без срока, и
+    // лимит к провайдеру больше не открывался никогда.
+    const count = await incrementInWindow(redis, bucketKey, limit.windowMs);
     if (count <= limit.tokens) return true;
     // Место кончилось — откатываем свой инкремент, чтобы ожидание не сдвигало окно.
     await redis.decr(bucketKey);

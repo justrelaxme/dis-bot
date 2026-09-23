@@ -185,3 +185,46 @@ describe('Cache.swr', () => {
     }
   });
 });
+
+/**
+ * Окно счётчика. Раньше срок ставился отдельным вызовом после INCR, и оборванный между
+ * ними процесс оставлял счётчик без срока навсегда — окно антиспама или лимит к API больше
+ * не открывались.
+ */
+describe('Cache.incrementInWindow', () => {
+  it('считает события и ставит срок окну', async () => {
+    const cache = makeCache();
+    const raw = (cache as unknown as { redis: Redis }).redis;
+
+    expect(await cache.incrementInWindow('w:count', 60_000)).toBe(1);
+    expect(await cache.incrementInWindow('w:count', 60_000)).toBe(2);
+    const ttl = await raw.pttl('window:w:count');
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(60_000);
+    await cache.close();
+  });
+
+  it('счётчик, застрявший без срока, получает срок при следующем событии', async () => {
+    const cache = makeCache();
+    const raw = (cache as unknown as { redis: Redis }).redis;
+    await raw.set('window:w:stuck', '7');
+    expect(await raw.pttl('window:w:stuck')).toBe(-1);
+
+    expect(await cache.incrementInWindow('w:stuck', 60_000)).toBe(8);
+    expect(await raw.pttl('window:w:stuck')).toBeGreaterThan(0);
+    await cache.close();
+  });
+
+  /** Каждое событие продлевало бы окно, и при постоянном флуде оно не закрылось бы никогда. */
+  it('существующий срок не продлевается', async () => {
+    const cache = makeCache();
+    const raw = (cache as unknown as { redis: Redis }).redis;
+
+    await cache.incrementInWindow('w:fixed', 60_000);
+    await raw.pexpire('window:w:fixed', 5_000);
+    await cache.incrementInWindow('w:fixed', 60_000);
+
+    expect(await raw.pttl('window:w:fixed')).toBeLessThanOrEqual(5_000);
+    await cache.close();
+  });
+});
