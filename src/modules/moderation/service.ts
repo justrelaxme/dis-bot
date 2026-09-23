@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, isNull, lte, sql } from 'drizzle-orm';
 import type { Cache } from '../../core/cache.js';
 import type { Database } from '../../core/db/client.js';
+import { UserError } from '../../core/errors.js';
 import {
   guardSettings,
   infractions,
@@ -173,16 +174,42 @@ export function createModerationService(deps: { db: Database; cache: Cache }) {
       return row ?? null;
     },
 
-    async closeTicket(ticketId: number, byUserId: string): Promise<void> {
-      await db
+    /**
+     * Закрывает тикет. Строку возвращает, только если закрыл именно этот вызов: закрытие
+     * приходит с трёх сторон (команда, кнопка, архивация ветки), и каждое следующее после
+     * первого — не событие, о нём не надо ни писать в ветку, ни логировать.
+     */
+    async closeTicket(ticketId: number, byUserId: string): Promise<TicketRow | null> {
+      const [row] = await db
         .update(tickets)
         .set({ closedAt: new Date(), closedBy: byUserId })
-        .where(and(eq(tickets.id, ticketId), isNull(tickets.closedAt)));
+        .where(and(eq(tickets.id, ticketId), isNull(tickets.closedAt)))
+        .returning();
+      return row ?? null;
     },
 
     async ticketByThread(threadId: string): Promise<TicketRow | null> {
       const [row] = await db.select().from(tickets).where(eq(tickets.threadId, threadId));
       return row ?? null;
+    },
+
+    /**
+     * Закрытие изнутри ветки тикета — командой или кнопкой. Закрывает автор или модератор:
+     * в приватную ветку модератор может позвать третьего, и тот не должен закрывать чужое
+     * обращение.
+     *
+     * Без закрытия тикет жил вечно, а `openTicketOf` не давал открыть новый — человек,
+     * однажды написавший модераторам, больше не мог написать им никогда.
+     */
+    async closeTicketFromThread(threadId: string, actorId: string, isModerator: boolean): Promise<TicketRow> {
+      const ticket = await this.ticketByThread(threadId);
+      if (!ticket) throw new UserError('Это не ветка тикета — закрыть тикет можно только изнутри него.');
+      if (ticket.userId !== actorId && !isModerator) {
+        throw new UserError('Закрыть тикет может тот, кто его открыл, или модератор.');
+      }
+      const closed = await this.closeTicket(ticket.id, actorId);
+      if (!closed) throw new UserError('Этот тикет уже закрыт.');
+      return closed;
     },
   };
 }

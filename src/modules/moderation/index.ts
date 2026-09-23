@@ -1,15 +1,23 @@
 import { createHash } from 'node:crypto';
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
+  DiscordAPIError,
+  MessageFlags,
   PermissionFlagsBits,
+  RESTJSONErrorCodes,
   SlashCommandBuilder,
+  type AnyThreadChannel,
   type GuildMember,
+  type Interaction,
   type Message,
   type TextChannel,
 } from 'discord.js';
 import type { Cache } from '../../core/cache.js';
 import type { Database } from '../../core/db/client.js';
-import { UserError } from '../../core/errors.js';
+import { UserError, describeForUser } from '../../core/errors.js';
 import type { BotModule, CommandDefinition, EventHandler, ModuleContext } from '../../core/module.js';
 import { createModerationService, type ModerationService } from './service.js';
 import type { GuardSettingsRow, InfractionKind, InfractionRow } from './schema.js';
@@ -17,6 +25,12 @@ import type { GuardSettingsRow, InfractionKind, InfractionRow } from './schema.j
 /** Снятие истёкших наказаний — раз в минуту: мут на 10 минут должен сниматься вовремя. */
 const EXPIRY_CRON = '* * * * *';
 const EXPIRY_BATCH = 50;
+
+/**
+ * Кнопка «Закрыть тикет». Без номера, в отличие от кнопок сборов: она живёт в самой ветке
+ * тикета, и ветка однозначно называет тикет.
+ */
+const BTN_TICKET_CLOSE = 'tk';
 
 const KIND_LABELS: Record<InfractionKind, string> = {
   note: 'заметка',
@@ -175,12 +189,58 @@ export function createModerationModule(deps: ModerationModuleDeps): BotModule {
     };
   }
 
+  function ticketCloseButton(): EventHandler<'interactionCreate'> {
+    return {
+      event: 'interactionCreate',
+      async handle(ctx, interaction: Interaction): Promise<void> {
+        if (!interaction.isButton() || interaction.customId !== BTN_TICKET_CLOSE) return;
+
+        try {
+          const isModerator = interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers) ?? false;
+          await moderation.closeTicketFromThread(interaction.channelId, interaction.user.id, isModerator);
+          await interaction.update({ components: [ticketCloseRow(true)] });
+          if (interaction.channel?.isThread()) await sealTicketThread(ctx, interaction.channel, interaction.user.id);
+        } catch (error) {
+          const described = describeForUser(error);
+          if (described.incidentId) {
+            ctx.logger.error({ err: error, incidentId: described.incidentId }, 'кнопка тикета упала');
+          }
+          const payload = { content: described.text, flags: MessageFlags.Ephemeral } as const;
+          if (interaction.deferred || interaction.replied) await interaction.followUp(payload);
+          else await interaction.reply(payload);
+        }
+      },
+    };
+  }
+
+  /**
+   * Ветка ушла в архив — тикет закрыт. Архивирует её не только бот: Discord сам убирает
+   * ветку после недели тишины, модератор — руками в интерфейсе, мимо команды. Без этого
+   * тикет оставался бы открытым в базе и не давал человеку открыть новый.
+   */
+  function ticketArchiveWatcher(): EventHandler<'threadUpdate'> {
+    return {
+      event: 'threadUpdate',
+      async handle(ctx, before: AnyThreadChannel, after: AnyThreadChannel): Promise<void> {
+        // Только сам переход в архив: прочие правки ветки (имя, участники, замок на уже
+        // заархивированной) к тикету отношения не имеют.
+        if (before.archived === true || after.archived !== true) return;
+
+        const ticket = await moderation.ticketByThread(after.id);
+        if (!ticket || ticket.closedAt) return;
+        // Кем закрыт — не узнать: событие архивации автора не несёт.
+        const closed = await moderation.closeTicket(ticket.id, 'system');
+        if (closed) ctx.logger.info({ ticketId: ticket.id, threadId: after.id }, 'тикет закрыт: ветка ушла в архив');
+      },
+    };
+  }
+
   return {
     name: 'moderation',
 
     commands: [modCommand(moderation, log, applyMute), ticketCommand(moderation), guardCommand(moderation)],
 
-    events: [spamGuard(), raidGuard()],
+    events: [spamGuard(), raidGuard(), ticketCloseButton(), ticketArchiveWatcher()],
 
     jobs: [
       {
@@ -390,27 +450,103 @@ function modCommand(
   };
 }
 
+function ticketCloseRow(disabled: boolean): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(BTN_TICKET_CLOSE)
+      .setLabel('Закрыть тикет')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(disabled),
+  );
+}
+
+/**
+ * Запечатывает ветку закрытого тикета: пишет, кто закрыл, запирает и архивирует.
+ *
+ * Замок — чтобы первое же сообщение не вернуло ветку из архива: разговор продолжился бы
+ * в тикете, который в базе уже закрыт. Запирать можно только с правом «Управление
+ * ветками», а свою ветку бот архивирует и без него, поэтому это два вызова, а не один:
+ * без права ветка хотя бы уйдёт в архив.
+ */
+async function sealTicketThread(ctx: ModuleContext, thread: AnyThreadChannel, closedBy: string): Promise<void> {
+  const warn = (error: unknown, what: string): void => {
+    ctx.logger.warn({ err: error, threadId: thread.id }, what);
+  };
+  // Написать надо до архивации: сообщение в архивную ветку вернуло бы её обратно.
+  await thread
+    .send({
+      content: `🔒 Тикет закрыл <@${closedBy}>. Если вопрос вернётся — открой новый: \`/ticket open\`.`,
+      allowedMentions: { parse: [] },
+    })
+    .catch((error: unknown) => warn(error, 'не удалось написать о закрытии тикета'));
+  await thread.setLocked(true, 'Тикет закрыт').catch((error: unknown) => warn(error, 'не удалось запереть ветку тикета'));
+  await thread
+    .setArchived(true, 'Тикет закрыт')
+    .catch((error: unknown) => warn(error, 'не удалось заархивировать ветку тикета'));
+}
+
+/**
+ * Ветки открытого тикета больше нет или она в архиве. Событие архивации бот пропускает,
+ * пока лежит, а тикет с потерянной веткой не давал бы открыть новый — поэтому при
+ * попытке открыть новый старый проверяется заново.
+ */
+async function ticketThreadGone(ctx: ModuleContext, threadId: string): Promise<boolean> {
+  try {
+    const channel = await ctx.client.channels.fetch(threadId);
+    return !channel || (channel.isThread() && channel.archived === true);
+  } catch (error) {
+    // Ветки нет — только если Discord так и сказал. Нет доступа или Discord лежит — не
+    // повод закрывать тикет: пусть человек пишет в старый.
+    if (error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownChannel) return true;
+    ctx.logger.warn({ err: error, threadId }, 'не удалось проверить ветку тикета');
+    return false;
+  }
+}
+
 /**
  * Тикеты: приватная ветка между человеком и модераторами. Ветка, а не канал — она
  * архивируется и не оставляет мусор в списке каналов.
+ *
+ * Подкоманды, а не одна команда с темой: тикет надо уметь и закрыть, а Discord не даёт
+ * команде иметь и параметры, и подкоманды сразу.
  */
 function ticketCommand(moderation: ModerationService): CommandDefinition {
   return {
     defer: { ephemeral: true },
     builder: new SlashCommandBuilder()
       .setName('ticket')
-      .setDescription('Написать модераторам приватно')
-      .addStringOption((option) =>
-        option.setName('topic').setDescription('С чем нужна помощь').setRequired(true).setMaxLength(100),
-      ),
+      .setDescription('Приватная ветка с модераторами')
+      .addSubcommand((sub) =>
+        sub
+          .setName('open')
+          .setDescription('Написать модераторам приватно')
+          .addStringOption((option) =>
+            option.setName('topic').setDescription('С чем нужна помощь').setRequired(true).setMaxLength(100),
+          ),
+      )
+      .addSubcommand((sub) => sub.setName('close').setDescription('Закрыть тикет — вызывается из его ветки')),
 
     async execute(interaction, ctx): Promise<void> {
       if (!interaction.inGuild()) throw new UserError('Эта команда работает только на сервере.');
       const guildId = interaction.guildId;
 
+      if (interaction.options.getSubcommand() === 'close') {
+        const isModerator = interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers) ?? false;
+        await moderation.closeTicketFromThread(interaction.channelId, interaction.user.id, isModerator);
+        await interaction.editReply({ content: 'Тикет закрыт, ветка уходит в архив.' });
+        if (interaction.channel?.isThread()) await sealTicketThread(ctx, interaction.channel, interaction.user.id);
+        return;
+      }
+
       const existing = await moderation.openTicketOf(guildId, interaction.user.id);
       if (existing) {
-        throw new UserError(`У тебя уже открыт тикет: <#${existing.threadId}>. Напиши в него.`);
+        if (!(await ticketThreadGone(ctx, existing.threadId))) {
+          throw new UserError(
+            `У тебя уже открыт тикет: <#${existing.threadId}>. Напиши в него — или закрой там же: \`/ticket close\`.`,
+          );
+        }
+        // Ветку удалили или заархивировали, пока бот не видел, — продолжить тикет негде.
+        await moderation.closeTicket(existing.id, 'system');
       }
 
       const settings = await moderation.settings(guildId);
@@ -428,14 +564,16 @@ function ticketCommand(moderation: ModerationService): CommandDefinition {
         reason: `Тикет от ${interaction.user.tag}`,
       });
       await thread.members.add(interaction.user.id).catch(() => null);
-      await thread.send(
-        [
+      await thread.send({
+        content: [
           `<@${interaction.user.id}> открыл тикет.`,
           `**Тема:** ${topic}`,
           '',
           'Опиши подробнее, что случилось. Модераторы видят эту ветку, остальные — нет.',
+          'Когда вопрос решён, закрой тикет кнопкой ниже или командой `/ticket close`.',
         ].join('\n'),
-      );
+        components: [ticketCloseRow(false)],
+      });
 
       await moderation.openTicket({ guildId, userId: interaction.user.id, threadId: thread.id, topic });
       await interaction.editReply({ content: `Тикет открыт: <#${thread.id}>` });
