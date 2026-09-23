@@ -1145,3 +1145,69 @@ describe('ход матча', () => {
     await expect(service.replay(match.id, 'organizer')).rejects.toThrow(/только оспоренный/);
   });
 });
+
+/**
+ * Исправление закрытого результата по настоящей сетке: прежний победитель уходит из
+ * следующего матча, новый встаёт на его место, при двойном устранении меняется и нижняя сетка.
+ */
+describe('исправление результата', () => {
+  it('на выбывание: новый победитель встаёт в следующий матч вместо прежнего', async () => {
+    const bus = new EventBus(logger);
+    const corrected: number[] = [];
+    bus.on('match.corrected', async (payload) => {
+      corrected.push(payload.matchId);
+    });
+    const { service, tournamentId } = await startTournament({ registered: 4, bus });
+    const [semi] = (await service.bracket(tournamentId)).matches.filter((row) => row.round === 1);
+    const oldWinner = semi!.entrantAId!;
+    const newWinner = semi!.entrantBId!;
+    await service.resolve(semi!.id, 'organizer', oldWinner);
+
+    await service.correct(semi!.id, 'organizer', newWinner);
+
+    const view = await service.bracket(tournamentId);
+    const final = view.matches.find((row) => row.round === 2)!;
+    expect([final.entrantAId, final.entrantBId]).toContain(newWinner);
+    expect([final.entrantAId, final.entrantBId]).not.toContain(oldWinner);
+    expect(view.matches.find((row) => row.id === semi!.id)?.winnerEntrantId).toBe(newWinner);
+    expect(corrected).toEqual([semi!.id]);
+  });
+
+  it('при двойном устранении меняется и нижняя сетка', async () => {
+    const { service, tournamentId } = await startTournament({ registered: 4, format: 'double-elim' });
+    const [first] = (await service.bracket(tournamentId)).matches.filter((row) => row.bracket === 'upper' && row.round === 1);
+    const a = first!.entrantAId!;
+    const b = first!.entrantBId!;
+    await service.resolve(first!.id, 'organizer', a);
+
+    await service.correct(first!.id, 'organizer', b);
+
+    const view = await service.bracket(tournamentId);
+    const lowerSlots = view.matches.filter((row) => row.bracket === 'lower').flatMap((row) => [row.entrantAId, row.entrantBId]);
+    const upperNext = view.matches.filter((row) => row.bracket === 'upper' && row.round === 2).flatMap((row) => [row.entrantAId, row.entrantBId]);
+    expect(lowerSlots).toContain(a);
+    expect(lowerSlots).not.toContain(b);
+    expect(upperNext).toContain(b);
+    expect(upperNext).not.toContain(a);
+  });
+
+  it('следующий матч уже заявлен — отказ, сетка не тронута', async () => {
+    const { service, tournamentId, users, entrantIds } = await startTournament({ registered: 4 });
+    const semis = (await service.bracket(tournamentId)).matches.filter((row) => row.round === 1);
+    for (const semi of semis) await service.resolve(semi.id, 'organizer', semi.entrantAId!);
+    const final = (await service.bracket(tournamentId)).matches.find((row) => row.round === 2)!;
+    const reporter = users[entrantIds.indexOf(final.entrantAId!)]!;
+    await service.report(final.id, reporter, final.entrantAId!);
+
+    await expect(service.correct(semis[0]!.id, 'organizer', semis[0]!.entrantBId!)).rejects.toThrow(/сыгран или заявлен/);
+    expect((await service.matchById(semis[0]!.id)).winnerEntrantId).toBe(semis[0]!.entrantAId);
+  });
+
+  it('после финала — отказ: турнир завершён', async () => {
+    const { service, tournamentId } = await startTournament({ registered: 2 });
+    const [final] = (await service.bracket(tournamentId)).matches;
+    await service.resolve(final!.id, 'organizer', final!.entrantAId!);
+
+    await expect(service.correct(final!.id, 'organizer', final!.entrantBId!)).rejects.toThrow(/завершён/);
+  });
+});

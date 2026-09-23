@@ -19,8 +19,11 @@ import {
   type MatchPosition,
 } from '../bracket.js';
 import { scoreDisagrees, type MatchScore } from '../score.js';
+import { correctionBlocker, type CorrectionTarget } from './correction.js';
 import { autoTeamName, formTeams, type Signup } from '../teams.js';
 import {
+  draftChoices,
+  matchDrafts,
   tournamentCycles,
   tournamentEntrantMembers,
   tournamentEntrants,
@@ -180,7 +183,13 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
    * догонит его по следующему событию или по перезагрузке.
    */
   async function emitMatch<
-    K extends 'match.ready' | 'match.reported' | 'match.disputed' | 'match.confirmed' | 'match.live',
+    K extends
+      | 'match.ready'
+      | 'match.reported'
+      | 'match.disputed'
+      | 'match.confirmed'
+      | 'match.live'
+      | 'match.corrected',
   >(
     event: K,
     tournamentId: number,
@@ -322,7 +331,7 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
   async function logAction(
     matchId: number,
     actorId: string,
-    action: 'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm' | 'verified' | 'replay',
+    action: 'report' | 'confirm' | 'dispute' | 'resolve' | 'walkover' | 'auto-confirm' | 'verified' | 'replay' | 'correct',
     claimedWinnerId: number | null,
     byOrganizer: boolean,
   ): Promise<void> {
@@ -1402,6 +1411,147 @@ export function createTournamentsService(deps: { db: Database; bus?: EventBus; l
       await logAction(matchId, actorId, 'replay', null, true);
       await emitMatch('match.ready', row.tournamentId, { matchId });
       return row;
+    },
+
+    /**
+     * Исправить закрытый результат: откатить продвижение прежнего победителя (и прежнего
+     * проигравшего в нижнюю сетку) и провести заново — уже с новым. Можно, пока следующие матчи
+     * не начаты; правило и отказы — в `correction.ts`.
+     *
+     * Ветки следующих матчей создавались с прежними составами, поэтому их идентификаторы
+     * отдаются наверх — удалить в Discord. Синхронизатор заведёт новые, уже с теми, кто играет.
+     */
+    async correct(
+      matchId: number,
+      actorId: string,
+      newWinnerId: number,
+    ): Promise<{ match: MatchRow; staleThreads: string[] }> {
+      const match = await this.matchById(matchId);
+      const tournament = await byId(match.tournamentId);
+      const shape = await loadShape(match.tournamentId);
+      const position: MatchPosition = { bracket: match.bracket, round: match.round, slot: match.slot };
+      const oldWinner = match.winnerEntrantId;
+      const oldLoser = oldWinner === match.entrantAId ? match.entrantBId : match.entrantAId;
+
+      const targets: CorrectionTarget[] = [];
+      const collect = async (target: AdvanceTarget | null, delivered: number | null): Promise<void> => {
+        if (!target || delivered === null) return;
+        const row = shape.byPosition.get(positionKey(target));
+        if (!row) return;
+        const [moves] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(draftChoices)
+          .innerJoin(matchDrafts, eq(matchDrafts.id, draftChoices.draftId))
+          .where(eq(matchDrafts.matchId, row.id));
+        targets.push({ match: row, side: target.side, delivered, draftMoves: moves?.count ?? 0 });
+      };
+      await collect(winnerTarget(shape.size, shape.format, position), oldWinner);
+      await collect(loserTarget(shape.size, shape.format, position), oldLoser);
+
+      const [bye] = await db
+        .select({ id: tournamentMatchReports.id })
+        .from(tournamentMatchReports)
+        .where(
+          and(
+            eq(tournamentMatchReports.matchId, matchId),
+            eq(tournamentMatchReports.action, 'walkover'),
+            eq(tournamentMatchReports.actorId, 'system'),
+          ),
+        )
+        .limit(1);
+
+      const blocker = correctionBlocker({
+        tournamentState: tournament.state,
+        match,
+        bye: bye !== undefined,
+        newWinnerId,
+        targets,
+      });
+      if (blocker) throw new UserError(blocker);
+
+      const staleThreads = targets.map((target) => target.match.threadId).filter((id): id is string => id !== null);
+      const now = new Date();
+
+      await db.transaction(async (tx) => {
+        for (const target of targets) {
+          const column = target.side === 'a' ? tournamentMatches.entrantAId : tournamentMatches.entrantBId;
+          // Условия повторяют проверку выше: если между проверкой и записью следующий матч
+          // успел начаться, откат не пройдёт, и транзакция вернёт всё как было.
+          const [cleared] = await tx
+            .update(tournamentMatches)
+            .set({
+              ...(target.side === 'a' ? { entrantAId: null } : { entrantBId: null }),
+              state: 'pending',
+              threadId: null,
+              announcedAt: null,
+              presentAAt: null,
+              presentBAt: null,
+              liveAt: null,
+              escalatedAt: null,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(tournamentMatches.id, target.match.id),
+                eq(column, target.delivered),
+                isNull(tournamentMatches.winnerEntrantId),
+                isNull(tournamentMatches.liveAt),
+                inArray(tournamentMatches.state, ['pending', 'ready']),
+              ),
+            )
+            .returning({ id: tournamentMatches.id });
+          if (!cleared) throw new UserError('Следующий матч изменился, пока исправляли, — попробуйте ещё раз.');
+          // Драфт следующего матча собран под прежнего соперника — его заведут заново.
+          await tx.delete(matchDrafts).where(eq(matchDrafts.matchId, target.match.id));
+        }
+
+        // Счёт сбрасывается: он был заявлен под прежнего победителя и новому противоречил бы.
+        const [updated] = await tx
+          .update(tournamentMatches)
+          .set({ winnerEntrantId: newWinnerId, scoreA: null, scoreB: null, updatedAt: now })
+          .where(
+            and(
+              eq(tournamentMatches.id, matchId),
+              oldWinner === null ? isNull(tournamentMatches.winnerEntrantId) : eq(tournamentMatches.winnerEntrantId, oldWinner),
+            ),
+          )
+          .returning({ id: tournamentMatches.id });
+        if (!updated) throw new UserError('Результат матча изменился, пока исправляли, — попробуйте ещё раз.');
+
+        await tx
+          .insert(tournamentMatchReports)
+          .values({ matchId, actorId, action: 'correct', claimedWinnerId: newWinnerId, byOrganizer: true });
+      });
+
+      const fresh = await this.matchById(matchId);
+      await advanceIn(await loadShape(match.tournamentId), fresh, newWinnerId);
+      if (oldWinner !== null) {
+        await emitMatch('match.corrected', match.tournamentId, {
+          matchId,
+          winnerEntrantId: newWinnerId,
+          previousWinnerId: oldWinner,
+        });
+      }
+      return { match: await this.matchById(matchId), staleThreads };
+    },
+
+    /**
+     * Матчи турнира для подсказок в командах организатора: номер, кто с кем, состояние. Без
+     * них номер матча приходилось искать на сайте и переписывать руками.
+     */
+    async matchesForPicker(tournamentId: number, states: readonly MatchState[]): Promise<MatchRow[]> {
+      return db
+        .select()
+        .from(tournamentMatches)
+        .where(
+          and(
+            eq(tournamentMatches.tournamentId, tournamentId),
+            inArray(tournamentMatches.state, [...states]),
+            sql`${tournamentMatches.entrantAId} is not null`,
+            sql`${tournamentMatches.entrantBId} is not null`,
+          ),
+        )
+        .orderBy(asc(tournamentMatches.id));
     },
 
     /** Ветки закрытых матчей — чтобы архивировать их при уборке. */

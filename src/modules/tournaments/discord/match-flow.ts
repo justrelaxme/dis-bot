@@ -3,9 +3,14 @@ import {
   ButtonBuilder,
   ButtonStyle,
   MessageFlags,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   type ButtonInteraction,
   type Client,
+  type Guild,
   type Interaction,
+  type ModalSubmitInteraction,
 } from 'discord.js';
 import { UserError, describeForUser } from '../../../core/errors.js';
 import type { Logger } from '../../../core/logger.js';
@@ -33,24 +38,58 @@ export const NO_SHOW_WAIT_MS = 5 * 60 * 1_000;
 /** За сколько до автоподтверждения напоминать сопернику. */
 export const CONFIRM_REMINDER_LEAD_MS = 15 * 60 * 1_000;
 
-const PREFIXES = [BTN_PRESENT, BTN_NO_SHOW_WALKOVER, BTN_NO_SHOW_WAIT, BTN_NO_SHOW_START];
+/** «Оспорить» под заявкой результата и окно с причиной. */
+const BTN_DISPUTE = 'md';
+const MODAL_DISPUTE = 'mdm';
+const FIELD_REASON = 'reason';
+
+/** Решения организатора по спору: принять заявленное, отдать сопернику, переиграть. */
+const BTN_DISPUTE_ACCEPT = 'da';
+const BTN_DISPUTE_GIVE = 'dg';
+const BTN_DISPUTE_REPLAY = 'dr';
+
+const PREFIXES = [
+  BTN_PRESENT,
+  BTN_NO_SHOW_WALKOVER,
+  BTN_NO_SHOW_WAIT,
+  BTN_NO_SHOW_START,
+  BTN_DISPUTE,
+  BTN_DISPUTE_ACCEPT,
+  BTN_DISPUTE_GIVE,
+  BTN_DISPUTE_REPLAY,
+];
 
 export function createMatchFlowHandler(deps: PlayDeps): EventHandler<'interactionCreate'> {
   return {
     event: 'interactionCreate',
     async handle(ctx, interaction: Interaction): Promise<void> {
-      if (!interaction.isButton()) return;
+      if (!interaction.isButton() && !interaction.isModalSubmit()) return;
       const [prefix, rawMatch, rawEntrant] = interaction.customId.split(':');
-      if (!prefix || !PREFIXES.includes(prefix)) return;
+      const known = interaction.isModalSubmit() ? prefix === MODAL_DISPUTE : !!prefix && PREFIXES.includes(prefix);
+      if (!known) return;
       const matchId = Number.parseInt(rawMatch ?? '', 10);
       if (!Number.isInteger(matchId)) return;
 
       try {
+        if (interaction.isModalSubmit()) {
+          await disputeSubmitted(deps, interaction, matchId, ctx.logger);
+          return;
+        }
         if (prefix === BTN_PRESENT) {
           await present(deps, interaction, matchId);
           return;
         }
-        await organizerDecision(deps, interaction, prefix, matchId, Number.parseInt(rawEntrant ?? '', 10), ctx.logger);
+        if (prefix === BTN_DISPUTE) {
+          // Окно нельзя показать после defer — отвечаем им сразу. Проверку, что оспаривает
+          // участник, делает сервис при отправке: окно само по себе ничего не меняет.
+          await interaction.showModal(disputeModal(matchId));
+          return;
+        }
+        if (prefix === BTN_DISPUTE_ACCEPT || prefix === BTN_DISPUTE_GIVE || prefix === BTN_DISPUTE_REPLAY) {
+          await disputeDecision(deps, interaction, prefix, matchId, ctx.logger);
+          return;
+        }
+        await organizerDecision(deps, interaction, prefix ?? '', matchId, Number.parseInt(rawEntrant ?? '', 10), ctx.logger);
       } catch (error) {
         const described = describeForUser(error);
         if (described.incidentId) {
@@ -87,11 +126,7 @@ async function organizerDecision(
   entrantId: number,
   logger: Logger,
 ): Promise<void> {
-  const guild = interaction.guild;
-  if (!guild) throw new UserError('Это работает только на сервере.');
-  const settings = (await deps.staff?.settings.get(guild.id).catch(() => null)) ?? null;
-  if (!isOrganizer(interaction.member, settings)) throw new UserError('Решать это может только организатор.');
-
+  const guild = await requireOrganizer(deps, interaction);
   const match = await deps.tournaments.matchById(matchId);
   const by = `<@${interaction.user.id}>`;
   let decision: string;
@@ -114,6 +149,146 @@ async function organizerDecision(
     components: [],
     allowedMentions: { parse: [] },
   });
+  await syncTournament(deps, guild, match.tournamentId, logger);
+}
+
+function disputeModal(matchId: number): ModalBuilder {
+  return new ModalBuilder()
+    .setCustomId(`${MODAL_DISPUTE}:${matchId}`)
+    .setTitle(`Спор по матчу №${matchId}`)
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId(FIELD_REASON)
+          .setLabel('Что не так с заявленным результатом')
+          .setPlaceholder('Например: победили мы, счёт 13:9 — скриншот приложу в ветку')
+          .setStyle(TextInputStyle.Paragraph)
+          .setMinLength(5)
+          .setMaxLength(500)
+          .setRequired(true),
+      ),
+    );
+}
+
+/** Организатор — только «Управление сервером» или роль организаторов. */
+async function requireOrganizer(deps: PlayDeps, interaction: ButtonInteraction): Promise<Guild> {
+  const guild = interaction.guild;
+  if (!guild) throw new UserError('Это работает только на сервере.');
+  const settings = (await deps.staff?.settings.get(guild.id).catch(() => null)) ?? null;
+  if (!isOrganizer(interaction.member, settings)) throw new UserError('Решать это может только организатор.');
+  return guild;
+}
+
+/**
+ * Спор отправлен. Причина уходит и в ветку — соперник видит, с чем не согласны, — и в штаб, с
+ * кнопками решения. Скриншот просим приложить в ветку: окно Discord файлов не принимает.
+ */
+async function disputeSubmitted(
+  deps: PlayDeps,
+  interaction: ModalSubmitInteraction,
+  matchId: number,
+  logger: Logger,
+): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) throw new UserError('Это работает только на сервере.');
+  const reason = interaction.fields.getTextInputValue(FIELD_REASON).trim();
+  const match = await deps.tournaments.dispute(matchId, interaction.user.id, reason);
+
+  // Кнопки под заявкой больше не нужны: подтверждать нечего, решает организатор.
+  if (interaction.isFromMessage()) await interaction.update({ components: [] });
+  const text = [
+    `**Матч №${match.id} оспорен** <@${interaction.user.id}>: ${reason}`,
+    'Приложите скриншот итога сюда, в ветку. Организатора уже позвал — он решит.',
+  ].join('\n');
+  if (interaction.deferred || interaction.replied) await interaction.followUp({ content: text, allowedMentions: { parse: [] } });
+  else await interaction.reply({ content: text, allowedMentions: { parse: [] } });
+
+  if (!deps.staff) return;
+  const tournament = await deps.tournaments.byId(match.tournamentId);
+  const view = await deps.tournaments.bracket(match.tournamentId);
+  const nameOf = (id: number | null): string => view.entrants.find((entrant) => entrant.id === id)?.displayName ?? '?';
+  const other = match.reportedWinnerId === match.entrantAId ? match.entrantBId : match.entrantAId;
+
+  await staffAlert(deps.staff, guild, {
+    tournament,
+    text: [
+      `⚖️ **Спор в матче №${match.id}** «${tournament.name}»: ${nameOf(match.entrantAId)} — ${nameOf(match.entrantBId)}.`,
+      `Заявлена победа **${nameOf(match.reportedWinnerId)}**, оспорил <@${interaction.user.id}>: «${reason}».${match.threadId ? ` Ветка: <#${match.threadId}>.` : ''}`,
+    ].join('\n'),
+    dedupeKey: `dispute:${match.id}`,
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`${BTN_DISPUTE_ACCEPT}:${match.id}`)
+          .setLabel(`Принять: ${nameOf(match.reportedWinnerId)}`.slice(0, 80))
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`${BTN_DISPUTE_GIVE}:${match.id}`)
+          .setLabel(`Отдать: ${nameOf(other)}`.slice(0, 80))
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`${BTN_DISPUTE_REPLAY}:${match.id}`).setLabel('Переиграть').setStyle(ButtonStyle.Secondary),
+      ),
+    ],
+  }).catch((error: unknown) => logger.error({ err: error, matchId }, 'спор не дошёл до штаба'));
+}
+
+/**
+ * Решение по спору одной кнопкой. Организатор, нажавший её, попадает в ветку матча: разговор
+ * о решении идёт там, где спорили, а не в штабе.
+ */
+async function disputeDecision(
+  deps: PlayDeps,
+  interaction: ButtonInteraction,
+  prefix: string,
+  matchId: number,
+  logger: Logger,
+): Promise<void> {
+  const guild = await requireOrganizer(deps, interaction);
+  const match = await deps.tournaments.matchById(matchId);
+  if (match.state !== 'disputed') throw new UserError('Этот спор уже решён.');
+  const view = await deps.tournaments.bracket(match.tournamentId);
+  const nameOf = (id: number | null): string => view.entrants.find((entrant) => entrant.id === id)?.displayName ?? '?';
+  const by = `<@${interaction.user.id}>`;
+
+  let decision: string;
+  if (prefix === BTN_DISPUTE_REPLAY) {
+    await deps.tournaments.replay(matchId, interaction.user.id);
+    decision = `Матч переигрывается — решил ${by}.`;
+  } else {
+    const winner =
+      prefix === BTN_DISPUTE_ACCEPT
+        ? match.reportedWinnerId
+        : match.reportedWinnerId === match.entrantAId
+          ? match.entrantBId
+          : match.entrantAId;
+    if (winner === null) throw new UserError('У матча не известен соперник.');
+    await deps.tournaments.resolve(matchId, interaction.user.id, winner);
+    decision = `Победа **${nameOf(winner)}** — решил ${by}.`;
+  }
+
+  await interaction.update({
+    content: `${interaction.message.content}\n\n**${decision}**`,
+    components: [],
+    allowedMentions: { parse: [] },
+  });
+
+  if (match.threadId) {
+    await deps.channels.setThreadMember({ guild, threadId: match.threadId, userId: interaction.user.id, present: true });
+    const thread = await guild.channels.fetch(match.threadId).catch(() => null);
+    if (thread?.isSendable()) {
+      const replayed = prefix === BTN_DISPUTE_REPLAY ? await buildMatchCard(deps, await deps.tournaments.matchById(matchId)) : null;
+      await thread
+        .send({
+          content: replayed
+            ? `**Спор решён: переигровка** (${by}).\n\n${matchCardText(replayed)}`
+            : `**Спор решён:** ${decision}`,
+          ...(replayed ? { components: matchCardButtons(replayed) } : {}),
+          allowedMentions: replayed ? { users: [...replayed.a.members, ...replayed.b.members] } : { parse: [] },
+        })
+        .catch((error: unknown) => logger.warn({ err: error, matchId }, 'решение по спору не ушло в ветку'));
+    }
+  }
+
   await syncTournament(deps, guild, match.tournamentId, logger);
 }
 
@@ -189,7 +364,7 @@ export async function runMatchFlow(deps: PlayDeps, client: Client, logger: Logge
       const opponentId = reporter?.id === match.entrantAId ? match.entrantBId : match.entrantAId;
       const opponents = opponentId === null ? [] : await deps.tournaments.membersOf(opponentId);
       await thread.send({
-        content: `${opponents.map((id) => `<@${id}>`).join(' ')} — результат матча №${match.id} заявлен, через ${CONFIRM_REMINDER_LEAD_MS / 60_000} минут он примется сам. Не согласны — «Оспорить» под заявкой.`,
+        content: `${opponents.map((id) => `<@${id}>`).join(' ')} — результат матча №${match.id} заявлен, через ${CONFIRM_REMINDER_LEAD_MS / 60_000} минут он примется сам. Не согласны — кнопка «Не так было» под заявкой.`,
         allowedMentions: { users: opponents },
       });
     } catch (error) {

@@ -79,6 +79,17 @@ export interface BotEvents {
     /** Этот матч закрыл турнир. */
     finished: boolean;
   };
+  /**
+   * Организатор исправил закрытый результат. Прогнозы на этот матч пересчитываются, витрина
+   * перечитывает сетку: победитель в следующем матче уже другой.
+   */
+  'match.corrected': {
+    guildId: string;
+    tournamentId: number;
+    matchId: number;
+    winnerEntrantId: number;
+    previousWinnerId: number;
+  };
   'tournament.cancelled': { guildId: string; tournamentId: number };
   /** Кто-то записался, вышел или отметился: во время регистрации витрина показывает список. */
   'tournament.entrants': { guildId: string; tournamentId: number };

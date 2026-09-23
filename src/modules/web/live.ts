@@ -171,6 +171,8 @@ const LIVE_EVENTS = [
   'match.reported',
   'match.disputed',
   'match.confirmed',
+  'match.corrected',
+  'match.live',
   'tournament.started',
   'tournament.finished',
   'tournament.cancelled',

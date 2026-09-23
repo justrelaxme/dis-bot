@@ -19,7 +19,7 @@ import { closeDueRegistrations } from './discord/registration.js';
 import { startTournament } from './discord/start.js';
 import { staffAlert } from './discord/staff.js';
 import { syncTournament } from './discord/sync.js';
-import { createFormatAutocomplete } from './discord/autocomplete.js';
+import { createFormatAutocomplete, createMatchAutocomplete } from './discord/autocomplete.js';
 import { createTournamentEventsGateway } from './discord/events.js';
 import { createTournamentPollCommand } from './commands/poll.js';
 import { createRosterCommand } from './commands/roster.js';
@@ -224,7 +224,12 @@ export function createTournamentsModule(deps: TournamentsModuleDeps): BotModule 
         : []),
     ],
 
-    events: [createButtonHandler(play), createMatchFlowHandler(play), createFormatAutocomplete({ formats })],
+    events: [
+      createButtonHandler(play),
+      createMatchFlowHandler(play),
+      createFormatAutocomplete({ formats }),
+      createMatchAutocomplete({ tournaments }),
+    ],
 
     async setup(ctx): Promise<void> {
       // Матч начался — пошёл таймер драфта. Слушатель, а не вызов: начать матч может кнопка в

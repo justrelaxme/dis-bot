@@ -30,7 +30,7 @@ import {
 import { TOURNAMENT_GAME_LABELS } from '../games.js';
 import type { TournamentEventsGateway } from '../discord/events.js';
 import { postMatchCards } from '../discord/match-card.js';
-import { isOrganizer, staffAlert, type StaffDeps } from '../discord/staff.js';
+import { isOrganizer, type StaffDeps } from '../discord/staff.js';
 import { syncTournament } from '../discord/sync.js';
 import { parseScore, type MatchScore } from '../score.js';
 import { hasUsableLink, linkCommandFor } from '../services/strength.js';
@@ -45,6 +45,7 @@ import type { TournamentsService } from '../services/tournaments.js';
  */
 const BTN_JOIN = 'tj';
 const BTN_CONFIRM = 'mc';
+/** «Не так было» — обрабатывает discord/match-flow.ts: окно с причиной и сигнал в штаб. */
 const BTN_DISPUTE = 'md';
 
 export interface PlayDeps {
@@ -332,18 +333,33 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
         sub
           .setName('resolve')
           .setDescription('Организатор: решить спорный матч')
-          .addIntegerOption((option) => option.setName('match').setDescription('Номер матча').setRequired(true))
+          .addIntegerOption((option) =>
+            option.setName('match').setDescription('Номер матча').setRequired(true).setAutocomplete(true),
+          )
           .addStringOption((option) =>
-            option.setName('winner').setDescription('Название победителя').setRequired(true),
+            option.setName('winner').setDescription('Название победителя').setRequired(true).setAutocomplete(true),
           ),
       )
       .addSubcommand((sub) =>
         sub
           .setName('walkover')
           .setDescription('Организатор: победа без игры при неявке')
-          .addIntegerOption((option) => option.setName('match').setDescription('Номер матча').setRequired(true))
+          .addIntegerOption((option) =>
+            option.setName('match').setDescription('Номер матча').setRequired(true).setAutocomplete(true),
+          )
           .addStringOption((option) =>
-            option.setName('winner').setDescription('Название явившегося').setRequired(true),
+            option.setName('winner').setDescription('Название явившегося').setRequired(true).setAutocomplete(true),
+          ),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('correct')
+          .setDescription('Организатор: исправить закрытый результат, пока следующий матч не начался')
+          .addIntegerOption((option) =>
+            option.setName('match').setDescription('Номер матча').setRequired(true).setAutocomplete(true),
+          )
+          .addStringOption((option) =>
+            option.setName('winner').setDescription('Настоящий победитель').setRequired(true).setAutocomplete(true),
           ),
       ),
 
@@ -476,6 +492,18 @@ export function createMatchCommand(deps: PlayDeps): CommandDefinition {
       const view = await deps.tournaments.bracket(tournament.id);
       const winner = view.entrants.find((entrant) => entrant.displayName.toLowerCase() === winnerName);
       if (!winner) throw new UserError(`В турнире нет участника «${winnerName}».`);
+
+      if (subcommand === 'correct') {
+        const { staleThreads } = await deps.tournaments.correct(matchId, interaction.user.id, winner.id);
+        // Ветки следующих матчей собирались с прежними составами — в них не те люди. Новые
+        // заведёт синхронизатор, уже с теми, кто играет.
+        for (const threadId of staleThreads) await deps.channels.deleteThread(guild, threadId);
+        await interaction.editReply({
+          content: `Матч №${matchId} исправлен: победа **${winner.displayName}**. Следующие матчи пересобраны под новый исход.`,
+        });
+        await syncTournament(deps, guild, tournament.id, ctx.logger);
+        return;
+      }
 
       const result =
         subcommand === 'resolve'
@@ -729,7 +757,8 @@ export async function closeTournamentRooms(
  * `interactionCreate` сам и разбирает свои кнопки по префиксу custom_id.
  */
 export function createButtonHandler(deps: PlayDeps): EventHandler<'interactionCreate'> {
-  const MATCH_PREFIXES = [BTN_JOIN, BTN_CONFIRM, BTN_DISPUTE];
+  // «Оспорить» обслуживает discord/match-flow.ts: там окно с причиной и сигнал в штаб.
+  const MATCH_PREFIXES = [BTN_JOIN, BTN_CONFIRM];
   const PANEL_IDS = [BTN_PANEL_CREATE, BTN_PANEL_FIND, BTN_PANEL_HELP, BTN_PANEL_SOLO, BTN_CHECKIN];
 
   return {
@@ -928,28 +957,5 @@ async function handleButton(
     // финал, турнир пора закрыть. Что именно нужно, решает синхронизатор, а не кнопка.
     await syncTournament(deps, guild, tournament.id, ctx.logger);
     return;
-  }
-
-  const match = await deps.tournaments.dispute(id, interaction.user.id);
-  await interaction.update({ components: [] });
-  await interaction.followUp({
-    content: `Матч №${match.id} оспорен. Организатора уже позвал — он разберёт здесь же.`,
-  });
-
-  // Раньше спор ждал в закрытой ветке матча, пока организатор случайно туда не заглянет.
-  // Теперь он приходит туда, где его увидят, — в штаб, с упоминанием организаторов.
-  if (deps.staff) {
-    const view = await deps.tournaments.bracket(tournament.id);
-    const nameOf = (entrantId: number | null): string =>
-      view.entrants.find((entrant) => entrant.id === entrantId)?.displayName ?? '?';
-    await staffAlert(deps.staff, guild, {
-      tournament,
-      text: [
-        `⚖️ **Спор в матче №${match.id}** «${tournament.name}»: ${nameOf(match.entrantAId)} — ${nameOf(match.entrantBId)}.`,
-        `Заявлена победа **${nameOf(match.reportedWinnerId)}**, оспорил <@${interaction.user.id}>.${match.threadId ? ` Ветка матча: <#${match.threadId}>.` : ''}`,
-        `Решить: \`/match resolve match:${match.id} winner:<название>\`.`,
-      ].join('\n'),
-      dedupeKey: `dispute:${match.id}`,
-    });
   }
 }

@@ -48,10 +48,15 @@ describe('модуль tournaments', () => {
       'tournaments:registration-close',
     ]);
     // Кнопки обслуживает сам модуль: роутер ядра занимается только slash-командами. Кнопки
-    // регистрации и матча, кнопки хода матча («На месте», решения организатора) и подсказки
-    // имён форматов — три обработчика одного события: Discord присылает и нажатия, и запрос
-    // автодополнения как interactionCreate.
-    expect(botModule.events?.map((e) => e.event)).toEqual(['interactionCreate', 'interactionCreate', 'interactionCreate']);
+    // регистрации и матча, кнопки хода матча («На месте», решения организатора), подсказки
+    // имён форматов и подсказки матчей — четыре обработчика одного события: Discord присылает
+    // и нажатия, и запрос автодополнения как interactionCreate.
+    expect(botModule.events?.map((e) => e.event)).toEqual([
+      'interactionCreate',
+      'interactionCreate',
+      'interactionCreate',
+      'interactionCreate',
+    ]);
   });
 
   it('объявляет корректные cron-выражения для своих джоб', () => {
